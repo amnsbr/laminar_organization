@@ -9,5 +9,10 @@ def download(url, file_name=None):
 	"""
 	if not file_name:
 		file_name = os.path.basename(urlparse(url).path)
-	with urllib.request.urlopen(url) as response, open(file_name, 'wb') as out_file:
-	    shutil.copyfileobj(response, out_file)
+	print(file_name, end=' ')
+	if not os.path.exists(file_name):
+		with urllib.request.urlopen(url) as response, open(file_name, 'wb') as out_file:
+			shutil.copyfileobj(response, out_file)
+		print("")
+	else:
+		print("already exists")
