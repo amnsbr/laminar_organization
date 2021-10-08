@@ -3,9 +3,8 @@
 cd "$(dirname "$0")"
 cd "../../src"
 export bbwDir="../tools/BigBrainWarp"
-fsaverage_to_bigbrain=('sjh.annot' 'economo.annot')
-mkdir "../data/parcellations"
-for suffix in "${fsaverage_to_bigbrain[@]}"
+
+for suffix in ('sjh.annot' 'economo.annot')
 do
     echo "Transforming ${suffix} to bigbrain space"
     bigbrainwarp \
