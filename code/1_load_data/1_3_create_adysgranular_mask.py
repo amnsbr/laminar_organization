@@ -1,9 +1,3 @@
-"""
-Create masks of bigbrain space including agranular and dysgranular region.
-Since the data is processed parcellated, these masks also take the parcellation
-into account and include parcels that have > e.g. 10% overlap with the
-a-/dysgranular regions.
-"""
 import os
 import pandas as pd
 import numpy as np
@@ -14,66 +8,64 @@ abspath = os.path.abspath(__file__)
 cwd = os.path.dirname(abspath)
 DATA_DIR = os.path.join(cwd, '..', '..', 'data')
 
-# Config
-TOLERABLE_ADYS_IN_PARCELS = 0.1 # how much adysgranular vertices are allowed to be in parcels that are not masked out
+def create_adysgranular_mask(parcellation_name=None, tolerable_adys_in_parcels=0.1):
+    """
+    Create masks of bigbrain space including agranular and dysgranular region.
+    When the data is processed parcellated, these masks also take the parcellation
+    into account and include parcels that have e.g. > 10% overlap with the
+    a-/dysgranular regions
 
-#> load the economo parcellation
-lh_economo = nilearn.surface.load_surf_data(
-    os.path.join(DATA_DIR, 'parcellations', 'tpl-bigbrain_hemi-L_desc-economo_parcellation.label.gii')
-    )
-rh_economo = nilearn.surface.load_surf_data(
-    os.path.join(DATA_DIR, 'parcellations', 'tpl-bigbrain_hemi-R_desc-economo_parcellation.label.gii')
-    )
+    Parameters
+    ---------
+    parcellation_name: (None or str) the parcellation should be saved in parcellations folder
+                        with the name 'tpl-bigbrain_hemi-L_desc-{parcellation_name}_parcellation.label.gii'
+    tolerable_adys_in_parcels: (float) % overlap of parcels with a-/dysgranular allowed
+    """
+    #> get the indices of parcels that are agranular, dysgranular, allocortex or NaN (corpus callosum and unknown)
+    cortical_types = pd.read_csv(
+        os.path.join(DATA_DIR, 'parcellated_surface', 'economo_cortical_types.csv')
+        )
+    adysgranular_regions = (cortical_types[
+        cortical_types['CorticalType']
+        .isin(['AG', 'DG', 'ALO', np.NaN])
+        ].index.tolist())
+    print("These regions belong to the agranular or dysgranular cortical type or the allocortex:")
+    print(cortical_types.loc[adysgranular_regions, 'Label'].tolist())
 
-#> get the indices of parcels that are agranular, dysgranular, allocortex or NaN (corpus callosum and unknown)
-cortical_types = pd.read_csv(
-    os.path.join(DATA_DIR, 'parcellated_surface', 'economo_cortical_types.csv')
-    )
-adysgranular_regions = (cortical_types[
-    cortical_types['CorticalType']
-    .isin(['AG', 'DG', 'ALO', np.NaN])
-    ].index.tolist())
+    for hem in ['L', 'R']:
+        #> load the economo parcellation
+        economo_map = nilearn.surface.load_surf_data(
+            os.path.join(DATA_DIR, 'parcellations', f'tpl-bigbrain_hemi-{hem}_desc-economo_parcellation.label.gii')
+            )        
+        #> create a mask of a-/dysgranular vertices
+        adysgranular_mask = np.in1d(economo_map, adysgranular_regions)
 
-print("These regions belong to the agranular or dysgranular cortical type or the allocortex:")
-print(cortical_types.loc[adysgranular_regions, 'Label'].tolist())
+        if parcellation_name:
+            #> load parcellation maps
+            parcellation_map = nilearn.surface.load_surf_data(
+                os.path.join(DATA_DIR, 'parcellations', f'tpl-bigbrain_hemi-{hem}_desc-{parcellation_name}_parcellation.label.gii')
+                )
+            #> calculate the proportion of adysgranular vertices in each parcel
+            parcels_adys_proportion = pd.DataFrame(
+                {'parcel': parcellation_map, 'adys': adysgranular_mask}
+                ).groupby('parcel')['adys'].mean()
 
-#> create a mask of a-/dysgranular vertices
-lh_adysgranular_mask = np.in1d(lh_economo, adysgranular_regions)
-rh_adysgranular_mask = np.in1d(rh_economo, adysgranular_regions)
+            #> determine the parcels that pass the threshold and need to be masked
+            adys_parcels = (parcels_adys_proportion[
+                parcels_adys_proportion > tolerable_adys_in_parcels
+                ].index.to_numpy())
+                
+            #> create an extended mask of adysgranular regions
+            adysgranular_mask = np.in1d(parcellation_map, adys_parcels)
 
-#> load parcellation maps
-lh_sjh_parcellation = nilearn.surface.load_surf_data(
-    os.path.join(DATA_DIR, 'parcellations', 'tpl-bigbrain_hemi-L_desc-sjh_parcellation.label.gii'))
-rh_sjh_parcellation = nilearn.surface.load_surf_data(
-    os.path.join(DATA_DIR, 'parcellations', 'tpl-bigbrain_hemi-R_desc-sjh_parcellation.label.gii'))
+        #> save the mask
+        np.save(
+            os.path.join(
+                DATA_DIR, 'surface', 
+                f'tpl-bigbrain_hemi-{hem}_desc-adysgranular_mask_{str(parcellation_name).lower()}_parcellation.npy'),
+            adysgranular_mask
+        )
+        print(f"Masked saved in tpl-bigbrain_hemi-{hem}_desc-adysgranular_mask_{str(parcellation_name).lower()}_parcellation.npy")
 
-#> calculate the proportion of adysgranular vertices in each parcel
-lh_parcels_adys_proportion = pd.DataFrame(
-    {'parcel': lh_sjh_parcellation, 'adys': lh_adysgranular_mask}
-    ).groupby('parcel')['adys'].mean()
-rh_parcels_adys_proportion = pd.DataFrame(
-    {'parcel': rh_sjh_parcellation, 'adys': rh_adysgranular_mask}
-    ).groupby('parcel')['adys'].mean()
-
-#> determine the parcels that pass the threshold and need to be masked
-lh_adys_parcels = lh_parcels_adys_proportion[
-    lh_parcels_adys_proportion > TOLERABLE_ADYS_IN_PARCELS
-    ].index.to_numpy()
-rh_adys_parcels = rh_parcels_adys_proportion[
-    rh_parcels_adys_proportion > TOLERABLE_ADYS_IN_PARCELS
-    ].index.to_numpy()
-
-#> create an extended mask of adysgranular regions
-lh_adysgranular_sjh_ext_mask = np.in1d(lh_sjh_parcellation, lh_adys_parcels)
-rh_adysgranular_sjh_ext_mask = np.in1d(rh_sjh_parcellation, rh_adys_parcels)
-
-#> save the mask
-np.save(
-    os.path.join(DATA_DIR, 'surface', 'tpl-bigbrain_hemi-L_desc-adysgranular_sjh_ext_mask.npy'),
-    lh_adysgranular_sjh_ext_mask
-)
-np.save(
-    os.path.join(DATA_DIR, 'surface', 'tpl-bigbrain_hemi-R_desc-adysgranular_sjh_ext_mask.npy'),
-    rh_adysgranular_sjh_ext_mask
-)
-print("Masked saved in data/surface/tpl-bigbrain_hemi-*_desc-adysgranular_sjh_ext_mask.npy")
+for parcellation_name in [None, 'sjh']:
+    create_adysgranular_mask(parcellation_name)
