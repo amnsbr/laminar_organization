@@ -1,1 +1,2 @@
 nilearn>=0.8
+brainspace>=0.1.2

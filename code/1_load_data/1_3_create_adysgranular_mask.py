@@ -1,4 +1,5 @@
 import os
+from argparse import ArgumentParser
 import pandas as pd
 import numpy as np
 import nilearn.surface
@@ -31,7 +32,6 @@ def create_adysgranular_mask(parcellation_name=None, tolerable_adys_in_parcels=0
         ].index.tolist())
     print("These regions belong to the agranular or dysgranular cortical type or the allocortex:")
     print(cortical_types.loc[adysgranular_regions, 'Label'].tolist())
-
     for hem in ['L', 'R']:
         #> load the economo parcellation
         economo_map = nilearn.surface.load_surf_data(
@@ -54,18 +54,27 @@ def create_adysgranular_mask(parcellation_name=None, tolerable_adys_in_parcels=0
             adys_parcels = (parcels_adys_proportion[
                 parcels_adys_proportion > tolerable_adys_in_parcels
                 ].index.to_numpy())
-                
+
             #> create an extended mask of adysgranular regions
             adysgranular_mask = np.in1d(parcellation_map, adys_parcels)
 
         #> save the mask
+        mask_filepath = os.path.join(
+            DATA_DIR, 'surface', 
+            f'tpl-bigbrain_hemi-{hem}_desc-adysgranular_mask_{str(parcellation_name).lower()}_parcellation.npy'
+            )
         np.save(
-            os.path.join(
-                DATA_DIR, 'surface', 
-                f'tpl-bigbrain_hemi-{hem}_desc-adysgranular_mask_{str(parcellation_name).lower()}_parcellation.npy'),
+            mask_filepath,
             adysgranular_mask
         )
-        print(f"Masked saved in tpl-bigbrain_hemi-{hem}_desc-adysgranular_mask_{str(parcellation_name).lower()}_parcellation.npy")
+        print(f"Masked saved in {mask_filepath}")
 
-for parcellation_name in [None, 'sjh']:
-    create_adysgranular_mask(parcellation_name)
+
+parser = ArgumentParser()
+parser.add_argument("-p", "--parcellation", dest="parcellation",
+                    help="Parcellation scheme to use", default=None)
+parser.add_argument("-t", "--thresh", dest="threshold", default=0.1,
+                    help="%\ overlap of parcels with a-/dysgranular allowed")
+
+args = parser.parse_args()
+create_adysgranular_mask(args.parcellation, args.threshold)
