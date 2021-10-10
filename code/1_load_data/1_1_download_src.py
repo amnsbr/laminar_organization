@@ -16,7 +16,7 @@ os.chdir(SRC_DIR)
 #> Create 'data' and its subfolders
 DATA_DIR = os.path.join('..', 'data')
 os.makedirs(DATA_DIR, exist_ok=True)
-for subfolder in ['parcellations', 'surface', 'parcellated_surface', 'gradients']:
+for subfolder in ['parcellations', 'surface', 'parcellated_surface', 'gradients', 'matrices']:
 	os.makedirs(os.path.join(DATA_DIR, subfolder), exist_ok=True)
 
 
