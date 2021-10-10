@@ -3,15 +3,18 @@ from argparse import ArgumentParser
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from seaborn import heatmap
+from seaborn import heatmap, scatterplot, lineplot
 import nilearn.surface
+import brainspace.gradient
 
-#> specify the data dir
+#> specify the data dir and create gradients and matrices subfolders
 abspath = os.path.abspath(__file__)
 cwd = os.path.dirname(abspath)
-DATA_DIR = os.path.join(cwd, '..', '..', 'data')
+DATA_DIR = os.path.join(cwd, '..', 'data')
+os.makedirs(os.path.join(DATA_DIR, 'gradients'), exist_ok=True)
+os.makedirs(os.path.join(DATA_DIR, 'matrices'), exist_ok=True)
 
-
+#> laminar similarity matrix class
 class LaminarSimilarityMatrix:
     def __init__(self, normalize=True, exc_masks=None, parcellation_name='sjh',
                  averaging_method='median', similarity_method='partial_corr', 
@@ -44,6 +47,7 @@ class LaminarSimilarityMatrix:
         self.create()
         self.plot()
         self.save()
+        print(f"Matrix saved in {self.get_path()}")
 
     def create(self):
         """
@@ -175,18 +179,21 @@ class LaminarSimilarityMatrix:
             matrix[matrix < 0] = 0
         return matrix
     
+    def get_path(self):
+        outfilename = f'matrix_{self.similarity_method}_{self.parcellation_name}_parcellation_{self.averaging_method}'
+        if self.normalize:
+            outfilename += '_normalized'
+        if self.exc_masks: #TODO specify the name of excmask
+            outfilename += '_excmask'
+        outfilename = outfilename.lower()
+        return os.path.join(DATA_DIR, 'matrices', outfilename)
+
     def save(self, outfile=None):
         """
         Save the matrix to a .npy file
         """
         if not outfile:
-            outfilename = f'matrix_method-{self.similarity_method}_parcellation-{self.parcellation_name}-{self.averaging_method}'
-            if self.normalize:
-                outfilename += '_normalized'
-            if self.exc_masks: #TODO specify the name of excmask
-                outfilename += '_excmask'
-            outfilename = outfilename.lower()
-            outfile = os.path.join(DATA_DIR, 'matrices', outfilename)
+            outfile = self.get_path()
         np.save(outfile, self.matrix)
 
     def plot(self, outfile=None):
@@ -201,14 +208,114 @@ class LaminarSimilarityMatrix:
             ax=ax)
         ax.axis('off')
         if not outfile:
-            outfilename = f'matrix_{self.similarity_method}_{self.parcellation_name}_parcellation_{self.averaging_method}'
-            if self.normalize:
-                outfilename += '_normalized'
-            if self.exc_masks: #TODO specify the name of excmask
-                outfilename += '_excmask'
-            outfilename = outfilename.lower() + '.png'
-            outfile = os.path.join(DATA_DIR, 'matrices', outfilename)
+            outfile = self.get_path() + '.png'
         fig.tight_layout()
         fig.savefig(outfile)
 
-matrix = LaminarSimilarityMatrix()
+#> laminar similarity gradients class
+class LaminarSimilarityGradients:
+    """
+    Initializes laminar similarity gradients based on LaminarSimilarityMatrix object
+    and the gradients fitting parameters
+    """
+    def __init__(self, matrix_obj, n_components=10, approach='dm',
+                 kernel='normalized_angle', sparsity=0.9):
+        self.matrix_obj = matrix_obj
+        #> create gradients
+        print("Creating gradients")
+        self.gm = brainspace.gradient.GradientMaps(
+            n_components=n_components, 
+            approach=approach, 
+            kernel=kernel, 
+            random_state=912)
+        self.gm.fit(self.matrix_obj.matrix, sparsity=sparsity)
+        #> save the data
+        self.save_surface()
+        self.save_lambdas()
+        self.plot_scree()
+        print(f"Gradients saved in {self.get_path}")
+
+    def project_to_surface(self):
+        """
+        Project the gradients on BigBrain surface
+        """
+        #> load the parcellation map
+        parcellation_maps = {}
+        for hem in ['L', 'R']:
+            parcellation_maps[hem] = nilearn.surface.load_surf_data(
+                os.path.join(
+                    DATA_DIR, 'parcellations', 
+                    f'tpl-bigbrain_hemi-{hem}_desc-{self.matrix_obj.parcellation_name}_parcellation.label.gii')
+                )
+        #> relabel right hemisphere in continuation with the labels from left hemisphere
+        parcellation_maps['R'] = parcellation_maps['L'].max() + 1 + parcellation_maps['R']
+        #> concatenate left and right hemispheres
+        concat_parcellation_map = np.concatenate([parcellation_maps['L'], parcellation_maps['R']])
+        #> project the gradient values on the surface
+        #> add back the masked out parcels and set their gradient values as NaN
+        #  (there should be easier solutions but this was a simple method to do it in one line)
+        concat_parcellated_laminar_thickness = pd.concat(
+            [
+                self.parcellated_laminar_thickness['L'], 
+                self.parcellated_laminar_thickness['R']
+            ], 
+            axis=0)
+        gradients_df = pd.concat(
+            [
+                pd.DataFrame(
+                    self.gm.gradients_, 
+                    index=concat_parcellated_laminar_thickness.dropna().index
+                    ),
+                concat_parcellated_laminar_thickness.index.to_series()
+            ], axis=1).drop(columns=['index'])
+        #> get the map of gradients by indexing at sjh_parcellation labels
+        gradient_maps = gradients_df.loc[concat_parcellation_map].values # shape: vertex X gradient
+        return gradient_maps
+
+    def save_surface(self):
+        """
+        Save the gradients map projected on surface
+        """
+        np.save(
+            self.get_path(),
+            self.project_to_surface()
+        )
+
+    def save_lambdas(self):
+        """
+        Save lambdas as txt
+        """
+        np.savetxt(
+            self.get_path()+'_lambdas',
+            self.gm._lambdas
+        )
+
+    def plot_scree(self):
+        fig, axes = plt.subplots(1, 2, figsize=(12,5))
+        scatterplot(
+            x = np.arange(1, self.gm.lambdas_.shape[0]+1).astype('str'),
+            y = (self.gm.lambdas_ / self.gm.lambdas_.sum()),
+            ax=axes[0]
+            )
+        axes[0].set_title(f'Variance explained by each gradient\
+                          (relative to the total variance in the first {self.gm.lambdas_.shape[0]} gradients)')
+        lineplot(
+            x = np.arange(1, self.gm.lambdas_.shape[0]+1).astype('str'),
+            y = np.cumsum(self.gm.lambdas_) / self.gm.lambdas_.sum(), 
+            ax=axes[1]
+            )
+        axes[1].set_title(f'Cumulative variance explained by the gradients\
+                          (out of total variance in the first {self.gm.lambdas_.shape[0]} gradients)')
+        for ax in axes:
+            ax.set_xlabel('Gradient')
+        fig.savefig(self.get_path()+'_scree.png', dpi=192)
+    
+    def get_path(self):
+        filename = self.matrix_obj.get_filename().replace('matrix', 'gradients') \
+            + f'_gapproach_{self.gm.approach}'\
+            + f'_gkernel_{self.gm.kernel}'
+        return os.path.join(DATA_DIR, 'gradients', filename)
+
+matrix = LaminarSimilarityMatrix(similarity_method='pearson')
+gradients = LaminarSimilarityGradients(matrix)
+
