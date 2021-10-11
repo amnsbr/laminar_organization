@@ -233,7 +233,7 @@ class LaminarSimilarityGradients:
         self.save_surface()
         self.save_lambdas()
         self.plot_scree()
-        print(f"Gradients saved in {self.get_path}")
+        print(f"Gradients saved in {self.get_path()}")
 
     def project_to_surface(self):
         """
@@ -256,8 +256,8 @@ class LaminarSimilarityGradients:
         #  (there should be easier solutions but this was a simple method to do it in one line)
         concat_parcellated_laminar_thickness = pd.concat(
             [
-                self.parcellated_laminar_thickness['L'], 
-                self.parcellated_laminar_thickness['R']
+                self.matrix_obj.parcellated_laminar_thickness['L'], 
+                self.matrix_obj.parcellated_laminar_thickness['R']
             ], 
             axis=0)
         gradients_df = pd.concat(
@@ -286,8 +286,8 @@ class LaminarSimilarityGradients:
         Save lambdas as txt
         """
         np.savetxt(
-            self.get_path()+'_lambdas',
-            self.gm._lambdas
+            self.get_path()+'_lambdas.txt',
+            self.gm.lambdas_
         )
 
     def plot_scree(self):
@@ -297,25 +297,24 @@ class LaminarSimilarityGradients:
             y = (self.gm.lambdas_ / self.gm.lambdas_.sum()),
             ax=axes[0]
             )
-        axes[0].set_title(f'Variance explained by each gradient\
-                          (relative to the total variance in the first {self.gm.lambdas_.shape[0]} gradients)')
+        axes[0].set_title(f'Variance explained by each gradient\n(relative to the total variance in the first {self.gm.lambdas_.shape[0]} gradients)')
         lineplot(
             x = np.arange(1, self.gm.lambdas_.shape[0]+1).astype('str'),
             y = np.cumsum(self.gm.lambdas_) / self.gm.lambdas_.sum(), 
             ax=axes[1]
             )
-        axes[1].set_title(f'Cumulative variance explained by the gradients\
-                          (out of total variance in the first {self.gm.lambdas_.shape[0]} gradients)')
+        axes[1].set_title(f'Cumulative variance explained by the gradients\n(out of total variance in the first {self.gm.lambdas_.shape[0]} gradients)')
         for ax in axes:
             ax.set_xlabel('Gradient')
         fig.savefig(self.get_path()+'_scree.png', dpi=192)
     
     def get_path(self):
-        filename = self.matrix_obj.get_filename().replace('matrix', 'gradients') \
+        return self.matrix_obj.get_path()\
+            .replace('matrix', 'gradients') \
+            .replace('matrices', 'gradients') \
             + f'_gapproach_{self.gm.approach}'\
             + f'_gkernel_{self.gm.kernel}'
-        return os.path.join(DATA_DIR, 'gradients', filename)
 
-matrix = LaminarSimilarityMatrix(similarity_method='pearson')
+matrix = LaminarSimilarityMatrix()
 gradients = LaminarSimilarityGradients(matrix)
 

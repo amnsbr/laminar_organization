@@ -140,3 +140,4 @@ cython_debug/
 # Project specific
 tools/
 laminar_gradients_env/
+logs/
