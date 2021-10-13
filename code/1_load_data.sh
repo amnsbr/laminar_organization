@@ -13,9 +13,15 @@ source "../laminar_gradients_env/bin/activate" & \
 #  using bigbrainwarp
 echo "-----------Transforming atlases/parcellations to bigbrain space-------------"
 source "1_load_data/1_2_transformation_to_bigbrain.sh"
+cd $code_dir # since the script above changes the cwd
 
 #> 3. Create masks of bigbrain space including agranular and dysgranular region
 echo "-----------Creating masks of bigbrain space including agranular and dysgranular region-----------"
-cd $code_dir # since step 2 changes the cwd
+
 source "../laminar_gradients_env/bin/activate" &\
 "../laminar_gradients_env/bin/python" 1_load_data/1_3_create_adysgranular_mask.py -p sjh
+
+#> 4. Calculate the covariates (curvature and geodesic distance)
+echo "-----------Calculating covariates-----------"
+source "../laminar_gradients_env/bin/activate" &\
+"../laminar_gradients_env/bin/python" 1_load_data/1_4_calculate_covariates.py
