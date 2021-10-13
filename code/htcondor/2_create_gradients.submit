@@ -9,7 +9,7 @@ initialdir            = $ENV(HOME)/laminar_gradients
 executable            = /usr/bin/bash
 
 # Job
-arguments   = $ENV(HOME)/laminar_gradients/htcondor/2_create_gradients.sh
+arguments   = $ENV(HOME)/laminar_gradients/code/2_create_gradients.sh
 log         = logs/2_create_gradients_$(Cluster).$(Process).log
 output      = logs/2_create_gradients_$(Cluster).$(Process).out
 error       = logs/2_create_gradients_$(Cluster).$(Process).err

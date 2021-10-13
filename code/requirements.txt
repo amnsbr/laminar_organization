@@ -1,0 +1,4 @@
+nilearn
+brainspace
+seaborn
+pycortex

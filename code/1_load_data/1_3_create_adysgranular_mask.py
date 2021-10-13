@@ -35,7 +35,7 @@ def create_adysgranular_mask(parcellation_name=None, tolerable_adys_in_parcels=0
     for hem in ['L', 'R']:
         #> load the economo parcellation
         economo_map = nilearn.surface.load_surf_data(
-            os.path.join(DATA_DIR, 'parcellations', f'tpl-bigbrain_hemi-{hem}_desc-economo_parcellation.label.gii')
+            os.path.join(DATA_DIR, 'parcellation', f'tpl-bigbrain_hemi-{hem}_desc-economo_parcellation.label.gii')
             )        
         #> create a mask of a-/dysgranular vertices
         adysgranular_mask = np.in1d(economo_map, adysgranular_regions)
@@ -43,7 +43,7 @@ def create_adysgranular_mask(parcellation_name=None, tolerable_adys_in_parcels=0
         if parcellation_name:
             #> load parcellation maps
             parcellation_map = nilearn.surface.load_surf_data(
-                os.path.join(DATA_DIR, 'parcellations', f'tpl-bigbrain_hemi-{hem}_desc-{parcellation_name}_parcellation.label.gii')
+                os.path.join(DATA_DIR, 'parcellation', f'tpl-bigbrain_hemi-{hem}_desc-{parcellation_name}_parcellation.label.gii')
                 )
             #> calculate the proportion of adysgranular vertices in each parcel
             parcels_adys_proportion = pd.DataFrame(

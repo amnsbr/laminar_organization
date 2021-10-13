@@ -11,8 +11,8 @@ import brainspace.gradient
 abspath = os.path.abspath(__file__)
 cwd = os.path.dirname(abspath)
 DATA_DIR = os.path.join(cwd, '..', 'data')
-os.makedirs(os.path.join(DATA_DIR, 'gradients'), exist_ok=True)
-os.makedirs(os.path.join(DATA_DIR, 'matrices'), exist_ok=True)
+os.makedirs(os.path.join(DATA_DIR, 'gradient'), exist_ok=True)
+os.makedirs(os.path.join(DATA_DIR, 'matrix'), exist_ok=True)
 
 #> laminar similarity matrix class
 class LaminarSimilarityMatrix:
@@ -107,7 +107,7 @@ class LaminarSimilarityMatrix:
         for hem in ['L', 'R']:
             parcellation_map = nilearn.surface.load_surf_data(
                 os.path.join(
-                    DATA_DIR, 'parcellations', 
+                    DATA_DIR, 'parcellation', 
                     f'tpl-bigbrain_hemi-{hem}_desc-{self.parcellation_name}_parcellation.label.gii')
                 )
             parellated_vertices = (
@@ -186,7 +186,7 @@ class LaminarSimilarityMatrix:
         if self.exc_masks: #TODO specify the name of excmask
             outfilename += '_excmask'
         outfilename = outfilename.lower()
-        return os.path.join(DATA_DIR, 'matrices', outfilename)
+        return os.path.join(DATA_DIR, 'matrix', outfilename)
 
     def save(self, outfile=None):
         """
@@ -244,7 +244,7 @@ class LaminarSimilarityGradients:
         for hem in ['L', 'R']:
             parcellation_maps[hem] = nilearn.surface.load_surf_data(
                 os.path.join(
-                    DATA_DIR, 'parcellations', 
+                    DATA_DIR, 'parcellation', 
                     f'tpl-bigbrain_hemi-{hem}_desc-{self.matrix_obj.parcellation_name}_parcellation.label.gii')
                 )
         #> relabel right hemisphere in continuation with the labels from left hemisphere
@@ -310,8 +310,7 @@ class LaminarSimilarityGradients:
     
     def get_path(self):
         return self.matrix_obj.get_path()\
-            .replace('matrix', 'gradients') \
-            .replace('matrices', 'gradients') \
+            .replace('matrix', 'gradient') \
             + f'_gapproach_{self.gm.approach}'\
             + f'_gkernel_{self.gm.kernel}'
 

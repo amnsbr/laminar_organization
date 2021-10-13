@@ -1,3 +1,0 @@
-nilearn==0.8.1
-brainspace==0.1.2
-seaborn=0.11.2
