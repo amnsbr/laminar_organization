@@ -8,7 +8,7 @@ import brainspace.mesh, brainspace.plotting
 #> specify the data dir
 abspath = os.path.abspath(__file__)
 cwd = os.path.dirname(abspath)
-DATA_DIR = os.path.join(cwd, '..', '..', 'data')
+DATA_DIR = os.path.join(cwd, '..', 'data')
 
 
 def download(url, file_name=None, copy_to=None):
