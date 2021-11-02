@@ -6,9 +6,6 @@ source laminar_gradients_env/bin/activate &\
 laminar_gradients_env/bin/pip install --upgrade pip &\
 laminar_gradients_env/bin/pip install -r code/requirements.txt
 
-#> Download brain4views
-wget -O code/brain4views.py https://github.com/niksirbi/brain4views/raw/master/brain4views.py
-
 #> Install HCP workbench
 if ! command -v wb_command &> /dev/null; then
     echo "HCP workbench could not be found"
