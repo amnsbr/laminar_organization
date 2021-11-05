@@ -14,14 +14,18 @@ export -f python
 fsaverage_to_bigbrain=('sjh.annot' 'economo.annot')
 for suffix in "${fsaverage_to_bigbrain[@]}"
 do
-    echo "Transforming ${suffix} to bigbrain space"
-    bigbrainwarp \
-    --in_lh "lh_${suffix}" \
-    --in_rh "rh_${suffix}" \
-    --in_space fsaverage \
-    --out_space bigbrain \
-    --out_den 32 \
-    --interp nearest \
-    --desc "${suffix/.annot/_parcellation}" \
-    --wd "../data/parcellation"
+    if [ -f "../data/parcellation/tpl-bigbrain_hemi-L_desc-${suffix/.annot/_parcellation}.label.gii" ]; then
+        echo "${suffix} already transformed to bigbrain space"
+    else
+        echo "Transforming ${suffix} to bigbrain space"
+        bigbrainwarp \
+        --in_lh "lh_${suffix}" \
+        --in_rh "rh_${suffix}" \
+        --in_space fsaverage \
+        --out_space bigbrain \
+        --out_den 32 \
+        --interp nearest \
+        --desc "${suffix/.annot/_parcellation}" \
+        --wd "../data/parcellation"
+    fi
 done

@@ -9,11 +9,11 @@ import helpers
 #> Create and change path to 'src' folder
 abspath = os.path.abspath(__file__)
 cwd = os.path.dirname(abspath)
-SRC_DIR = os.path.abspath(os.path.join(cwd, '..', '..', 'src'))
+SRC_DIR = os.path.abspath(os.path.join(cwd, '..', 'src'))
 os.chdir(SRC_DIR)
 os.makedirs(SRC_DIR, exist_ok=True)
 #> Create 'data' and its subfolders
-DATA_DIR = os.path.abspath(os.path.join(cwd, '..', '..', 'data'))
+DATA_DIR = os.path.abspath(os.path.join(cwd, '..', 'data'))
 os.makedirs(DATA_DIR, exist_ok=True)
 for subfolder in ['parcellation', 'parcellated_surface', 'surface', 'gradient', 'matrix']:
 	os.makedirs(os.path.join(DATA_DIR, subfolder), exist_ok=True)

@@ -15,7 +15,7 @@ if ! command -v wb_command &> /dev/null; then
             'https://www.humanconnectome.org/storage/app/media/workbench/workbench-linux64-v1.5.0.zip'
         unzip -n 'tools/workbench-linux64-v1.5.0.zip' -d 'tools/'
     fi
-    wb_path=$(realpath "tools/workbench")
+    wb_path=$(realpath "tools/workbench/bin_linux64")
     PATH="${PATH}:${wb_path}"
 fi
 
@@ -32,12 +32,4 @@ if ! command -v bigbrainwarp &> /dev/null; then
     fi
     bbwDir=$(realpath "tools/BigBrainWarp")
     PATH="${PATH}:${bbwDir}"
-fi
-
-if ! [ -d 'tools/micapipe' ]; then
-    git clone https://github.com/MICA-MNI/micapipe.git 'tools/micapipe'
-    #> checkout the specific commit at the time of analysis
-    cd "tools/micapipe"
-    git checkout 025f641c4d5e608704f405fae0dbb1742290c679
-    cd "$(dirname "$0")/.."
 fi

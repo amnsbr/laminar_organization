@@ -7,7 +7,7 @@ import nilearn.surface
 #> specify the data dir
 abspath = os.path.abspath(__file__)
 cwd = os.path.dirname(abspath)
-DATA_DIR = os.path.join(cwd, '..', '..', 'data')
+DATA_DIR = os.path.join(cwd, '..', 'data')
 
 def create_adysgranular_mask(parcellation_name=None, tolerable_adys_in_parcels=0.1):
     """
@@ -63,10 +63,11 @@ def create_adysgranular_mask(parcellation_name=None, tolerable_adys_in_parcels=0
             DATA_DIR, 'surface', 
             f'tpl-bigbrain_hemi-{hem}_desc-adysgranular_mask_parcellation-{str(parcellation_name).lower()}_thresh_{tolerable_adys_in_parcels}.npy'
             )
-        np.save(
-            mask_filepath,
-            adysgranular_mask
-        )
+        if not os.path.exists(mask_filepath):
+            np.save(
+                mask_filepath,
+                adysgranular_mask
+            )
         print(f"Masked saved in {mask_filepath}")
 
 

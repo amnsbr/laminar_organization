@@ -1,8 +1,8 @@
 # The environment
 universe              = vanilla
 getenv                = True
-request_cpus          = 1
-request_memory        = 1G
+request_cpus          = 2
+request_memory        = 8G
 
 # Execution
 initialdir            = $ENV(HOME)/laminar_gradients

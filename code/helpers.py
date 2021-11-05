@@ -32,7 +32,7 @@ def download(url, file_name=None, copy_to=None):
 		if not os.path.exists(copy_to):
 			shutil.copyfile(file_name, copy_to)
 
-
+###### Plotting ######
 def plot_on_bigbrain_brainspace(surface_data_files, outfile=None):
 	"""
 	Plots the `surface_data_files` on the bigbrain space and saves it in `outfile`

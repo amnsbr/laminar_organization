@@ -2,3 +2,6 @@ nilearn
 brainspace
 seaborn
 pycortex
+# geoDistMapper.py dependencies (in micapipe)
+scipy
+nibabel
