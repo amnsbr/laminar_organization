@@ -141,3 +141,7 @@ cython_debug/
 tools/
 laminar_gradients_env/
 logs/
+# src will include files downloaded from the web or copied from src_local
+# since these files are sometimes very large (e.g. BigBrain files) I will
+# not add them to the git repo
+src/

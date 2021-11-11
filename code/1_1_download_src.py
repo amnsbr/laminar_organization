@@ -3,7 +3,7 @@ Downloads parcellations, spaces and laminar thickness data into 'src' folder
 and copies those that need no preprocessing to the 'data' folder
 """
 import os
-import shutil
+from distutils.dir_util import copy_tree
 import helpers
 
 #> Create and change path to 'src' folder
@@ -32,3 +32,6 @@ for hem in ['L', 'R']:
 		helpers.download(
 			f'https://github.com/caseypaquola/BigBrainWarp/raw/master/spaces/tpl-bigbrain/tpl-bigbrain_hemi-{hem}_desc-layer{layer_num}_thickness.txt',
 			copy_to=os.path.join(DATA_DIR, 'surface', f'tpl-bigbrain_hemi-{hem}_desc-layer{layer_num}_thickness.txt'))
+
+#> Copy src_local to src
+copy_tree(os.path.join(SRC_DIR, '..', 'src_local'), SRC_DIR)
