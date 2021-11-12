@@ -12,12 +12,10 @@ source "../laminar_gradients_env/bin/activate" &\
 #> 2. Transform atlases/parcellations in fsaverage space to bigbrain space 
 #  using bigbrainwarp
 echo "-----------Transforming atlases/parcellations to bigbrain space-------------"
-source "1_2_transformation_to_bigbrain.sh"
-cd $code_dir # since the script above changes the cwd
+bash "1_2_transformation_to_bigbrain.sh"
 
 #> 3. Create masks of bigbrain space including agranular and dysgranular region
 echo "-----------Creating masks of bigbrain space including agranular and dysgranular region-----------"
-
 source "../laminar_gradients_env/bin/activate" &\
 "../laminar_gradients_env/bin/python" 1_3_create_adysgranular_mask.py -p sjh
 

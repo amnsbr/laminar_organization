@@ -13,10 +13,10 @@
          <Value><![CDATA[../data/parcellation/tpl-fsaverage_hemi-R_den-164k_desc-economo_parcellation.label.gii:
 /home/casey/Downloads/software/workbench/bin_linux64/../exe_linux64/wb_command -label-resample spaces/bigbrain/Yeo2011_7Networks_N1000_rh.label.gii /home/casey/Desktop/BigBrainWarp//xfms/rh.sphere_BigBrain_rsled_like_fsavg.sphere.reg.surf.gii /home/casey/Desktop/BigBrainWarp//xfms/rh.BigBrain.rot.fsavg.sphere.surf.gii BARYCENTRIC spaces/bigbrain/Yeo2011_7Networks_N1000_rh_bigbrain.label.gii
 
-/home/a.saberi/laminar_gradients/tools/BigBrainWarp/xfms/tpl-bigbrain_hemi-R_desc-sphere_rsled_like_fsaverage.reg.surf.gii:
+/BigBrainWarp/xfms/tpl-bigbrain_hemi-R_desc-sphere_rsled_like_fsaverage.reg.surf.gii:
 /home/users/llewis/workbench/bin_linux64/../exe_linux64/wb_command -surface-sphere-project-unproject rh.fsavg.sphere.surf.gii rh.sphere_fsavg_rsled_like_BigBrain.sphere.reg.surf.gii rh.BigBrain.rot.fsavg.sphere.surf.gii rh.sphere_BigBrain_rsled_like_fsavg.sphere.reg.surf.gii
 
-/home/a.saberi/laminar_gradients/tools/BigBrainWarp/xfms/tpl-bigbrain_hemi-R_desc-sphere_rot_fsaverage.surf.gii:
+/BigBrainWarp/xfms/tpl-bigbrain_hemi-R_desc-sphere_rot_fsaverage.surf.gii:
 /home/users/llewis/workbench/bin_linux64/../exe_linux64/wb_command -surface-modify-sphere rh.sphere_rotfsavg2.surf.gii 100 rh.sphere_rotfsavg2.surf.gii
 
 ]]></Value>
@@ -25,25 +25,24 @@
          <Name><![CDATA[ProgramProvenance]]></Name>
          <Value><![CDATA[Connectome Workbench
 Type: Command Line Application
-Version: 1.5.0
-Qt Compiled Version: 5.11.3
-Qt Runtime Version: 5.11.3
-Commit: unknown
+Version: 1.1.1
+Qt Compiled Version: 4.8.6
+Qt Runtime Version: 4.8.7
+Commit: unknown (NeuroDebian build from source)
 Commit Date: unknown
-Compiled with OpenMP: YES
-Compiler: c++ (/usr/lib/ccache)
-Compiler Version: 8.3.0
+Compiler: x86_64-linux-gnu-g++ (/usr/bin)
+Compiler Version: 4.9.3
 Compiled Debug: NO
 Operating System: Linux
 ]]></Value>
       </MD>
       <MD>
          <Name><![CDATA[Provenance]]></Name>
-         <Value><![CDATA[wb_command -label-resample ../data/parcellation/tpl-fsaverage_hemi-R_den-164k_desc-economo_parcellation.label.gii /home/a.saberi/laminar_gradients/tools/BigBrainWarp/xfms/tpl-bigbrain_hemi-R_desc-sphere_rsled_like_fsaverage.reg.surf.gii /home/a.saberi/laminar_gradients/tools/BigBrainWarp/xfms/tpl-bigbrain_hemi-R_desc-sphere_rot_fsaverage.surf.gii BARYCENTRIC ../data/parcellation/tpl-bigbrain_hemi-R_desc-economo_parcellation.label.gii]]></Value>
+         <Value><![CDATA[wb_command -label-resample ../data/parcellation/tpl-fsaverage_hemi-R_den-164k_desc-economo_parcellation.label.gii /BigBrainWarp/xfms/tpl-bigbrain_hemi-R_desc-sphere_rsled_like_fsaverage.reg.surf.gii /BigBrainWarp/xfms/tpl-bigbrain_hemi-R_desc-sphere_rot_fsaverage.surf.gii BARYCENTRIC ../data/parcellation/tpl-bigbrain_hemi-R_desc-economo_parcellation.label.gii]]></Value>
       </MD>
       <MD>
          <Name><![CDATA[WorkingDirectory]]></Name>
-         <Value><![CDATA[/home/a.saberi/laminar_gradients/src]]></Value>
+         <Value><![CDATA[/home/asaberi/laminar_gradients/src]]></Value>
       </MD>
    </MetaData>
    <LabelTable>
