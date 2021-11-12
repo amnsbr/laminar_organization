@@ -1,7 +1,7 @@
 # The environment
 universe              = vanilla
 getenv                = True
-request_cpus          = 2
+request_cpus          = 1
 request_memory        = 8G
 
 # Execution

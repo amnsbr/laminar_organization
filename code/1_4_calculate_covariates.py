@@ -1,13 +1,10 @@
-print("Imports started")
 import os
 import numpy as np
 import nilearn.surface
-import cortex.polyutils
+from cortex.polyutils import Surface
 import subprocess
-import nibabel as nib
-from scipy import spatial
-print("Imports completed")
-
+import nibabel.load, nibabel.freesurfer.io
+import scipy.spatial.distance
 
 #> specify the data dir
 abspath = os.path.abspath(__file__)
@@ -35,7 +32,7 @@ def create_curvature_surf_map():
                 f'tpl-bigbrain_hemi-{hem}_desc-mid.surf.gii'
                 )
         )
-        surface = cortex.polyutils.Surface(vertices, faces)
+        surface = Surface(vertices, faces)
         curvature = surface.mean_curvature()
         np.save(curvature_filepath, curvature)
         print(f"Curvature save in {curvature_filepath}")
@@ -50,7 +47,7 @@ def label2annot(label_path, outfile=None):
 	outfile: (str) path to the output .annot file [Default: same as label_path with .annot ext]
 	"""
 	#> read labels (the map of parcel ids at each vertex)
-	labels = nib.load(label_path).darrays[0].data
+	labels = nibabel.load(label_path).darrays[0].data
 	n_labels = np.unique(labels).shape[0]
 	#> create a pseudo color table (n_labels, 5) => [r, g, b, t, parcel_id] 
 	pseudo_ctab = np.zeros((n_labels, 5))
@@ -61,7 +58,7 @@ def label2annot(label_path, outfile=None):
 	#> write the .annot file
 	if not outfile:
 		outfile = label_path.replace('.label.gii', '.annot')
-	nib.freesurfer.io.write_annot(outfile, labels, pseudo_ctab, pseudo_names)
+	nibabel.freesurfer.io.write_annot(outfile, labels, pseudo_ctab, pseudo_names)
 
 def create_pairwise_geodesic_distance_matrix(parcellation_name):
     """
@@ -107,11 +104,11 @@ def create_pairwise_geodesic_distance_matrix(parcellation_name):
         label2annot(rh_annot.replace('.annot', '.label.gii'))
 
     # Load surface
-    lh = nib.load(lh_surf)
+    lh = nibabel.load(lh_surf)
     vertices_lh = lh.agg_data('NIFTI_INTENT_POINTSET')
     faces_lh = lh.agg_data('NIFTI_INTENT_TRIANGLE')
 
-    rh = nib.load(rh_surf)
+    rh = nibabel.load(rh_surf)
     vertices_rh = rh.agg_data('NIFTI_INTENT_POINTSET')
     faces_rh = rh.agg_data('NIFTI_INTENT_TRIANGLE') + len(vertices_lh)
 
@@ -120,8 +117,8 @@ def create_pairwise_geodesic_distance_matrix(parcellation_name):
 
 
     # Read annotation & join hemispheres
-    [labels_lh, ctab_lh, names_lh] = nib.freesurfer.io.read_annot(lh_annot, orig_ids=True)
-    [labels_rh, ctab_rh, names_rh] = nib.freesurfer.io.read_annot(rh_annot, orig_ids=True)
+    [labels_lh, ctab_lh, names_lh] = nibabel.freesurfer.io.read_annot(lh_annot, orig_ids=True)
+    [labels_rh, ctab_rh, names_rh] = nibabel.freesurfer.io.read_annot(rh_annot, orig_ids=True)
     nativeLength = len(labels_lh)+len(labels_rh)
     parc = np.zeros((nativeLength))
     for (x, _) in enumerate(labels_lh):
@@ -137,8 +134,8 @@ def create_pairwise_geodesic_distance_matrix(parcellation_name):
     print("[ INFO ]..... Finings centre vertex for each parcel")
     for (n, _) in enumerate(uparcel):
         this_parc = np.where(parc == uparcel[n])[0]
-        distances = spatial.distance.pdist(np.squeeze(vertices[this_parc,:]), 'euclidean') # Returns condensed matrix of distances
-        distancesSq = spatial.distance.squareform(distances) # convert to square form
+        distances = scipy.spatial.distance.pdist(np.squeeze(vertices[this_parc,:]), 'euclidean') # Returns condensed matrix of distances
+        distancesSq = scipy.spatial.distance.squareform(distances) # convert to square form
         sumDist = np.sum(distancesSq, axis = 1) # sum distance across columns
         index = np.where(sumDist == np.min(sumDist)) # minimum sum distance index
         voi[0, n] = this_parc[index[0][0]]
@@ -159,7 +156,7 @@ def create_pairwise_geodesic_distance_matrix(parcellation_name):
         subprocess.run(cmdStr.split())
 
         tmpname = outPath + '_this_voi.func.gii'
-        tmp = nib.load(tmpname).agg_data()
+        tmp = nibabel.load(tmpname).agg_data()
         os.remove(tmpname)
         parcGD = np.empty((1, len(np.unique(labels_lh))))
         for n in range(len(np.unique(labels_lh))):
@@ -181,7 +178,7 @@ def create_pairwise_geodesic_distance_matrix(parcellation_name):
         subprocess.run(cmdStr.split())
 
         tmpname = outPath + '_this_voi.func.gii'
-        tmp = nib.load(tmpname).agg_data()
+        tmp = nibabel.load(tmpname).agg_data()
         os.remove(tmpname)
         parcGD = np.empty((1, len(np.unique(labels_rh))))
         for n in range(len(np.unique(labels_rh))):

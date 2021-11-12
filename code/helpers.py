@@ -2,6 +2,7 @@ import urllib.request
 import shutil
 from urllib.parse import urlparse
 import os
+from ftplib import FTP
 import numpy as np
 import matplotlib.pyplot as plt
 import brainspace.mesh, brainspace.plotting
@@ -14,23 +15,50 @@ cwd = os.path.dirname(abspath)
 DATA_DIR = os.path.join(cwd, '..', 'data')
 
 
-def download(url, file_name=None, copy_to=None):
+def download(url, file_name=None, copy_to=None, overwrite=False):
 	"""
 	Download the file from `url` and save it locally under `file_name`.
 	Also creates a copy in 'copy_to'
 	"""
 	if not file_name:
 		file_name = os.path.basename(urlparse(url).path)
-	print(file_name, end=' ')
-	if not os.path.exists(file_name):
+	print('Downloading', file_name, end=' ')
+	if (os.path.exists(file_name) and not overwrite):
+		print(">> already exists")
+	else:
 		with urllib.request.urlopen(url) as response, open(file_name, 'wb') as out_file:
 			shutil.copyfileobj(response, out_file)
-		print("")
-	else:
-		print("already exists")
+		print(">> done")
+		
 	if copy_to:
 		if not os.path.exists(copy_to):
 			shutil.copyfile(file_name, copy_to)
+
+def download_bigbrain_ftp(ftp_dir, ftp_filename, out_filename=None, copy_to=None):
+	"""
+	Downloads a file from bigbrain ftp
+	"""
+	#> Connect
+	ftp = FTP('bigbrain.loris.ca')
+	ftp.login()
+	#> Go to dir
+	ftp.cwd(ftp_dir)
+	#> Determine filename
+	if not out_filename:
+		out_filename = ftp_filename
+	print('Downloading', out_filename, end=' ')
+	#> Download
+	if not os.path.exists(out_filename):
+		with open(out_filename, 'wb') as file_obj:
+			ftp.retrbinary(f'RETR {ftp_filename}', file_obj.write)
+		print(">> done")
+	else:
+		print(">> already exists")
+	#> Copy to another folder if needed
+	if copy_to:
+		if not os.path.exists(copy_to):
+			shutil.copyfile(file_name, copy_to)
+
 
 ###### Plotting ######
 def plot_on_bigbrain_brainspace(surface_data_files, outfile=None):
