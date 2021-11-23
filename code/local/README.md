@@ -1,0 +1,1 @@
+Codes that cannot be a part of automated pipeline, either because they require a manual input, or because it is very difficult to reproduce their required environment. The outputs of these scripts can be found in PROJECT_HOME/src_local.
