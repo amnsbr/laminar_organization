@@ -16,7 +16,8 @@ os.makedirs(os.path.join(DATA_DIR, 'matrix'), exist_ok=True)
 
 #> laminar similarity matrix class
 class LaminarSimilarityMatrix:
-    def __init__(self, normalize=True, exc_masks=None, parcellation_name='sjh',
+    def __init__(self, input_type='thickness', normalize_by_total_thickness=True, 
+                 exc_masks=None,  parcellation_name='sjh', 
                  averaging_method='median', similarity_method='partial_corr', 
                  plot=False, filename=None):
         """
@@ -24,8 +25,12 @@ class LaminarSimilarityMatrix:
 
         Parameters
         ---------
+        input_type: (str) Type of input laminar data
+            - 'thickness' (default)
+            - 'density'
+            - 'thickness_density'
         normalize: (bool) Normalize by total thickness. Default: True
-        exc_masks: (dict of str) Path to the surface masks of vertices that should be excluded (L and R)
+        exc_masks: (dict of str) Path to the surface masks of vertices that should be excluded (L and R) (format: .npy)
         parcellation_name: (str) Parcellation scheme
             - 'sjh'
         averaging_method: (str) Method of averaging over vertices within a parcel. 
@@ -38,11 +43,25 @@ class LaminarSimilarityMatrix:
         plot: (bool) Plot the similarity matrix. Default: False
         filenmae: (str) Output path to the figure of matrix heatmap
         """
-        self.normalize = normalize
+        print(f"""
+        Creating similarity matrix:
+            - input_type: {input_type},
+            - parcellation_name: {parcellation_name},
+            - exc_mask (L): {exc_masks['L']}
+        """)
+        #> save parameters as class fields
+        self.input_type = input_type
+        self.normalize_by_total_thickness = normalize_by_total_thickness
         self.exc_masks = exc_masks
         self.parcellation_name = parcellation_name
         self.averaging_method = averaging_method
         self.similarity_method = similarity_method
+        #> get the number of vertices in each hemisphere
+        self.n_hem_vertices = np.loadtxt(
+            os.path.join(
+                DATA_DIR, 'surface',
+                'tpl-bigbrain_hemi-L_desc-layer1_thickness.txt'
+                )).size
 
         self.create()
         self.plot()
@@ -53,13 +72,25 @@ class LaminarSimilarityMatrix:
         """
         Creates laminar thickness similarity matrix
         """
-        print("Reading laminar thickness files")
-        self.laminar_thickness = self.read_laminar_thickness()
+        print("Reading laminar input files")
+        #> Reading laminar thickness and/or density
+        if 'thickness' in self.input_type:
+            self.laminar_thickness = self.read_laminar_thickness()
+        if 'density' in self.input_type:
+            self.laminar_density = self.read_laminar_density()
+        #> Create the similarity matrix
         if self.similarity_method != 'KL':
+            #> Parcellate the data
             print("Parcellating the data")
-            self.parcellated_laminar_thickness = self.parcellate()
+            if 'thickness' in self.input_type:
+                self.parcellated_laminar_thickness = self.parcellate(self.laminar_thickness)
+            if 'density' in self.input_type:
+                self.parcellated_laminar_density = self.parcellate(self.laminar_density)
+            #> Calculate parcel-wise full or partial correlation
             print(f"Creating similarity matrix by {self.similarity_method}")
             self.matrix = self.create_by_corr()
+        else: #TODO: KL-divergence
+            raise NotImplementedError
 
     def read_laminar_thickness(self):
         """
@@ -71,14 +102,10 @@ class LaminarSimilarityMatrix:
         laminar_thickness: (dict of np.ndarray) 6 x n_vertices for laminar thickness of L and R hemispheres
         """
         #> get the number of vertices
-        n_vertices = np.loadtxt(os.path.join(
-            DATA_DIR, 'surface',
-            'tpl-bigbrain_hemi-L_desc-layer1_thickness.txt'
-            )).size
         laminar_thickness = {}
         for hem in ['L', 'R']:
             #> read the laminar thickness data from bigbrainwrap .txt files
-            laminar_thickness[hem] = np.empty((6, n_vertices))
+            laminar_thickness[hem] = np.empty((6, self.n_hem_vertices))
             for layer_num in range(1, 7):
                 laminar_thickness[hem][layer_num-1, :] = np.loadtxt(
                     os.path.join(
@@ -94,16 +121,59 @@ class LaminarSimilarityMatrix:
                 laminar_thickness[hem][:, exc_mask_map] = np.NaN
         return laminar_thickness
 
-    def parcellate(self):
+    def read_laminar_density(self, method='mean'):
         """
-        Parcellates laminar thickness data using `parcellation` and by taking the
+        Reads laminar density data from 'src' folder, takes the average of sample densities
+        for each layer, and after masking out `exc_mask` returns 6-d average laminar density 
+        arrays for left and right hemispheres
+
+        Parameters
+        ----------
+        method: (str)
+            - mean
+            - median
+
+        Retruns
+        --------
+        laminar_density: (dict of np.ndarray) 6 x n_vertices for laminar density of L and R hemispheres
+        """
+        laminar_density = {}
+        for hem in ['L', 'R']:
+            #> read the laminar thickness data from bigbrainwrap .txt files
+            laminar_density[hem] = np.empty((6, self.n_hem_vertices))
+            for layer_num in range(1, 7):
+                profiles = np.load(
+                    os.path.join(
+                        DATA_DIR, 'surface',
+                        f'density_profile_hemi-{hem}_layer-{layer_num}_nsurf-10.npz'
+                        ))['profiles']
+                if method == 'mean':
+                    laminar_density[hem][layer_num-1, :] = profiles.mean(axis=0)
+                elif method == 'median':
+                    laminar_density[hem][layer_num-1, :] = np.median(profiles, axis=0)
+            #> remove the exc_mask
+            if self.exc_masks:
+                exc_mask_map = np.load(os.path.join(
+                    DATA_DIR, 'surface',
+                    self.exc_masks[hem]
+                    ))
+                laminar_density[hem][:, exc_mask_map] = np.NaN
+        return laminar_density
+
+    def parcellate(self, surface_data):
+        """
+        Parcellates `surface data` using `parcellation` and by taking the
         median or mean (specified via `averaging_method`) of the vertices within each parcel.
+
+        Parameters
+        ----------
+        surface_data: (dict of np.ndarray) p x n_vertices surface data of L and R hemispheres
 
         Returns
         ---------
-        parcellated_laminar_thickness: (dict of pd.DataFrame) n_parcels x 6 for laminar thickness of L and R hemispheres
+        parcellated_data: (dict of pd.DataFrame) n_parcels x 6 for laminar data of L and R hemispheres
         """
-        parcellated_laminar_thickness = {}
+        parcellated_data = {}
         for hem in ['L', 'R']:
             parcellation_map = nilearn.surface.load_surf_data(
                 os.path.join(
@@ -111,16 +181,44 @@ class LaminarSimilarityMatrix:
                     f'tpl-bigbrain_hemi-{hem}_desc-{self.parcellation_name}_parcellation.label.gii')
                 )
             parellated_vertices = (
-                pd.DataFrame(self.laminar_thickness[hem].T, index=parcellation_map)
+                pd.DataFrame(surface_data[hem].T, index=parcellation_map)
                 .reset_index()
                 .groupby('index')
             )
             if self.averaging_method == 'median':
-                parcellated_laminar_thickness[hem] = parellated_vertices.median()
+                parcellated_data[hem] = parellated_vertices.median()
             elif self.averaging_method == 'mean':
-                parcellated_laminar_thickness[hem] = parellated_vertices.mean()
+                parcellated_data[hem] = parellated_vertices.mean()
             
-        return parcellated_laminar_thickness
+        return parcellated_data
+
+    def concat_hemispheres(self, parcellated_data, dropna=True):
+        """
+        Concatenates the parcellated data of L and R hemispheres
+
+        Parameters
+        ----------
+        parcellated_data: (dict of pd.DataFrame) n_parcels x 6 for laminar data of L and R hemispheres
+
+        Returns
+        ----------
+        concat_data: (pd.DataFrame) n_parcels*2 x 6
+        """
+        parcellated_data_copy = parcellated_data.copy()
+        self.parcellated_data_copy['R'].index = \
+            self.parcellated_data_copy['L'].index[-1] \
+            + 1 \
+            + self.parcellated_data_copy['R'].index
+        concat_data = pd.concat(
+            [
+                self.parcellated_data_copy['L'], 
+                self.parcellated_data_copy['R']
+            ],
+            axis=0)
+        if dropna:
+            concat_data = concat_data.dropna()
+        return concat_data
+
 
     def create_by_corr(self):
         """
@@ -137,31 +235,40 @@ class LaminarSimilarityMatrix:
         matrix: (np.ndarray) n_parcels x n_parcels: how similar are each pair of parcels in their
                 laminar thickness pattern
         """
-        #> normalize by total thickness if needed
-        if self.normalize:
+        #> normalize by total thickness if needed [TODO: also by total density?]
+        if (self.input_type in ['thickness', 'both']) and self.normalize_by_total_thickness:
             for hem in ['L', 'R']:
                 self.parcellated_laminar_thickness[hem] =\
                     self.parcellated_laminar_thickness[hem].divide(
                         self.parcellated_laminar_thickness[hem].sum(axis=1), axis=0
                         )
         #> concatenate left and right hemispheres
-        self.parcellated_laminar_thickness['R'].index = \
-            self.parcellated_laminar_thickness['L'].index[-1] \
-            + 1 \
-            + self.parcellated_laminar_thickness['R'].index
-        concat_parcellated_laminar_thickness = pd.concat(
-            [
-                self.parcellated_laminar_thickness['L'], 
-                self.parcellated_laminar_thickness['R']
-            ], 
-            axis=0).dropna()
+        if 'thickness' in self.input_type:
+            concat_parcellated_laminar_thickness = self.concat_hemispheres(self.parcellated_laminar_thickness)
+        if 'density' in self.input_type:
+            concat_parcellated_laminar_density = self.concat_hemispheres(self.parcellated_laminar_density)
+        #> concatenate thickness and density along second axis if both are being used
+        #  otherwise let concat_parcellated_laminar_data be either thickness or density
+        #  based on input_type
+        if self.input_type == 'thickness_density':
+            concat_parcellated_laminar_data = pd.concat(
+                [
+                    concat_parcellated_laminar_thickness,
+                    concat_parcellated_laminar_density
+                ],
+                axis=1)
+            )
+        elif self.input_type == 'thickness':
+            concat_parcellated_laminar_data = concat_parcellated_laminar_thickness
+        elif self.input_type == 'density':
+            concat_parcellated_laminar_data = concat_parcellated_laminar_density
         #> create similarity matrix
         if self.similarity_method == 'partial_corr':
             #> calculate partial correlation
-            r_ij = np.corrcoef(concat_parcellated_laminar_thickness)
-            mean_laminar_thickness = concat_parcellated_laminar_thickness.mean()
-            r_ic = concat_parcellated_laminar_thickness\
-                        .corrwith(mean_laminar_thickness, 
+            r_ij = np.corrcoef(concat_parcellated_laminar_data)
+            mean_laminar_data = concat_parcellated_laminar_data.mean()
+            r_ic = concat_parcellated_laminar_data\
+                        .corrwith(mean_laminar_data, 
                         axis=1) # r_ic and r_jc are the same
             r_icjc = np.outer(r_ic, r_ic) # the second r_ic is actually r_jc
             matrix = (r_ij - r_icjc) / np.sqrt(np.outer((1-r_ic**2),(1-r_ic**2)))
@@ -174,13 +281,13 @@ class LaminarSimilarityMatrix:
             #> zero out NaNs and inf
             matrix[np.isnan(matrix) | np.isinf(matrix)] = 0
         elif self.similarity_method == 'pearson':
-            matrix = np.corrcoef(concat_parcellated_laminar_thickness)
+            matrix = np.corrcoef(concat_parcellated_laminar_data)
             #> zero out negative values
             matrix[matrix < 0] = 0
         return matrix
     
     def get_path(self):
-        outfilename = f'matrix_{self.similarity_method}_{self.parcellation_name}_parcellation_{self.averaging_method}'
+        outfilename = f'matrix_{self.input_type}_{self.similarity_method}_{self.parcellation_name}_parcellation_{self.averaging_method}'
         if self.normalize:
             outfilename += '_normalized'
         if self.exc_masks: #TODO specify the name of excmask
@@ -254,12 +361,7 @@ class LaminarSimilarityGradients:
         #> project the gradient values on the surface
         #> add back the masked out parcels and set their gradient values as NaN
         #  (there should be easier solutions but this was a simple method to do it in one line)
-        concat_parcellated_laminar_thickness = pd.concat(
-            [
-                self.matrix_obj.parcellated_laminar_thickness['L'], 
-                self.matrix_obj.parcellated_laminar_thickness['R']
-            ], 
-            axis=0)
+        concat_parcellated_laminar_thickness = self.matrix_obj.concat_hemispheres(self.matrix_obj.parcellated_laminar_thickness, dropna=False)
         gradients_df = pd.concat(
             [
                 pd.DataFrame(
@@ -314,6 +416,20 @@ class LaminarSimilarityGradients:
             + f'_gapproach_{self.gm.approach}'\
             + f'_gkernel_{self.gm.kernel}'
 
-matrix = LaminarSimilarityMatrix()
-gradients = LaminarSimilarityGradients(matrix)
-
+#> Create several gradients with different options
+adysgranular_masks = {
+    'L': os.path.join(
+        DATA_DIR, 'surface',
+        'tpl-bigbrain_hemi-L_desc-adysgranular_mask_parcellation-sjh_thresh_0.1.npy'
+    )
+    'R': os.path.join(
+        DATA_DIR, 'surface',
+        'tpl-bigbrain_hemi-R_desc-adysgranular_mask_parcellation-sjh_thresh_0.1.npy'
+    )
+}
+for input_type in ['thickness', 'thickness_density', 'density']:
+    for parcellation_name in ['sjh']:
+        for exc_masks in [None, adysgranular_masks]:
+            matrix = LaminarSimilarityMatrix(input_type=input_type, parcellation_name=parcellation_name,
+                                             exc_masks=adysgranular_masks)
+            gradients = LaminarSimilarityGradients(matrix)

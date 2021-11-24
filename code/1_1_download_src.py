@@ -21,6 +21,8 @@ os.makedirs(DATA_DIR, exist_ok=True)
 for subfolder in ['parcellation', 'parcellated_surface', 'surface', 'gradient', 'matrix']:
 	os.makedirs(os.path.join(DATA_DIR, subfolder), exist_ok=True)
 
+#TODO: Make all file names BIDS-like
+
 #> Download external sources
 # Bigbrain volume (Warning: 1.4 GB)
 helpers.download('https://ftp.bigbrainproject.org/bigbrain-ftp/BigBrainRelease.2015/3D_Volumes/Histological_Space/mnc/full16_100um_optbal.mnc')
@@ -60,5 +62,12 @@ for hem in ['L', 'R']:
 			else:
 				break
 
-#> Copy local sources to src
+#> Copy local sources to src (and data for some of them)
+print("Copying local sources")
 copy_tree(os.path.join(SRC_DIR, '..', 'src_local'), SRC_DIR)
+for hem in ['left', 'right']:
+	for layer_num in range(1, 7):
+		shutil.copyfile(
+			os.path.join(SRC_DIR, f'density_profile_hemi-{hem}_layer-{layer_num}_nsurf-10.npz'),
+			os.path.join(DATA_DIR,'surface', f'density_profile_hemi-{hem}_layer-{layer_num}_nsurf-10.npz')
+		)
