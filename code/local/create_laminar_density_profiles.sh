@@ -28,7 +28,7 @@ for hem in 'left' 'right'; do
             --upper_surf "${SRC_PATH}/layer${above_num}_${hem}_327680.obj" \
             --lower_surf "${SRC_PATH}/layer${num}_${hem}_327680.obj" \
             --num_surf 10 \
-            --wd "${SRC_PATH}/density_profiles/${hem}-layer${num}"
-        cp "${SRC_PATH}/density_profiles/${hem}-layer${num}/profiles.txt" "${SRC_LOCAL_PATH}/density_profile_hemi-${hem}_layer-${num}_nsurf-10.txt"
+            --wd "${SRC_PATH}/density_profiles/${hem}-layer${num}/"
+        cp "${SRC_PATH}/density_profiles/${hem}-layer${num}/profiles.npz" "${SRC_LOCAL_PATH}/density_profile_hemi-${hem}_layer-${num}_nsurf-10.npz"
     done
 done
