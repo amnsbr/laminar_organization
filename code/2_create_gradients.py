@@ -13,6 +13,18 @@ cwd = os.path.dirname(abspath)
 DATA_DIR = os.path.join(cwd, '..', 'data')
 os.makedirs(os.path.join(DATA_DIR, 'gradient'), exist_ok=True)
 os.makedirs(os.path.join(DATA_DIR, 'matrix'), exist_ok=True)
+#> specify the path to adysgranular masks
+adysgranular_masks = {
+    'L': os.path.join(
+        DATA_DIR, 'surface',
+        'tpl-bigbrain_hemi-L_desc-adysgranular_mask_parcellation-sjh_thresh_0.1.npy'
+    ),
+    'R': os.path.join(
+        DATA_DIR, 'surface',
+        'tpl-bigbrain_hemi-R_desc-adysgranular_mask_parcellation-sjh_thresh_0.1.npy'
+    )
+}
+
 
 #> laminar similarity matrix class
 class LaminarSimilarityMatrix:
@@ -47,7 +59,7 @@ class LaminarSimilarityMatrix:
         Creating similarity matrix:
             - input_type: {input_type},
             - parcellation_name: {parcellation_name},
-            - exc_mask (L): {exc_masks['L']}
+            - exc_mask: {True if exc_masks else False}
         """)
         #> save parameters as class fields
         self.input_type = input_type
@@ -145,7 +157,7 @@ class LaminarSimilarityMatrix:
                 profiles = np.load(
                     os.path.join(
                         DATA_DIR, 'surface',
-                        f'density_profile_hemi-{hem}_layer-{layer_num}_nsurf-10.npz'
+                        f'tpl-bigbrain_hemi-{hem[0].upper()}_desc-layer-{layer_num}_profiles_nsurf-10.npz'
                         ))['profiles']
                 if method == 'mean':
                     laminar_density[hem][layer_num-1, :] = profiles.mean(axis=0)
@@ -204,15 +216,22 @@ class LaminarSimilarityMatrix:
         ----------
         concat_data: (pd.DataFrame) n_parcels*2 x 6
         """
-        parcellated_data_copy = parcellated_data.copy()
-        self.parcellated_data_copy['R'].index = \
-            self.parcellated_data_copy['L'].index[-1] \
+        #> create a deep copy of R data since its index is going
+        #  to be (temporarily) altered
+        parcellated_data_copy = {
+            'L': parcellated_data['L'],
+            'R': parcellated_data['R'].copy(deep=True)
+        }
+        #> make R index continuous to L index
+        parcellated_data_copy['R'].index = \
+            parcellated_data_copy['L'].index[-1] \
             + 1 \
-            + self.parcellated_data_copy['R'].index
+            + parcellated_data_copy['R'].index
+        #> concatenate hemispheres and drop NaN if needed
         concat_data = pd.concat(
             [
-                self.parcellated_data_copy['L'], 
-                self.parcellated_data_copy['R']
+                parcellated_data_copy['L'], 
+                parcellated_data_copy['R']
             ],
             axis=0)
         if dropna:
@@ -250,6 +269,7 @@ class LaminarSimilarityMatrix:
         #> concatenate thickness and density along second axis if both are being used
         #  otherwise let concat_parcellated_laminar_data be either thickness or density
         #  based on input_type
+        #  TODO: make sure this is the best way of considering both thickness and density
         if self.input_type == 'thickness_density':
             concat_parcellated_laminar_data = pd.concat(
                 [
@@ -257,7 +277,6 @@ class LaminarSimilarityMatrix:
                     concat_parcellated_laminar_density
                 ],
                 axis=1)
-            )
         elif self.input_type == 'thickness':
             concat_parcellated_laminar_data = concat_parcellated_laminar_thickness
         elif self.input_type == 'density':
@@ -288,7 +307,7 @@ class LaminarSimilarityMatrix:
     
     def get_path(self):
         outfilename = f'matrix_{self.input_type}_{self.similarity_method}_{self.parcellation_name}_parcellation_{self.averaging_method}'
-        if self.normalize:
+        if self.normalize_by_total_thickness:
             outfilename += '_normalized'
         if self.exc_masks: #TODO specify the name of excmask
             outfilename += '_excmask'
@@ -361,16 +380,23 @@ class LaminarSimilarityGradients:
         #> project the gradient values on the surface
         #> add back the masked out parcels and set their gradient values as NaN
         #  (there should be easier solutions but this was a simple method to do it in one line)
-        concat_parcellated_laminar_thickness = self.matrix_obj.concat_hemispheres(self.matrix_obj.parcellated_laminar_thickness, dropna=False)
+        # TODO: make this more readable/understandable
+        #>> load parcellated laminar data (we only need the index for valid non-NaN parcels)
+        if 'thickness' in self.matrix_obj.input_type:
+            concat_parcellated_laminar_data = self.matrix_obj.concat_hemispheres(self.matrix_obj.parcellated_laminar_thickness, dropna=False)
+        else:
+            concat_parcellated_laminar_data = self.matrix_obj.concat_hemispheres(self.matrix_obj.parcellated_laminar_density, dropna=False)
+        #>> create a gradients dataframe including all parcels, where invalid parcels are NaN
+        #   (this is necessary to be able to project it to the parcellation)
         gradients_df = pd.concat(
             [
                 pd.DataFrame(
                     self.gm.gradients_, 
-                    index=concat_parcellated_laminar_thickness.dropna().index
+                    index=concat_parcellated_laminar_data.dropna().index # valid parcels
                     ),
-                concat_parcellated_laminar_thickness.index.to_series()
+                concat_parcellated_laminar_data.index.to_series() # all parcels
             ], axis=1).drop(columns=['index'])
-        #> get the map of gradients by indexing at sjh_parcellation labels
+        #> get the map of gradients by indexing at parcellation labels
         gradient_maps = gradients_df.loc[concat_parcellation_map].values # shape: vertex X gradient
         return gradient_maps
 
@@ -417,19 +443,10 @@ class LaminarSimilarityGradients:
             + f'_gkernel_{self.gm.kernel}'
 
 #> Create several gradients with different options
-adysgranular_masks = {
-    'L': os.path.join(
-        DATA_DIR, 'surface',
-        'tpl-bigbrain_hemi-L_desc-adysgranular_mask_parcellation-sjh_thresh_0.1.npy'
-    )
-    'R': os.path.join(
-        DATA_DIR, 'surface',
-        'tpl-bigbrain_hemi-R_desc-adysgranular_mask_parcellation-sjh_thresh_0.1.npy'
-    )
-}
-for input_type in ['thickness', 'thickness_density', 'density']:
+#  The first loop is the main analysis and the rest are done for assessing robustness
+for input_type in ['thickness_density', 'thickness', 'density']:
     for parcellation_name in ['sjh']:
-        for exc_masks in [None, adysgranular_masks]:
+        for exc_masks in [adysgranular_masks, None]:
             matrix = LaminarSimilarityMatrix(input_type=input_type, parcellation_name=parcellation_name,
-                                             exc_masks=adysgranular_masks)
+                                             exc_masks=exc_masks)
             gradients = LaminarSimilarityGradients(matrix)

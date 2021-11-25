@@ -69,5 +69,5 @@ for hem in ['left', 'right']:
 	for layer_num in range(1, 7):
 		shutil.copyfile(
 			os.path.join(SRC_DIR, f'density_profile_hemi-{hem}_layer-{layer_num}_nsurf-10.npz'),
-			os.path.join(DATA_DIR,'surface', f'density_profile_hemi-{hem}_layer-{layer_num}_nsurf-10.npz')
+			os.path.join(DATA_DIR,'surface', f'tpl-bigbrain_hemi-{hem[0].upper()}_desc-layer-{layer_num}_profiles_nsurf-10.npz')
 		)
