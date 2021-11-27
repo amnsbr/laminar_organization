@@ -2,6 +2,7 @@ import os
 from argparse import ArgumentParser
 import pandas as pd
 import numpy as np
+import scipy.stats
 import matplotlib.pyplot as plt
 from seaborn import heatmap, scatterplot, lineplot
 import nilearn.surface
@@ -40,7 +41,6 @@ class LaminarSimilarityMatrix:
         input_type: (str) Type of input laminar data
             - 'thickness' (default)
             - 'density'
-            - 'thickness_density'
         normalize: (bool) Normalize by total thickness. Default: True
         exc_masks: (dict of str) Path to the surface masks of vertices that should be excluded (L and R) (format: .npy)
         parcellation_name: (str) Parcellation scheme
@@ -85,19 +85,16 @@ class LaminarSimilarityMatrix:
         Creates laminar thickness similarity matrix
         """
         print("Reading laminar input files")
-        #> Reading laminar thickness and/or density
-        if 'thickness' in self.input_type:
-            self.laminar_thickness = self.read_laminar_thickness()
-        if 'density' in self.input_type:
-            self.laminar_density = self.read_laminar_density()
+        #> Reading laminar thickness or density
+        if self.input_type == 'thickness':
+            self.laminar_data = self.read_laminar_thickness()
+        elif self.input_type == 'density':
+            self.laminar_data = self.read_laminar_density()
         #> Create the similarity matrix
         if self.similarity_method != 'KL':
             #> Parcellate the data
             print("Parcellating the data")
-            if 'thickness' in self.input_type:
-                self.parcellated_laminar_thickness = self.parcellate(self.laminar_thickness)
-            if 'density' in self.input_type:
-                self.parcellated_laminar_density = self.parcellate(self.laminar_density)
+            self.parcellated_laminar_data = self.parcellate(self.laminar_data)
             #> Calculate parcel-wise full or partial correlation
             print(f"Creating similarity matrix by {self.similarity_method}")
             self.matrix = self.create_by_corr()
@@ -255,32 +252,14 @@ class LaminarSimilarityMatrix:
                 laminar thickness pattern
         """
         #> normalize by total thickness if needed [TODO: also by total density?]
-        if (self.input_type in ['thickness', 'both']) and self.normalize_by_total_thickness:
+        if (self.input_type == ['thickness']) and self.normalize_by_total_thickness:
             for hem in ['L', 'R']:
-                self.parcellated_laminar_thickness[hem] =\
-                    self.parcellated_laminar_thickness[hem].divide(
-                        self.parcellated_laminar_thickness[hem].sum(axis=1), axis=0
+                self.parcellated_laminar_data[hem] =\
+                    self.parcellated_laminar_data[hem].divide(
+                        self.parcellated_laminar_data[hem].sum(axis=1), axis=0
                         )
         #> concatenate left and right hemispheres
-        if 'thickness' in self.input_type:
-            concat_parcellated_laminar_thickness = self.concat_hemispheres(self.parcellated_laminar_thickness)
-        if 'density' in self.input_type:
-            concat_parcellated_laminar_density = self.concat_hemispheres(self.parcellated_laminar_density)
-        #> concatenate thickness and density along second axis if both are being used
-        #  otherwise let concat_parcellated_laminar_data be either thickness or density
-        #  based on input_type
-        #  TODO: make sure this is the best way of considering both thickness and density
-        if self.input_type == 'thickness_density':
-            concat_parcellated_laminar_data = pd.concat(
-                [
-                    concat_parcellated_laminar_thickness,
-                    concat_parcellated_laminar_density
-                ],
-                axis=1)
-        elif self.input_type == 'thickness':
-            concat_parcellated_laminar_data = concat_parcellated_laminar_thickness
-        elif self.input_type == 'density':
-            concat_parcellated_laminar_data = concat_parcellated_laminar_density
+        concat_parcellated_laminar_data = self.concat_hemispheres(self.parcellated_laminar_data, dropna=True)
         #> create similarity matrix
         if self.similarity_method == 'partial_corr':
             #> calculate partial correlation
@@ -303,10 +282,16 @@ class LaminarSimilarityMatrix:
             matrix = np.corrcoef(concat_parcellated_laminar_data)
             #> zero out negative values
             matrix[matrix < 0] = 0
+            #> zero out correlations of 1 (to avoid division by 0)
+            matrix[matrix==1] = 0
+            #> Fisher's z-transformation
+            matrix = 0.5 * np.log((1 + matrix) /  (1 - matrix))
+            #> zero out NaNs and inf
+            matrix[np.isnan(matrix) | np.isinf(matrix)] = 0
         return matrix
     
     def get_path(self):
-        outfilename = f'matrix_{self.input_type}_{self.similarity_method}_{self.parcellation_name}_parcellation_{self.averaging_method}'
+        outfilename = f'matrix_input-{self.input_type}_simmethod-{self.similarity_method}_parc-{self.parcellation_name}_avgmethod-{self.averaging_method}'
         if self.normalize_by_total_thickness:
             outfilename += '_normalized'
         if self.exc_masks: #TODO specify the name of excmask
@@ -340,26 +325,92 @@ class LaminarSimilarityMatrix:
 
 #> laminar similarity gradients class
 class LaminarSimilarityGradients:
-    """
-    Initializes laminar similarity gradients based on LaminarSimilarityMatrix object
-    and the gradients fitting parameters
-    """
-    def __init__(self, matrix_obj, n_components=10, approach='dm',
-                 kernel='normalized_angle', sparsity=0.9):
-        self.matrix_obj = matrix_obj
+    def __init__(self, matrix_objs, do_rank_normalization=True, 
+                 n_components=10, approach='dm',
+                 kernel='normalized_angle', sparsity=0.9,):
+        """
+        Initializes laminar similarity gradients based on LaminarSimilarityMatrix objects
+        and the gradients fitting parameters
+
+        Parameters
+        ---------
+        matrix_objs: (list) of LaminarSimilarityMatrix objects.
+                     Usually len(matrix_objs) <= 2, but the code supports more matrices.
+                     Matrices should have the same size and parcellation
+        rank_normalize: (bool) Peform rank normalization on the matrices. Default: True
+        (the rest are brainspace.gradient.GradientMaps kwargs)
+
+        Note: Multimodal gradient creation is based on Paquola 2020 PBio
+        https://github.com/MICA-MNI/micaopen/tree/master/structural_manifold
+        """        
+        #> initialize variables
+        self.matrix_objs = matrix_objs
+        self.multimodal = len(self.matrix_objs) > 1
+        self.do_rank_normalization = do_rank_normalization
+        self.n_components = n_components
+        self.approach = approach
+        self.kernel = kernel
+        self.sparsity = sparsity
+        #> loading matrices +/- rank normalization
+        if self.do_rank_normalization:
+            print("Rank normalization")
+            self.matrices = self.rank_normalize()
+        else:
+            self.matrices = [matrix_obj.matrix for matrix_obj in self.matrix_objs]
+        #> concatenate matrices horizontally
+        self.concat_matrix = np.hstack(self.matrices)
         #> create gradients
         print("Creating gradients")
-        self.gm = brainspace.gradient.GradientMaps(
-            n_components=n_components, 
-            approach=approach, 
-            kernel=kernel, 
-            random_state=912)
-        self.gm.fit(self.matrix_obj.matrix, sparsity=sparsity)
+        self.create()
         #> save the data
+        print("Saving the gradients and plotting the scree plot")
         self.save_surface()
         self.save_lambdas()
         self.plot_scree()
+        self.plot_concat_matrix()
         print(f"Gradients saved in {self.get_path()}")
+
+    def rank_normalize(self):
+        """
+        Perform rank normalization of input matrices. Also rescales
+        matrices[1:] based on matrics[0].
+
+        Based on Paquola 2020 PBio
+        https://github.com/MICA-MNI/micaopen/tree/master/structural_manifold
+        Note: This function does not zero out negative or NaNs as this has
+              already been done in LaminarThicknessSimilarityMatrix.create
+        """
+        rank_normalized_matrices = []
+        #> rank normalize the first matrix
+        rank_normalized_matrices.append(
+            scipy.stats.rankdata(self.matrix_objs[0].matrix)
+            .reshape(self.matrix_objs[0].matrix.shape)
+        )
+        #> rank normalize and rescale next matrices
+        for matrix_obj in self.matrix_objs[1:]:
+            #> rank normalize (and flatten) the matrix
+            rank_normalized_matrix_flat = scipy.stats.rankdata(matrix_obj.matrix)
+            #> rescale it by the first matrix
+            rank_normalized_rescaled_matrix_flat = np.interp(
+                rank_normalized_matrix_flat,
+                (rank_normalized_matrix_flat.min(), rank_normalized_matrix_flat.max()),
+                (rank_normalized_matrices[0].min(), rank_normalized_matrices[0].max())
+            )
+            rank_normalized_matrices.append(
+                rank_normalized_rescaled_matrix_flat.reshape(matrix_obj.matrix.shape)
+            )
+        return rank_normalized_matrices
+
+    def create(self):
+        """
+        Creates the GradientMaps object and fits the data
+        """
+        self.gm = brainspace.gradient.GradientMaps(
+            n_components=self.n_components, 
+            approach=self.approach, 
+            kernel=self.kernel, 
+            random_state=912)
+        self.gm.fit(self.concat_matrix, sparsity=self.sparsity)
 
     def project_to_surface(self):
         """
@@ -371,7 +422,7 @@ class LaminarSimilarityGradients:
             parcellation_maps[hem] = nilearn.surface.load_surf_data(
                 os.path.join(
                     DATA_DIR, 'parcellation', 
-                    f'tpl-bigbrain_hemi-{hem}_desc-{self.matrix_obj.parcellation_name}_parcellation.label.gii')
+                    f'tpl-bigbrain_hemi-{hem}_desc-{self.matrix_objs[0].parcellation_name}_parcellation.label.gii')
                 )
         #> relabel right hemisphere in continuation with the labels from left hemisphere
         parcellation_maps['R'] = parcellation_maps['L'].max() + 1 + parcellation_maps['R']
@@ -382,10 +433,7 @@ class LaminarSimilarityGradients:
         #  (there should be easier solutions but this was a simple method to do it in one line)
         # TODO: make this more readable/understandable
         #>> load parcellated laminar data (we only need the index for valid non-NaN parcels)
-        if 'thickness' in self.matrix_obj.input_type:
-            concat_parcellated_laminar_data = self.matrix_obj.concat_hemispheres(self.matrix_obj.parcellated_laminar_thickness, dropna=False)
-        else:
-            concat_parcellated_laminar_data = self.matrix_obj.concat_hemispheres(self.matrix_obj.parcellated_laminar_density, dropna=False)
+        concat_parcellated_laminar_data = self.matrix_objs[0].concat_hemispheres(self.matrix_objs[0].parcellated_laminar_data, dropna=False)
         #>> create a gradients dataframe including all parcels, where invalid parcels are NaN
         #   (this is necessary to be able to project it to the parcellation)
         gradients_df = pd.concat(
@@ -400,12 +448,23 @@ class LaminarSimilarityGradients:
         gradient_maps = gradients_df.loc[concat_parcellation_map].values # shape: vertex X gradient
         return gradient_maps
 
+    def get_path(self):
+        path = self.matrix_objs[0].get_path()\
+            .replace('matrix', 'gradient')\
+            .replace(
+                'input-', 
+                f'input-{"".join(m.input_type for m in self.matrix_objs[1:])}')\
+            + f'_gapproach-{self.gm.approach}'
+        if self.do_rank_normalization:
+            path += '_ranknormalized'
+        return path
+
     def save_surface(self):
         """
         Save the gradients map projected on surface
         """
         np.save(
-            self.get_path(),
+            self.get_path()+'_surface',
             self.project_to_surface()
         )
 
@@ -435,18 +494,34 @@ class LaminarSimilarityGradients:
         for ax in axes:
             ax.set_xlabel('Gradient')
         fig.savefig(self.get_path()+'_scree.png', dpi=192)
-    
-    def get_path(self):
-        return self.matrix_obj.get_path()\
-            .replace('matrix', 'gradient') \
-            + f'_gapproach_{self.gm.approach}'\
-            + f'_gkernel_{self.gm.kernel}'
+
+    def plot_concat_matrix(self, outfile=None):
+        """
+        Plot the matrix as heatmap
+        """
+        fig, ax = plt.subplots(figsize=(7*len(self.matrix_objs),7))
+        heatmap(
+            self.concat_matrix,
+            vmax=np.quantile(self.concat_matrix.flatten(),0.75),
+            cbar=False,
+            ax=ax)
+        ax.axis('off')
+        if not outfile:
+            outfile = self.get_path() + '_concatmat.png'
+        fig.tight_layout()
+        fig.savefig(outfile)
+
 
 #> Create several gradients with different options
 #  The first loop is the main analysis and the rest are done for assessing robustness
-for input_type in ['thickness_density', 'thickness', 'density']:
+for gradient_input_type in ['thickness_density', 'thickness', 'density']:
     for parcellation_name in ['sjh']:
         for exc_masks in [adysgranular_masks, None]:
-            matrix = LaminarSimilarityMatrix(input_type=input_type, parcellation_name=parcellation_name,
-                                             exc_masks=exc_masks)
-            gradients = LaminarSimilarityGradients(matrix)
+            matrices = []
+            for matrix_input_type in gradient_input_type.split('_'):
+                matrix = LaminarSimilarityMatrix(
+                    input_type=matrix_input_type, 
+                    parcellation_name=parcellation_name,
+                    exc_masks=exc_masks)
+                matrices.append(matrix)
+            gradients = LaminarSimilarityGradients(matrices)
