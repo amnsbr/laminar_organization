@@ -55,12 +55,6 @@ class LaminarSimilarityMatrix:
         plot: (bool) Plot the similarity matrix. Default: False
         filenmae: (str) Output path to the figure of matrix heatmap
         """
-        print(f"""
-        Creating similarity matrix:
-            - input_type: {input_type},
-            - parcellation_name: {parcellation_name},
-            - exc_mask: {True if exc_masks else False}
-        """)
         #> save parameters as class fields
         self.input_type = input_type
         self.normalize_by_total_thickness = normalize_by_total_thickness
@@ -74,7 +68,12 @@ class LaminarSimilarityMatrix:
                 DATA_DIR, 'surface',
                 'tpl-bigbrain_hemi-L_desc-layer1_thickness.txt'
                 )).size
-
+        print(f"""
+        Creating similarity matrix:
+            - input_type: {input_type},
+            - parcellation_name: {parcellation_name},
+            - exc_mask: {True if exc_masks else False}
+        """)
         self.create()
         self.plot()
         self.save()
@@ -301,11 +300,11 @@ class LaminarSimilarityMatrix:
 
     def save(self, outfile=None):
         """
-        Save the matrix to a .npy file
+        Save the matrix to a .npz file
         """
         if not outfile:
             outfile = self.get_path()
-        np.save(outfile, self.matrix)
+        np.savez_compressed(outfile, matrix=self.matrix)
 
     def plot(self, outfile=None):
         """
@@ -463,9 +462,9 @@ class LaminarSimilarityGradients:
         """
         Save the gradients map projected on surface
         """
-        np.save(
+        np.savez_compressed(
             self.get_path()+'_surface',
-            self.project_to_surface()
+            surface=self.project_to_surface()
         )
 
     def save_lambdas(self):
