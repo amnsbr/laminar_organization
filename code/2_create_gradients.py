@@ -52,7 +52,6 @@ class LaminarSimilarityMatrix:
         similarity_method: (str) 
             - 'partial_corr' -> partial correlation, 
             - 'pearson' -> Pearson's correlation
-            - 'KL' -> KL-divergence of thickness distribution between parcels
         plot: (bool) Plot the similarity matrix. Default: False
         filenmae: (str) Output path to the figure of matrix heatmap
         """
@@ -89,6 +88,7 @@ class LaminarSimilarityMatrix:
         print("Reading laminar input files")
         if self.input_type == 'thickness':
             self.laminar_data = self.read_laminar_thickness()
+            #> regressing out curvature from laminar thickness
             if self.correct_thickness_by_curvature:
                 for hem in ['L', 'R']:
                     cov_surf_data = np.load(
@@ -102,20 +102,16 @@ class LaminarSimilarityMatrix:
                         ).T
         elif self.input_type == 'density':
             self.laminar_data = self.read_laminar_density()
-        #> Create the similarity matrix
-        if self.similarity_method != 'KL':
-            #> Parcellate the data
-            print("Parcellating the data")
-            self.parcellated_laminar_data = helpers.parcellate(
-                self.laminar_data,
-                self.parcellation_name,
-                averaging_method=self.averaging_method
-                )
-            #> Calculate parcel-wise full or partial correlation
-            print(f"Creating similarity matrix by {self.similarity_method}")
-            self.matrix = self.create_by_corr()
-        else: #TODO: KL-divergence
-            raise NotImplementedError
+        #> Parcellate the data
+        print("Parcellating the data")
+        self.parcellated_laminar_data = helpers.parcellate(
+            self.laminar_data,
+            self.parcellation_name,
+            averaging_method=self.averaging_method
+            )
+        #> Calculate parcel-wise full or partial correlation
+        print(f"Creating similarity matrix by {self.similarity_method}")
+        self.matrix = self.create_by_corr()
 
     def read_laminar_thickness(self):
         """
@@ -211,24 +207,14 @@ class LaminarSimilarityMatrix:
                         axis=1) # r_ic and r_jc are the same
             r_icjc = np.outer(r_ic, r_ic) # the second r_ic is actually r_jc
             matrix = (r_ij - r_icjc) / np.sqrt(np.outer((1-r_ic**2),(1-r_ic**2)))
-            #> zero out negative values
-            matrix[matrix<0] = 0
-            #> zero out correlations of 1 (to avoid division by 0)
-            matrix[matrix==1] = 0
-            #> Fisher's z-transformation
-            matrix = 0.5 * np.log((1 + matrix) /  (1 - matrix))
-            #> zero out NaNs and inf
-            matrix[np.isnan(matrix) | np.isinf(matrix)] = 0
         elif self.similarity_method == 'pearson':
             matrix = np.corrcoef(concat_parcellated_laminar_data)
-            #> zero out negative values
-            matrix[matrix < 0] = 0
-            #> zero out correlations of 1 (to avoid division by 0)
-            matrix[matrix==1] = 0
-            #> Fisher's z-transformation
-            matrix = 0.5 * np.log((1 + matrix) /  (1 - matrix))
-            #> zero out NaNs and inf
-            matrix[np.isnan(matrix) | np.isinf(matrix)] = 0
+        #> zero out correlations of 1 (to avoid division by 0)
+        matrix[matrix==1] = 0
+        #> Fisher's z-transformation
+        matrix = 0.5 * np.log((1 + matrix) /  (1 - matrix))
+        #> zero out NaNs and inf
+        matrix[np.isnan(matrix) | np.isinf(matrix)] = 0
         return matrix
 
     def get_path(self):
