@@ -10,6 +10,7 @@ import brainspace.mesh, brainspace.plotting
 import nilearn.surface
 import nilearn.plotting
 import nibabel.freesurfer.io
+import statsmodels.api as sm
 
 #> specify the data dir
 abspath = os.path.abspath(__file__)
@@ -62,7 +63,7 @@ def download_bigbrain_ftp(ftp_dir, ftp_filename, out_filename=None, copy_to=None
 		if not os.path.exists(copy_to):
 			shutil.copyfile(file_name, copy_to)
 
-###### Surface tools ######
+###### Data manipulation ######
 
 def parcellate(surface_data, parcellation_name, averaging_method='mean'):
 	"""
@@ -142,6 +143,52 @@ def concat_hemispheres(parcellated_data, dropna=True):
 		concat_data = concat_data.dropna()
 	return concat_data
 
+def regress_out_covariates_from_matrix(input_matrix, cov_matrices, pos_only=True):
+    """
+    Fits `cov_matrices` to `input_matrix` and return the residual. Before
+    the fitting the lower triangle of matrices is flattened and depending on
+    `pos_only` zero and negative values are removed
+
+    Parameters
+    ----------
+    input_matrix: (np.ndarray) parc x parc laminar similarity matrix
+    cov_matrices: (list of np.ndarray) parc x parc covariate matrix
+    pos_only: (bool) only include positive values of input_matrix
+
+    Return
+    ---------
+    resid_matrix: (np.ndarray) parc x parc cleaned laminar similarity matrix
+    """
+    #> read y: only keep lower triangle (ignoring diagonal) and reshape to (n_parc_pair, 1)
+    tril_indices = np.tril_indices_from(input_matrix, -1)
+    y = input_matrix[tril_indices].reshape(-1, 1)
+    #> create X: add intercept
+    X = np.onses_like(y)
+    #> add lower triangle of cov_matrices to X
+    for cov_matrix in cov_matrices:
+        X = np.hstack(
+            X,
+            cov_matrix[tril_indices].reshape(-1, 1)
+        )
+    #> create the mask of positive values
+    if pos_only:
+        mask = (y > 0)
+    else:
+        mask = np.array([True] * y.shape[0])
+    #> regression
+    resid = sm.OLS(y[mask, :], X[mask, :]).fit().resid
+    #> project back resid to the input_matrix shape
+    # lower triangle
+    cleaned_tril = np.zeros(y.shape[1])
+    cleaned_tril[mask] = resid
+    cleaned_matrix = np.zeros_like(input_matrix)
+    cleaned_matrix[tril_indices] = cleaned_tril
+    # upper triagnle
+    triu_indices = np.triu_indices_from(input_matrix, 1) #ignoring diagonal
+    cleaned_matrix[triu_indices] = cleaned_matrix.T[triu_indices]
+    # diagonal = 1 (since the input is similarity)
+    cleaned_matrix[np.diag_indices_from(cleaned_matrix)] = 1
+    return cleaned_matrix
 
 ###### Plotting ######
 def plot_on_bigbrain_brainspace(surface_data_files, outfile=None):
