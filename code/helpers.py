@@ -4,16 +4,19 @@ from urllib.parse import urlparse
 import os
 from ftplib import FTP
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import brainspace.mesh, brainspace.plotting
 import nilearn.surface
 import nilearn.plotting
+import nibabel.freesurfer.io
 
 #> specify the data dir
 abspath = os.path.abspath(__file__)
 cwd = os.path.dirname(abspath)
 DATA_DIR = os.path.join(cwd, '..', 'data')
 
+###### Loading data ######
 
 def download(url, file_name=None, copy_to=None, overwrite=False):
 	"""
@@ -58,6 +61,86 @@ def download_bigbrain_ftp(ftp_dir, ftp_filename, out_filename=None, copy_to=None
 	if copy_to:
 		if not os.path.exists(copy_to):
 			shutil.copyfile(file_name, copy_to)
+
+###### Surface tools ######
+
+def parcellate(surface_data, parcellation_name, averaging_method='mean'):
+	"""
+	Parcellates `surface data` using `parcellation` and by taking the
+	median or mean (specified via `averaging_method`) of the vertices within each parcel.
+
+	Parameters
+	----------
+	surface_data: (dict of np.ndarray) p x n_vertices surface data of L and R hemispheres
+	parcellation_name: (str) Parcellation scheme
+	averaging_method: (str) Method of averaging over vertices within a parcel. Default: 'mean'
+		- 'median'
+		- 'mean'
+		- None (will return groupby object)
+
+	Returns
+	---------
+	parcellated_data: (dict of pd.DataFrame) n_parcels x 6 for laminar data of L and R hemispheres
+	"""
+	parcellated_data = {}
+	for hem in ['L', 'R']:
+		#> load parcellation map
+		parcellation_map = nilearn.surface.load_surf_data(
+			os.path.join(
+				DATA_DIR, 'parcellation', 
+				f'tpl-bigbrain_hemi-{hem}_desc-{parcellation_name}_parcellation.label.gii')
+			)
+		#> label parcellation map
+		_, _, sorted_labels = nibabel.freesurfer.io.read_annot(
+			os.path.join(
+				DATA_DIR, 'parcellation', 
+				f'{hem.lower()}h.{parcellation_name}.annot')
+		)
+		if parcellation_name == 'sjh':
+			sorted_labels = list(map(lambda l: int(l.decode().replace('sjh_','')), sorted_labels))
+		transdict = dict(enumerate(sorted_labels))
+		labeled_parcellation_map = np.vectorize(transdict.get)(parcellation_map)
+		#> parcellate
+		parcellated_vertices = (
+			pd.DataFrame(surface_data[hem].T, index=labeled_parcellation_map)
+			.reset_index(drop=False)
+			.groupby('index')
+		)
+		#> operate on groupby object if needed
+		if averaging_method == 'median':
+			parcellated_data[hem] = parcellated_vertices.median()
+		elif averaging_method == 'mean':
+			parcellated_data[hem] = parcellated_vertices.mean()
+		else:
+			parcellated_data[hem] = parcellated_vertices
+	return parcellated_data
+
+def concat_hemispheres(parcellated_data, dropna=True):
+	"""
+	Concatenates the parcellated data of L and R hemispheres
+
+	Parameters
+	----------
+	parcellated_data: (dict of pd.DataFrame) n_parcels x 6 for laminar data of L and R hemispheres
+	dropna: (bool) remove parcels with no data. Default: True
+
+	Returns
+	----------
+	concat_data: (pd.DataFrame) n_parcels*2 x 6
+	"""
+	#> concatenate hemispheres and drop NaN if needed
+	concat_data = (pd.concat(
+		[
+			parcellated_data_copy['L'], 
+			parcellated_data_copy['R']
+		],
+		axis=0)
+		.reset_index(drop=False) # take the average values in case parcels are repeated in L and R
+		.groupby('index').mean()
+		)
+	if dropna:
+		concat_data = concat_data.dropna()
+	return concat_data
 
 
 ###### Plotting ######

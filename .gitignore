@@ -145,3 +145,4 @@ logs/
 # since these files are sometimes very large (e.g. BigBrain files) I will
 # not add them to the git repo
 src/
+Laminar Gradients Playground.ipynb

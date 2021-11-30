@@ -5,7 +5,7 @@ SRC_PATH=$(realpath .)
 fsaverage_to_bigbrain=('sjh.annot' 'economo.annot')
 for suffix in "${fsaverage_to_bigbrain[@]}"
 do
-    if [ -f "../data/parcellation/tpl-bigbrain_hemi-L_ssdesc-${suffix/.annot/_parcellation}.label.gii" ]; then
+    if [ -f "../data/parcellation/tpl-bigbrain_hemi-L_desc-${suffix/.annot/_parcellation}.label.gii" ]; then
         echo "${suffix} already transformed to bigbrain space"
     else
         echo "Transforming ${suffix} to bigbrain space (singularity)"

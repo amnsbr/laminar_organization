@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from seaborn import heatmap, scatterplot, lineplot
 import nilearn.surface
 import brainspace.gradient
+import helpers
 
 #> specify the data dir and create gradients and matrices subfolders
 abspath = os.path.abspath(__file__)
@@ -68,12 +69,6 @@ class LaminarSimilarityMatrix:
                 DATA_DIR, 'surface',
                 'tpl-bigbrain_hemi-L_desc-layer1_thickness.txt'
                 )).size
-        print(f"""
-        Creating similarity matrix:
-            - input_type: {input_type},
-            - parcellation_name: {parcellation_name},
-            - exc_mask: {True if exc_masks else False}
-        """)
         self.create()
         self.plot()
         self.save()
@@ -83,8 +78,14 @@ class LaminarSimilarityMatrix:
         """
         Creates laminar thickness similarity matrix
         """
-        print("Reading laminar input files")
+        print(f"""
+        Creating similarity matrix:
+            - input_type: {input_type},
+            - parcellation_name: {parcellation_name},
+            - exc_mask: {True if exc_masks else False}
+        """)
         #> Reading laminar thickness or density
+        print("Reading laminar input files")
         if self.input_type == 'thickness':
             self.laminar_data = self.read_laminar_thickness()
         elif self.input_type == 'density':
@@ -93,7 +94,11 @@ class LaminarSimilarityMatrix:
         if self.similarity_method != 'KL':
             #> Parcellate the data
             print("Parcellating the data")
-            self.parcellated_laminar_data = self.parcellate(self.laminar_data)
+            self.parcellated_laminar_data = helpers.parcellate(
+                self.laminar_data,
+                self.parcellation_name,
+                averaging_method=self.averaging_method
+                )
             #> Calculate parcel-wise full or partial correlation
             print(f"Creating similarity matrix by {self.similarity_method}")
             self.matrix = self.create_by_corr()
@@ -168,73 +173,6 @@ class LaminarSimilarityMatrix:
                 laminar_density[hem][:, exc_mask_map] = np.NaN
         return laminar_density
 
-    def parcellate(self, surface_data):
-        """
-        Parcellates `surface data` using `parcellation` and by taking the
-        median or mean (specified via `averaging_method`) of the vertices within each parcel.
-
-        Parameters
-        ----------
-        surface_data: (dict of np.ndarray) p x n_vertices surface data of L and R hemispheres
-
-        Returns
-        ---------
-        parcellated_data: (dict of pd.DataFrame) n_parcels x 6 for laminar data of L and R hemispheres
-        """
-        parcellated_data = {}
-        for hem in ['L', 'R']:
-            parcellation_map = nilearn.surface.load_surf_data(
-                os.path.join(
-                    DATA_DIR, 'parcellation', 
-                    f'tpl-bigbrain_hemi-{hem}_desc-{self.parcellation_name}_parcellation.label.gii')
-                )
-            parellated_vertices = (
-                pd.DataFrame(surface_data[hem].T, index=parcellation_map)
-                .reset_index()
-                .groupby('index')
-            )
-            if self.averaging_method == 'median':
-                parcellated_data[hem] = parellated_vertices.median()
-            elif self.averaging_method == 'mean':
-                parcellated_data[hem] = parellated_vertices.mean()
-            
-        return parcellated_data
-
-    def concat_hemispheres(self, parcellated_data, dropna=True):
-        """
-        Concatenates the parcellated data of L and R hemispheres
-
-        Parameters
-        ----------
-        parcellated_data: (dict of pd.DataFrame) n_parcels x 6 for laminar data of L and R hemispheres
-
-        Returns
-        ----------
-        concat_data: (pd.DataFrame) n_parcels*2 x 6
-        """
-        #> create a deep copy of R data since its index is going
-        #  to be (temporarily) altered
-        parcellated_data_copy = {
-            'L': parcellated_data['L'],
-            'R': parcellated_data['R'].copy(deep=True)
-        }
-        #> make R index continuous to L index
-        parcellated_data_copy['R'].index = \
-            parcellated_data_copy['L'].index[-1] \
-            + 1 \
-            + parcellated_data_copy['R'].index
-        #> concatenate hemispheres and drop NaN if needed
-        concat_data = pd.concat(
-            [
-                parcellated_data_copy['L'], 
-                parcellated_data_copy['R']
-            ],
-            axis=0)
-        if dropna:
-            concat_data = concat_data.dropna()
-        return concat_data
-
-
     def create_by_corr(self):
         """
         Creates laminar thickness similarity matrix by taking partial or Pearson's correlation
@@ -258,7 +196,7 @@ class LaminarSimilarityMatrix:
                         self.parcellated_laminar_data[hem].sum(axis=1), axis=0
                         )
         #> concatenate left and right hemispheres
-        concat_parcellated_laminar_data = self.concat_hemispheres(self.parcellated_laminar_data, dropna=True)
+        concat_parcellated_laminar_data = helpers.concat_hemispheres(self.parcellated_laminar_data, dropna=True)
         #> create similarity matrix
         if self.similarity_method == 'partial_corr':
             #> calculate partial correlation
@@ -432,7 +370,7 @@ class LaminarSimilarityGradients:
         #  (there should be easier solutions but this was a simple method to do it in one line)
         # TODO: make this more readable/understandable
         #>> load parcellated laminar data (we only need the index for valid non-NaN parcels)
-        concat_parcellated_laminar_data = self.matrix_objs[0].concat_hemispheres(self.matrix_objs[0].parcellated_laminar_data, dropna=False)
+        concat_parcellated_laminar_data = helpers.concat_hemispheres(self.matrix_objs[0].parcellated_laminar_data, dropna=False)
         #>> create a gradients dataframe including all parcels, where invalid parcels are NaN
         #   (this is necessary to be able to project it to the parcellation)
         gradients_df = pd.concat(
