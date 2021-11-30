@@ -131,9 +131,9 @@ def create_pairwise_geodesic_distance_matrix(parcellation_name, fill_l2r=True):
     """
     # Set up
     outPath = os.path.join(DATA_DIR, 'matrix', f'geodesic_parc-{parcellation_name}_{"l2r_filled" if fill_l2r else ""}')
-    if os.path.exists(outPath):
+    if os.path.exists(outPath+'.txt'):
         # skip this if GD matrix already exist
-        print(f"GD matrix exists in {outPath}")
+        print(f"GD matrix exists in {outPath+'.txt'}")
 
     GDs = {}
     for hem in ['L', 'R']:

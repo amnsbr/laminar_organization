@@ -66,6 +66,10 @@ for hem in ['L', 'R']:
 #> Copy local sources to src (and data for some of them)
 print("Copying local sources")
 copy_tree(os.path.join(SRC_DIR, '..', 'src_local'), SRC_DIR)
+shutil.copyfile(
+    os.path.join(SRC_DIR, 'economo_cortical_types.csv'),
+    os.path.join(DATA_DIR, 'parcellated_surface', 'economo_cortical_types.csv')
+)
 for hem in ['left', 'right']:
 	for layer_num in range(1, 7):
 		shutil.copyfile(
