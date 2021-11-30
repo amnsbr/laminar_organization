@@ -146,3 +146,5 @@ logs/
 # not add them to the git repo
 src/
 Laminar Gradients Playground.ipynb
+# also ignoring data for now; will un-ignore it in final release
+data/
