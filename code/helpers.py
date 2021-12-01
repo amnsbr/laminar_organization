@@ -200,16 +200,16 @@ def load_parcellation_map(parcellation_name, concatenate):
     else:
         return labeled_parcellation_map
 
-def parcellate(surface_data, parcellation_name, averaging_method='mean'):
+def parcellate(surface_data, parcellation_name, averaging_method='median'):
     """
     Parcellates `surface data` using `parcellation` and by taking the
     median or mean (specified via `averaging_method`) of the vertices within each parcel.
 
     Parameters
     ----------
-    surface_data: (dict of np.ndarray) p x n_vertices surface data of L and R hemispheres
+    surface_data: (np.ndarray or dict of np.ndarray) p x n_vertices surface data of L and R hemispheres
     parcellation_name: (str) Parcellation scheme
-    averaging_method: (str) Method of averaging over vertices within a parcel. Default: 'mean'
+    averaging_method: (str) Method of averaging over vertices within a parcel. Default: 'median'
         - 'median'
         - 'mean'
         - None (will return groupby object)
@@ -218,23 +218,40 @@ def parcellate(surface_data, parcellation_name, averaging_method='mean'):
     ---------
     parcellated_data: (dict of pd.DataFrame) n_parcels x p for laminar data of L and R hemispheres
     """
-    #> load parcellation map
-    labeled_parcellation_maps = load_parcellation_map(parcellation_name, concatenate=False)
-    parcellated_data = {}
-    for hem in ['L', 'R']:
+    if isinstance(surface_data, dict):
+        #> load parcellation map
+        labeled_parcellation_maps = load_parcellation_map(parcellation_name, concatenate=False)
+        parcellated_data = {}
+        for hem in ['L', 'R']:
+            #> parcellate
+            parcellated_vertices = (
+                pd.DataFrame(surface_data[hem].T, index=labeled_parcellation_maps[hem])
+                .reset_index(drop=False)
+                .groupby('index')
+            )
+            #> operate on groupby object if needed
+            if averaging_method == 'median':
+                parcellated_data[hem] = parcellated_vertices.median()
+            elif averaging_method == 'mean':
+                parcellated_data[hem] = parcellated_vertices.mean()
+            else:
+                parcellated_data[hem] = parcellated_vertices
+    elif isinstance(surface_data, np.ndarray):
+        #> load parcellation map
+        labeled_parcellation_maps = load_parcellation_map(parcellation_name, concatenate=True)
         #> parcellate
         parcellated_vertices = (
-            pd.DataFrame(surface_data[hem].T, index=labeled_parcellation_maps[hem])
+            pd.DataFrame(surface_data.T, index=labeled_parcellation_maps)
             .reset_index(drop=False)
             .groupby('index')
         )
         #> operate on groupby object if needed
         if averaging_method == 'median':
-            parcellated_data[hem] = parcellated_vertices.median()
+            parcellated_data = parcellated_vertices.median()
         elif averaging_method == 'mean':
-            parcellated_data[hem] = parcellated_vertices.mean()
+            parcellated_data = parcellated_vertices.mean()
         else:
-            parcellated_data[hem] = parcellated_vertices
+            parcellated_data = parcellated_vertices
     return parcellated_data
 
 def concat_hemispheres(parcellated_data, dropna=True):
@@ -401,28 +418,35 @@ def plot_on_bigbrain_brainspace(surface_data_files, outfile=None):
         color_bar=True, interactive=False, embed_nb=False, size=(1600, 400), zoom=1.2,
         screenshot=True, filename=outfile, transparent_bg=True, offscreen=True)
 
-def plot_on_bigbrain_nl(surface_data_files, outfile=None):
+def plot_on_bigbrain_nl(surface_data, filename):
     """
     Plots the `surface_data_files` on the bigbrain space and saves it in `outfile`
     using nilearn
 
     Parameters
     ----------
-    surface_data_files: (dict of str) including paths to the surface file for 'L' and 'R' hemispheres
+    surface_data: (np.ndarray or dict of np.ndarray) (n_vert,) surface data: concatenated or 'L' and 'R' hemispheres
     outfile: (str) path to output; default would be the same as surface file
     """
+    #> split surface if it has been concatenated (e.g. gradients)
+    #  and make sure the shape is correct
+    n_hem_vertices = np.loadtxt(
+        os.path.join(
+            DATA_DIR, 'surface',
+            'tpl-bigbrain_hemi-L_desc-layer1_thickness.txt'
+            )
+        ).size
+    if isinstance(surface_data, np.ndarray):
+        assert surface_data.shape[0] == n_hem_vertices * 2
+        lh_surface_data = surface_data[:n_hem_vertices]
+        rh_surface_data = surface_data[n_hem_vertices:]
+        surface_data = {'L': lh_surface_data, 'R': rh_surface_data}
+    else:
+        assert surface_data['L'].shape[0] == n_hem_vertices
     #> initialize the figures
     figure, axes = plt.subplots(1, 4, figsize=(24, 5), subplot_kw={'projection': '3d'})
     curr_ax_idx = 0
-    for hem_idx, hemi in enumerate(['left', 'right']):
-        #> read surface data files
-        if surface_data_files[0].endswith('.npy'):
-            surface_data = np.load(surface_data_files[hem_idx])
-        elif surface_data_files[0].endswith('.txt'):
-            surface_data = np.loadtxt(surface_data_files[hem_idx])
-        else:
-            print("Surface data file not supported")
-            return
+    for hemi in ['left', 'right']:
         #> plot the medial and lateral views
         if hemi == 'left':
             views_order = ['lateral', 'medial']
@@ -433,12 +457,10 @@ def plot_on_bigbrain_nl(surface_data_files, outfile=None):
         for view in views_order:
             nilearn.plotting.plot_surf(
                 mesh_path,
-                surface_data,
+                surface_data[hemi[0].upper()],
                 hemi=hemi, view=view, axes=axes[curr_ax_idx],
             )
             curr_ax_idx += 1
     figure.subplots_adjust(wspace=0, hspace=0)
     figure.tight_layout()
-    if not outfile:
-        outfile = surface_data_files[0]+'.png'
-    figure.savefig(outfile, dpi=192)
+    figure.savefig(filename, dpi=192)

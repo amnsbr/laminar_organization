@@ -145,6 +145,6 @@ logs/
 # since these files are sometimes very large (e.g. BigBrain files) I will
 # not add them to the git repo
 src/
-Laminar Gradients Playground.ipynb
+code/Laminar Gradients Playground.ipynb
 # also ignoring data for now; will un-ignore it in final release
 data/

@@ -1,0 +1,16 @@
+# The environment
+universe              = vanilla
+getenv                = True
+request_cpus          = 1
+request_memory        = 6G
+
+# Execution
+initialdir            = $ENV(HOME)/laminar_gradients
+executable            = /usr/bin/bash
+
+# Job
+arguments   = $ENV(HOME)/laminar_gradients/code/3_describe_gradients.sh
+log         = logs/3_describe_gradients_$(Cluster).$(Process).log
+output      = logs/3_describe_gradients_$(Cluster).$(Process).out
+error       = logs/3_describe_gradients_$(Cluster).$(Process).err
+Queue
