@@ -268,6 +268,10 @@ class LaminarSimilarityGradients:
     def project_to_surface(self):
         """
         Project the gradients on BigBrain surface
+
+        Returns
+        -------
+        gradient_maps: (np.ndarray) n_vertices [both hemispheres] x n_gradients
         """
         #> load concatenated parcellation map
         concat_parcellation_map = helpers.load_parcellation_map(self.matrix_objs[0].parcellation_name, concatenate=True)

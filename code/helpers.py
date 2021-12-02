@@ -65,7 +65,7 @@ def download_bigbrain_ftp(ftp_dir, ftp_filename, out_filename=None, copy_to=None
             shutil.copyfile(out_filename, copy_to)
 
 ###### Data manipulation ######
-def read_laminar_thickness(exc_masks=None, normalize_by_total_thickness=True, regress_out_curvature=True):
+def read_laminar_thickness(exc_masks=None, normalize_by_total_thickness=True, regress_out_curvature=False):
     """
     Reads laminar thickness data from 'data' folder and after masking out
     `exc_mask` returns 6-d laminar thickness arrays for left and right hemispheres.
@@ -75,11 +75,11 @@ def read_laminar_thickness(exc_masks=None, normalize_by_total_thickness=True, re
     --------
     exc_masks: (dict of str) Path to the surface masks of vertices that should be excluded (L and R) (format: .npy)
     normalize_by_total_thickness: (bool) Normalize by total thickness. Default: True
-    regress_out_curvature: (bool) Regress out curvature. Default: True
+    regress_out_curvature: (bool) Regress out curvature. Default: False
 
     Retruns
     --------
-    laminar_thickness: (dict of np.ndarray) 6 x n_vertices for laminar thickness of L and R hemispheres
+    laminar_thickness: (dict of np.ndarray) n_vertices x 6 for laminar thickness of L and R hemispheres
     """
     #> get the number of vertices
     n_hem_vertices = np.loadtxt(
@@ -91,9 +91,9 @@ def read_laminar_thickness(exc_masks=None, normalize_by_total_thickness=True, re
     laminar_thickness = {}
     for hem in ['L', 'R']:
         #> read the laminar thickness data from bigbrainwrap .txt files
-        laminar_thickness[hem] = np.empty((6, n_hem_vertices))
+        laminar_thickness[hem] = np.empty((n_hem_vertices, 6))
         for layer_num in range(1, 7):
-            laminar_thickness[hem][layer_num-1, :] = np.loadtxt(
+            laminar_thickness[hem][:, layer_num-1] = np.loadtxt(
                 os.path.join(
                     DATA_DIR, 'surface',
                     f'tpl-bigbrain_hemi-{hem}_desc-layer{layer_num}_thickness.txt'
@@ -101,10 +101,10 @@ def read_laminar_thickness(exc_masks=None, normalize_by_total_thickness=True, re
         #> remove the exc_mask
         if exc_masks:
             exc_mask_map = np.load(exc_masks[hem])
-            laminar_thickness[hem][:, exc_mask_map] = np.NaN
+            laminar_thickness[hem][exc_mask_map, :] = np.NaN
         #> normalize by total thickness
         if normalize_by_total_thickness:
-            laminar_thickness[hem] /= laminar_thickness[hem].sum(axis=0)
+            laminar_thickness[hem] /= laminar_thickness[hem].sum(axis=1, keepdims=True)
         #> regress out curvature
         if regress_out_curvature:
             cov_surf_data = np.load(
@@ -113,9 +113,9 @@ def read_laminar_thickness(exc_masks=None, normalize_by_total_thickness=True, re
                     f'tpl-bigbrain_hemi-{hem}_desc-mean_curvature.npy'
                     ))
             laminar_thickness[hem] = regress_out_surf_covariates(
-                laminar_thickness[hem].T, cov_surf_data,
+                laminar_thickness[hem], cov_surf_data,
                 sig_only=False, renormalize=True
-                ).T
+                )
     return laminar_thickness
 
 def read_laminar_density(exc_masks=None, method='mean'):
@@ -133,7 +133,7 @@ def read_laminar_density(exc_masks=None, method='mean'):
 
     Retruns
     --------
-    laminar_density: (dict of np.ndarray) 6 x n_vertices for laminar density of L and R hemispheres
+    laminar_density: (dict of np.ndarray) n_vertices x 6 for laminar density of L and R hemispheres
     """
     #> get the number of vertices
     n_hem_vertices = np.loadtxt(
@@ -145,7 +145,7 @@ def read_laminar_density(exc_masks=None, method='mean'):
     laminar_density = {}
     for hem in ['L', 'R']:
         #> read the laminar thickness data from bigbrainwrap .txt files
-        laminar_density[hem] = np.empty((6, n_hem_vertices))
+        laminar_density[hem] = np.empty((n_hem_vertices, 6))
         for layer_num in range(1, 7):
             profiles = np.load(
                 os.path.join(
@@ -153,13 +153,13 @@ def read_laminar_density(exc_masks=None, method='mean'):
                     f'tpl-bigbrain_hemi-{hem[0].upper()}_desc-layer-{layer_num}_profiles_nsurf-10.npz'
                     ))['profiles']
             if method == 'mean':
-                laminar_density[hem][layer_num-1, :] = profiles.mean(axis=0)
+                laminar_density[hem][:, layer_num-1] = profiles.mean(axis=0)
             elif method == 'median':
-                laminar_density[hem][layer_num-1, :] = np.median(profiles, axis=0)
+                laminar_density[hem][:, layer_num-1] = np.median(profiles, axis=0)
         #> remove the exc_mask
         if exc_masks:
             exc_mask_map = np.load(exc_masks[hem])
-            laminar_density[hem][:, exc_mask_map] = np.NaN
+            laminar_density[hem][exc_mask_map, :] = np.NaN
         # TODO: also normalize density?
     return laminar_density
 
@@ -207,7 +207,7 @@ def parcellate(surface_data, parcellation_name, averaging_method='median'):
 
     Parameters
     ----------
-    surface_data: (np.ndarray or dict of np.ndarray) p x n_vertices surface data of L and R hemispheres
+    surface_data: (np.ndarray or dict of np.ndarray) n_vertices x n_features surface data of L and R hemispheres
     parcellation_name: (str) Parcellation scheme
     averaging_method: (str) Method of averaging over vertices within a parcel. Default: 'median'
         - 'median'
@@ -216,7 +216,7 @@ def parcellate(surface_data, parcellation_name, averaging_method='median'):
 
     Returns
     ---------
-    parcellated_data: (dict of pd.DataFrame) n_parcels x p for laminar data of L and R hemispheres
+    parcellated_data: (pd.DataFrame or dict of pd.DataFrame) n_parcels x n_features for data of L and R hemispheres or both hemispheres
     """
     if isinstance(surface_data, dict):
         #> load parcellation map
@@ -225,7 +225,7 @@ def parcellate(surface_data, parcellation_name, averaging_method='median'):
         for hem in ['L', 'R']:
             #> parcellate
             parcellated_vertices = (
-                pd.DataFrame(surface_data[hem].T, index=labeled_parcellation_maps[hem])
+                pd.DataFrame(surface_data[hem], index=labeled_parcellation_maps[hem])
                 .reset_index(drop=False)
                 .groupby('index')
             )
@@ -241,7 +241,7 @@ def parcellate(surface_data, parcellation_name, averaging_method='median'):
         labeled_parcellation_maps = load_parcellation_map(parcellation_name, concatenate=True)
         #> parcellate
         parcellated_vertices = (
-            pd.DataFrame(surface_data.T, index=labeled_parcellation_maps)
+            pd.DataFrame(surface_data, index=labeled_parcellation_maps)
             .reset_index(drop=False)
             .groupby('index')
         )
@@ -336,6 +336,7 @@ def regress_out_surf_covariates(input_surface_data, cov_surface_data, sig_only=F
     ----------
     input_surface_data: (np.ndarray) n_vertices x n_cols input surface data
     cov_surface_data: (np.ndarray) n_vertices covariate surface data
+                     TODO: add support for multiple covariates
     sig_only: (bool) do the regression only if the correlation is significant
                      TODO: for this also consider doing spin permutation
     renormalize: (bool) used when input_surface_data is normalized/unnormalized laminar thickness

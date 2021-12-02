@@ -33,15 +33,16 @@ def plot_binned_laminar_profile(gradient_file, n_gradients=3, input_type=None):
     if not input_type:
         #> determine input type
         re.match(r".*_input-([a-z|-]+)_*", gradient_file).groups()[0]
+    regress_out_curvature = 'corr-curv' in gradient_file
     #> loading gradient map
     gradient_maps = np.load(gradient_file)['surface']
     #> loading thickness and density data
-    laminar_thickness = helpers.read_laminar_thickness()
+    laminar_thickness = helpers.read_laminar_thickness(regress_out_curvature=regress_out_curvature)
     laminar_thickness = np.concatenate([laminar_thickness['L'], laminar_thickness['R']], axis=1)
     # laminar_density = helpers.read_laminar_density()
     # laminar_density = np.concatenate([laminar_density['L'], laminar_density['R']], axis=1)
     #> parcellate the data
-    parcellated_gradients = helpers.parcellate(gradient_maps.T, 'sjh')
+    parcellated_gradients = helpers.parcellate(gradient_maps, 'sjh')
     parcellated_laminar_thickness = helpers.parcellate(laminar_thickness, 'sjh')
     # re-normalize small deviations from sum=1 because of parcellation
     parcellated_laminar_thickness /= parcellated_laminar_thickness.sum(axis=1)
@@ -87,7 +88,9 @@ def plot_binned_laminar_profile(gradient_file, n_gradients=3, input_type=None):
         #     orientation='horizontal', figsize=(6,4))
 
 #> sample gradient file path
-gradient_files = glob.glob(os.path.join(DATA_DIR, 'gradient', '*input-thickness_*_excmask_*_surface.npz'))
+# gradient_files = glob.glob(os.path.join(DATA_DIR, 'gradient', '*input-thickness*_excmask_*_surface.npz'))
+gradient_files = glob.glob(os.path.join(DATA_DIR, 'gradient', '*_surface.npz'))
+# gradient_files = [os.path.join(DATA_DIR, 'gradient', 'gradient_input-thickness_simmethod-partial_corr_parc-sjh_avgmethod-median_normalized_gapproach-dm_ranknormalized_surface.npz')]
 print(gradient_files)
 for gradient_file in gradient_files:
     plot_gradients(gradient_file)
