@@ -1,7 +1,10 @@
-nilearn
-brainspace
-seaborn
-pycortex
-statsmodels
-scipy
-nibabel
+nilearn #0.8.1
+brainspace #0.1.2
+numpy # 1.21.4
+pandas # 1.3.4
+seaborn # 0.11.2
+pycortex # 1.2.2
+statsmodels # 0.13.1
+scipy # 1.7.2
+nibabel #3.2.1
+brainsmash #0.11.0

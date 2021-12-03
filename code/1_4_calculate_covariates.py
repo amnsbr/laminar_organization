@@ -114,7 +114,7 @@ def create_curvature_similarity_matrix(parcellation_name):
     np.savetxt(out_path, curv_similarity_matrix)
     print(f"Curvature similiarity matrix created in {out_path}")
 
-def create_pairwise_geodesic_distance_matrix(parcellation_name, fill_l2r=True):
+def create_pairwise_geodesic_distance_matrix(parcellation_name, fill_l2r=False, approach='center-to-center'):
     """
     Creates parcel-to-parcel geodesic distance matrix based on the
     parcellation ("parcellation_name")
@@ -122,6 +122,12 @@ def create_pairwise_geodesic_distance_matrix(parcellation_name, fill_l2r=True):
     Parameters
     ----------
     parcellation_name: (str) name of the parcellation (must be stored in data/parcellations)
+    fill_l2r: (bool) fill the left to right geodesic distance as L-midline + midline-R distance
+    approach: (str)
+        - center-to-center: calculate pair-wise distance between centroids of parcels. Results in symmetric matrix.
+        - center-to-parcel: calculates distance between centroid of one parcel to all vertices
+                            in the other parcel, taking the mean distance. Can result in asymmetric matrix.
+                            (this is "geoDistMapper.py" behavior)
 
     Based on "geoDistMapper.py" from micapipe/functions (modified slightly)
     Credit:
@@ -130,7 +136,7 @@ def create_pairwise_geodesic_distance_matrix(parcellation_name, fill_l2r=True):
     # Translated to python by Jessica Royer
     """
     # Set up
-    outPath = os.path.join(DATA_DIR, 'matrix', f'geodesic_parc-{parcellation_name}_{"l2r_filled" if fill_l2r else ""}')
+    outPath = os.path.join(DATA_DIR, 'matrix', f'geodesic_parc-{parcellation_name}_approach-{approach}{"_l2r_filled" if fill_l2r else ""}')
     if os.path.exists(outPath+'.txt'):
         # skip this if GD matrix already exist
         print(f"GD matrix exists in {outPath+'.txt'}")
@@ -144,7 +150,6 @@ def create_pairwise_geodesic_distance_matrix(parcellation_name, fill_l2r=True):
             )
         surf = nibabel.load(surf_path)
         vertices = surf.agg_data('NIFTI_INTENT_POINTSET')
-        faces = surf.agg_data('NIFTI_INTENT_TRIANGLE')
         
         #> load parcellation map
         labels = nilearn.surface.load_surf_data(
@@ -189,10 +194,20 @@ def create_pairwise_geodesic_distance_matrix(parcellation_name, fill_l2r=True):
             os.remove(tmpname)
             parcGD = np.empty((1, len(uparcel)))
             for n in range(len(uparcel)):
-                tmpData = tmp[parc == uparcel[n]]
-                tmpMean = np.mean(tmpData)
-                parcGD[0, n] = tmpMean
+                if approach=='center-to-parcel':
+                    tmpData = tmp[parc == uparcel[n]]
+                    pairGD = np.mean(tmpData)
+                elif approach=='center-to-center':
+                    other_center_vertex = int(voi[0, n])
+                    pairGD = tmp[other_center_vertex]
+                parcGD[0, n] = pairGD
             GDs[hem][i,:] = parcGD
+        #> save the GD for the current hemisphere
+        np.savetxt(
+            os.path.join(DATA_DIR, 'matrix', f'geodesic_hemi-{hem}_parc-{parcellation_name}_approach-{approach}.txt'),
+            GDs[hem],
+            fmt='%.12f')
+        #> convert it to dataframe so that joining hemispheres would be easier
         GDs[hem] = pd.DataFrame(GDs[hem], index=uparcel, columns=uparcel)
     #> join the GD matrices from left and right hemispheres
     GD_full = (pd.concat([GDs['L'], GDs['R']],axis=0)
