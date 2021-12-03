@@ -30,44 +30,35 @@ adysgranular_masks = {
 
 #> laminar similarity matrix class
 class LaminarSimilarityMatrix:
-    def __init__(self, input_type='thickness', normalize_by_total_thickness=True, 
-                 exc_masks=None,  parcellation_name='sjh', correct_thickness_by_curvature=True,
-                 averaging_method='median', similarity_method='partial_corr', 
-                 plot=False, filename=None):
+    def __init__(self, input_type, out_dir, normalize_by_total_thickness=True, 
+                 exc_masks=None,  parcellation_name='sjh', correct_thickness_by_curvature=True):
         """
-        Initializes laminar thickness similarity matrix object
+        Initializes laminar thickness/density similarity matrix object
 
         Parameters
         ---------
         input_type: (str) Type of input laminar data
             - 'thickness' (default)
             - 'density'
+        out_dir: (str) path to the output directory
         normalize_by_total_thickness: (bool) Normalize by total thickness. Default: True
         exc_masks: (dict of str) Path to the surface masks of vertices that should be excluded (L and R) (format: .npy)
         correct_thickness_by_curvature: (bool) Regress out curvature. Default: True
         parcellation_name: (str) Parcellation scheme
             - 'sjh'
-        averaging_method: (str) Method of averaging over vertices within a parcel. 
-            - 'median'
-            - 'mean'
-        similarity_method: (str) 
-            - 'partial_corr' -> partial correlation, 
-            - 'pearson' -> Pearson's correlation
-        plot: (bool) Plot the similarity matrix. Default: False
-        filenmae: (str) Output path to the figure of matrix heatmap
         """
         #> save parameters as class fields
         self.input_type = input_type
         self.normalize_by_total_thickness = normalize_by_total_thickness
         self.exc_masks = exc_masks
         self.parcellation_name = parcellation_name
-        self.averaging_method = averaging_method
-        self.similarity_method = similarity_method
         self.correct_thickness_by_curvature = correct_thickness_by_curvature
+        #> directory and filename (prefix which will be used for .npz and .jpg files)
+        self.out_dir = out_dir
+        self.filename = f'matrix_input-{self.input_type}'
         self.create()
         self.plot()
         self.save()
-        print(f"Matrix saved in {self.get_path()}")
 
     def create(self):
         """
@@ -96,17 +87,16 @@ class LaminarSimilarityMatrix:
         self.parcellated_laminar_data = helpers.parcellate(
             self.laminar_data,
             self.parcellation_name,
-            averaging_method=self.averaging_method
+            averaging_method='median'
             )
         #> Calculate parcel-wise full or partial correlation
-        print(f"Creating similarity matrix by {self.similarity_method}")
+        print(f"Creating similarity matrix")
         self.matrix = self.create_by_corr()
 
     def create_by_corr(self):
         """
-        Creates laminar thickness similarity matrix by taking partial or Pearson's correlation
-        between pairs of parcels. In partial correlation the average laminar thickness pattern 
-        is set as the covariate
+        Creates laminar thickness similarity matrix by taking partial with the average laminar thickness pattern 
+        as the covariate
 
         Note: Partial correlation is based on "Using recursive formula" subsection in the wikipedia
         entry for "Partial correlation", which is also the same as Formula 2 in Paquola et al. PBio 2019
@@ -120,17 +110,14 @@ class LaminarSimilarityMatrix:
         #> concatenate left and right hemispheres
         concat_parcellated_laminar_data = helpers.concat_hemispheres(self.parcellated_laminar_data, dropna=True)
         #> create similarity matrix
-        if self.similarity_method == 'partial_corr':
-            #> calculate partial correlation
-            r_ij = np.corrcoef(concat_parcellated_laminar_data)
-            mean_laminar_data = concat_parcellated_laminar_data.mean()
-            r_ic = concat_parcellated_laminar_data\
-                        .corrwith(mean_laminar_data, 
-                        axis=1) # r_ic and r_jc are the same
-            r_icjc = np.outer(r_ic, r_ic) # the second r_ic is actually r_jc
-            matrix = (r_ij - r_icjc) / np.sqrt(np.outer((1-r_ic**2),(1-r_ic**2)))
-        elif self.similarity_method == 'pearson':
-            matrix = np.corrcoef(concat_parcellated_laminar_data)
+        #> calculate partial correlation
+        r_ij = np.corrcoef(concat_parcellated_laminar_data)
+        mean_laminar_data = concat_parcellated_laminar_data.mean()
+        r_ic = concat_parcellated_laminar_data\
+                    .corrwith(mean_laminar_data, 
+                    axis=1) # r_ic and r_jc are the same
+        r_icjc = np.outer(r_ic, r_ic) # the second r_ic is actually r_jc
+        matrix = (r_ij - r_icjc) / np.sqrt(np.outer((1-r_ic**2),(1-r_ic**2)))
         #> zero out correlations of 1 (to avoid division by 0)
         matrix[matrix==1] = 0
         #> Fisher's z-transformation
@@ -139,26 +126,13 @@ class LaminarSimilarityMatrix:
         matrix[np.isnan(matrix) | np.isinf(matrix)] = 0
         return matrix
 
-    def get_path(self):
-        outfilename = f'matrix_input-{self.input_type}_simmethod-{self.similarity_method}_parc-{self.parcellation_name}_avgmethod-{self.averaging_method}'
-        if self.normalize_by_total_thickness:
-            outfilename += '_normalized'
-        if self.exc_masks: #TODO specify the name of excmask
-            outfilename += '_excmask'
-        if self.correct_thickness_by_curvature:
-            outfilename += '_corr-curv'
-        outfilename = outfilename.lower()
-        return os.path.join(DATA_DIR, 'matrix', outfilename)
-
-    def save(self, outfile=None):
+    def save(self):
         """
         Save the matrix to a .npz file
         """
-        if not outfile:
-            outfile = self.get_path()
-        np.savez_compressed(outfile, matrix=self.matrix)
+        np.savez_compressed(os.path.join(self.out_dir, self.filename)+'.npz', matrix=self.matrix)
 
-    def plot(self, outfile=None):
+    def plot(self):
         """
         Plot the matrix as heatmap
         """
@@ -169,17 +143,14 @@ class LaminarSimilarityMatrix:
             cbar=False,
             ax=ax)
         ax.axis('off')
-        if not outfile:
-            outfile = self.get_path() + '.png'
         fig.tight_layout()
-        fig.savefig(outfile)
+        fig.savefig(os.path.join(self.out_dir, self.filename)+'.png')
 
 #> laminar similarity gradients class
 class LaminarSimilarityGradients:
-    def __init__(self, matrix_objs, do_rank_normalization=True, 
+    def __init__(self, gradient_input_type='thickness-density',
                  n_components=10, approach='dm',
-                 kernel='normalized_angle', sparsity=0.9,
-                 gradient_input_type='thickness-density'):
+                 kernel='normalized_angle', sparsity=0.9, **matrix_kwargs):
         """
         Initializes laminar similarity gradients based on LaminarSimilarityMatrix objects
         and the gradients fitting parameters
@@ -189,39 +160,51 @@ class LaminarSimilarityGradients:
         matrix_objs: (list) of LaminarSimilarityMatrix objects.
                      Usually len(matrix_objs) <= 2, but the code supports more matrices.
                      Matrices should have the same size and parcellation
-        rank_normalize: (bool) Peform rank normalization on the matrices. Default: True
-        (the rest are brainspace.gradient.GradientMaps kwargs)
+        (the rest are brainspace.gradient.GradientMaps and LaminarSimilarityMatrix kwargs)
 
         Note: Multimodal gradient creation is based on Paquola 2020 PBio
         https://github.com/MICA-MNI/micaopen/tree/master/structural_manifold
         """        
         #> initialize variables
-        self.matrix_objs = matrix_objs
-        self.multimodal = len(self.matrix_objs) > 1
-        self.do_rank_normalization = do_rank_normalization
         self.n_components = n_components
         self.approach = approach
         self.kernel = kernel
         self.sparsity = sparsity
         self.gradient_input_type = gradient_input_type
+        self._matrix_kwargs = matrix_kwargs
+        #> create the directory
+        os.makedirs(self.get_out_dir(), exist_ok=True)
+        #> create matrcies
+        self.matrix_objs = self.create_matrices(**matrix_kwargs)
         #> loading matrices +/- rank normalization
-        if self.do_rank_normalization:
-            print("Rank normalization")
+        if len(self.matrix_objs) > 1:
+            print("Fusing matrices")
             self.matrices = self.rank_normalize()
+            self.concat_matrix = np.hstack(self.matrices)
+            self.plot_concat_matrix()
         else:
-            self.matrices = [matrix_obj.matrix for matrix_obj in self.matrix_objs]
-        #> concatenate matrices horizontally
-        self.concat_matrix = np.hstack(self.matrices)
+            self.concat_matrix = self.matrix_objs[0].matrix #misnomer
         #> create gradients
         print("Creating gradients")
         self.create()
         #> save the data
         print("Saving the gradients and plotting the scree plot")
-        self.save_surface()
-        self.save_lambdas()
+        self.save()
         self.plot_scree()
-        self.plot_concat_matrix()
-        print(f"Gradients saved in {self.get_path()}")
+        print(f"Gradients saved in {self.get_out_dir()}")
+
+    def create_matrices(self, **matrix_kwargs):
+        """
+        Creates similarity matrix objects
+        """
+        matrix_objs = []
+        for matrix_input_type in self.gradient_input_type.split('-'):
+            matrix = LaminarSimilarityMatrix(
+                input_type=matrix_input_type,
+                out_dir=self.get_out_dir(),
+                **matrix_kwargs)
+            matrix_objs.append(matrix)
+        return matrix_objs
 
     def rank_normalize(self):
         """
@@ -295,36 +278,36 @@ class LaminarSimilarityGradients:
         gradient_maps = gradients_df.loc[concat_parcellation_map].values # shape: vertex X gradient
         return gradient_maps
 
-    def get_path(self):
-        path = self.matrix_objs[0].get_path()\
-            .replace('matrix', 'gradient')\
-            .replace(
-                f'input-{self.matrix_objs[0].input_type}', 
-                f'input-{self.gradient_input_type}')\
-            + f'_gapproach-{self.gm.approach}'
-        if self.do_rank_normalization:
-            path += '_ranknormalized'
-        return path
-
-    def save_surface(self):
+    def get_out_dir(self):
         """
-        Save the gradients map projected on surface
+        Get the path to the directory of the gradient (and create it if needed)
+        """
+        out_dir = f'gradient_input-{self.gradient_input_type}_parc-{self._matrix_kwargs["parcellation_name"]}_approach-{self.approach}'
+        if self._matrix_kwargs['exc_masks']:
+            out_dir += '_excmask-adys'
+        if self._matrix_kwargs['correct_thickness_by_curvature']:
+            out_dir += '_corr-curv'
+        out_dir = out_dir.lower()
+        out_dir = os.path.join(DATA_DIR, 'gradient', out_dir)
+        return out_dir
+
+    def save(self):
+        """
+        Save the gradients map projected on surface and lambdas
         """
         np.savez_compressed(
-            self.get_path()+'_surface',
+            os.path.join(self.get_out_dir(),'gradients_surface.npz'),
             surface=self.project_to_surface()
         )
-
-    def save_lambdas(self):
-        """
-        Save lambdas as txt
-        """
         np.savetxt(
-            self.get_path()+'_lambdas.txt',
+            os.path.join(self.get_out_dir(),'lambdas.txt'),
             self.gm.lambdas_
         )
 
     def plot_scree(self):
+        """
+        Save the scree plot
+        """
         fig, axes = plt.subplots(1, 2, figsize=(12,5))
         scatterplot(
             x = np.arange(1, self.gm.lambdas_.shape[0]+1).astype('str'),
@@ -340,11 +323,13 @@ class LaminarSimilarityGradients:
         axes[1].set_title(f'Cumulative variance explained by the gradients\n(out of total variance in the first {self.gm.lambdas_.shape[0]} gradients)')
         for ax in axes:
             ax.set_xlabel('Gradient')
-        fig.savefig(self.get_path()+'_scree.png', dpi=192)
+        fig.savefig(
+            os.path.join(self.get_out_dir(),'scree.png'),
+            dpi=192)
 
-    def plot_concat_matrix(self, outfile=None):
+    def plot_concat_matrix(self):
         """
-        Plot the matrix as heatmap
+        Plot the concatenated matrix as heatmap
         """
         fig, ax = plt.subplots(figsize=(7*len(self.matrix_objs),7))
         heatmap(
@@ -353,10 +338,10 @@ class LaminarSimilarityGradients:
             cbar=False,
             ax=ax)
         ax.axis('off')
-        if not outfile:
-            outfile = self.get_path() + '_concatmat.png'
         fig.tight_layout()
-        fig.savefig(outfile)
+        fig.savefig(
+            os.path.join(self.get_out_dir(),f'matrix_input-{self.gradient_input_type}.png'), 
+            dpi=192)
 
 
 #> Create several gradients with different options
@@ -365,12 +350,8 @@ for gradient_input_type in ['thickness-density', 'thickness', 'density']:
     for parcellation_name in ['sjh']:
         for exc_masks in [adysgranular_masks, None]:
             for correct_thickness_by_curvature in [True, False]:
-                matrices = []
-                for matrix_input_type in gradient_input_type.split('-'):
-                    matrix = LaminarSimilarityMatrix(
-                        input_type=matrix_input_type, 
-                        parcellation_name=parcellation_name,
-                        exc_masks=exc_masks,
-                        correct_thickness_by_curvature=correct_thickness_by_curvature)
-                    matrices.append(matrix)
-                gradients = LaminarSimilarityGradients(matrices, gradient_input_type=gradient_input_type)
+                gradients = LaminarSimilarityGradients(
+                    gradient_input_type=gradient_input_type,
+                    parcellation_name=parcellation_name,
+                    exc_masks=exc_masks,
+                    correct_thickness_by_curvature=correct_thickness_by_curvature)
