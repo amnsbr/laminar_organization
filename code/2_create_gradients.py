@@ -5,7 +5,6 @@ import sklearn as sk
 import scipy.stats
 import matplotlib.pyplot as plt
 import seaborn as sns
-import nilearn.surface
 import brainspace.gradient
 import helpers
 
@@ -13,25 +12,13 @@ import helpers
 abspath = os.path.abspath(__file__)
 cwd = os.path.dirname(abspath)
 DATA_DIR = os.path.join(cwd, '..', 'data')
-os.makedirs(os.path.join(DATA_DIR, 'gradient'), exist_ok=True)
+os.makedirs(os.path.join(DATA_DIR, 'result'), exist_ok=True)
 os.makedirs(os.path.join(DATA_DIR, 'matrix'), exist_ok=True)
-#> specify the path to adysgranular masks
-adysgranular_masks = {
-    'L': os.path.join(
-        DATA_DIR, 'surface',
-        'tpl-bigbrain_hemi-L_desc-adysgranular_mask_parcellation-sjh_thresh_0.1.npy'
-    ),
-    'R': os.path.join(
-        DATA_DIR, 'surface',
-        'tpl-bigbrain_hemi-R_desc-adysgranular_mask_parcellation-sjh_thresh_0.1.npy'
-    )
-}
-
 
 #> laminar similarity matrix class
 class LaminarSimilarityMatrix:
     def __init__(self, input_type, out_dir, normalize_by_total_thickness=True,
-                 similarity_method = 'partial_corr', similarity_scale='parcel',
+                 similarity_method = 'euclidean', similarity_scale='parcel',
                  exc_masks=None,  parcellation_name='sjh', correct_thickness_by_curvature=True):
         """
         Initializes laminar thickness/density similarity matrix object
@@ -44,7 +31,7 @@ class LaminarSimilarityMatrix:
         out_dir: (str) path to the output directory
         normalize_by_total_thickness: (bool) Normalize by total thickness. Default: True
         similarity_method: (str) how is similarity of laminar structure between two parcels determined
-            - 'partial_corr': partial correlation with mean thickness pattern as covariate
+            - 'parcor': partial correlation with mean thickness pattern as covariate
             - 'euclidean': euclidean distance [will normalize to 0-1]; very similar to pearson
             - 'pearson': Pearson's correlation coefficient
         similarity_scale: (str) granularity of similarity measurement
@@ -125,8 +112,8 @@ class LaminarSimilarityMatrix:
         self.concat_parcellated_laminar_data = helpers.concat_hemispheres(self.parcellated_laminar_data, dropna=True)
         print(f"Creating similarity matrix by {self.similarity_method} at parcel scale")
         #> Calculate parcel-wise similarity matrix
-        if self.similarity_method in ['partial_corr', 'pearson']:
-            if self.similarity_method == 'partial_corr':
+        if self.similarity_method in ['parcor', 'pearson']:
+            if self.similarity_method == 'parcor':
                 #> calculate partial correlation
                 r_ij = np.corrcoef(self.concat_parcellated_laminar_data)
                 mean_laminar_data = self.concat_parcellated_laminar_data.mean()
@@ -137,6 +124,8 @@ class LaminarSimilarityMatrix:
                 matrix = (r_ij - r_icjc) / np.sqrt(np.outer((1-r_ic**2),(1-r_ic**2)))
             else:
                 np.corrcoef(self.concat_parcellated_laminar_data.values)
+            #> zero out negative correlations
+            matrix[matrix<0] = 0
             #> zero out correlations of 1 (to avoid division by 0)
             matrix[matrix==1] = 0
             #> Fisher's z-transformation
@@ -207,9 +196,10 @@ class LaminarSimilarityMatrix:
 
     def save(self):
         """
-        Save the matrix to a .npz file
+        Save the matrix to a .csv file
         """
-        np.savez_compressed(os.path.join(self.out_dir, self.filename)+'.npz', matrix=self.matrix)
+        labeled_matrix = pd.DataFrame(self.matrix, columns=self.valid_parcels, index=self.valid_parcels)
+        labeled_matrix.to_csv(os.path.join(self.out_dir, self.filename)+'.csv', index_label='parcel')
 
     def plot(self):
         """
@@ -217,9 +207,9 @@ class LaminarSimilarityMatrix:
         """
         #> use different colors for different input types
         if self.input_type == 'thickness':
-            cmap = 'RdBu_r'
+            cmap = sns.color_palette("rocket", as_cmap=True)
         else:
-            cmap = 'PiYG'
+            cmap = sns.color_palette("viridis", as_cmap=True)
         # cmap = sns.color_palette("mako", as_cmap=True)
         fig, ax = plt.subplots(figsize=(7,7))
         sns.heatmap(
@@ -370,13 +360,13 @@ class LaminarSimilarityGradients:
         """
         Get the path to the directory of the gradient (and create it if needed)
         """
-        out_dir = f'gradient_input-{self.gradient_input_type}_parc-{self._matrix_kwargs["parcellation_name"]}_approach-{self.approach}'
+        out_dir = f'input-{self.gradient_input_type}_parc-{self._matrix_kwargs["parcellation_name"]}_approach-{self.approach}_metric-{self._matrix_kwargs["similarity_method"]}_{self._matrix_kwargs["similarity_scale"]}'
         if self._matrix_kwargs['exc_masks']:
             out_dir += '_excmask-adys'
         if self._matrix_kwargs['correct_thickness_by_curvature']:
             out_dir += '_corr-curv'
         out_dir = out_dir.lower()
-        out_dir = os.path.join(DATA_DIR, 'gradient', out_dir)
+        out_dir = os.path.join(DATA_DIR, 'result', out_dir)
         return out_dir
 
     def save(self):
@@ -434,12 +424,25 @@ class LaminarSimilarityGradients:
 
 #> Create several gradients with different options
 #  The first loop is the main analysis and the rest are done for assessing robustness
-for gradient_input_type in ['thickness']: #['thickness', 'thickness-density']:
-    for parcellation_name in ['sjh']:
+for parcellation_name in ['sjh', 'schaefer400']:
+    adysgranular_masks = {
+        'L': os.path.join(
+            DATA_DIR, 'surface',
+            f'tpl-bigbrain_hemi-L_desc-adysgranular_mask_parcellation-{parcellation_name}_thresh_0.1.npy'
+        ),
+        'R': os.path.join(
+            DATA_DIR, 'surface',
+            f'tpl-bigbrain_hemi-R_desc-adysgranular_mask_parcellation-{parcellation_name}_thresh_0.1.npy'
+        )
+    }
+    for gradient_input_type in ['thickness']: #['thickness', 'thickness-density']:
         for exc_masks in [None, adysgranular_masks]:
             for correct_thickness_by_curvature in [False, True]:
                 gradients = LaminarSimilarityGradients(
                     gradient_input_type=gradient_input_type,
                     parcellation_name=parcellation_name,
                     exc_masks=exc_masks,
-                    correct_thickness_by_curvature=correct_thickness_by_curvature)
+                    correct_thickness_by_curvature=correct_thickness_by_curvature,
+                    similarity_method='parcor',
+                    similarity_scale='parcel'
+                    )

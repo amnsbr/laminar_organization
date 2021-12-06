@@ -46,7 +46,7 @@ def create_curvature_similarity_matrix(parcellation_name):
 
     parcellation_name: (str) name of the parcellation (must exist in `data/parcellation`)
     """
-    out_path = os.path.join(DATA_DIR, 'matrix', f'curvature_similarity_parc-{parcellation_name}.txt')
+    out_path = os.path.join(DATA_DIR, 'matrix', f'curvature_similarity_parc-{parcellation_name}.csv')
     if os.path.exists(out_path):
         # skip this if GD matrix already exist
         print(f"Curvature similiarity matrix exists in {out_path}")
@@ -63,7 +63,8 @@ def create_curvature_similarity_matrix(parcellation_name):
     parcellated_curvature = helpers.parcellate(
         curvature, 
         parcellation_name, 
-        averaging_method=None
+        averaging_method=None,
+        na_midline=False,
         )
     #> create pdfs and store min and max curv at each parcel
     pdfs = {}
@@ -81,16 +82,19 @@ def create_curvature_similarity_matrix(parcellation_name):
             .reset_index(drop=False)
             .drop_duplicates('index')
             .set_index('index')
-            .reset_index(drop=True) # get rid of original parcel labels
     )
     #> measure parcel-to-parcel similarity of curvature distributions
     #  using Jensen-Shannon distance
-    js_distance_matrix = np.zeros((pdfs.shape[0],pdfs.shape[0]))
-    for idx_i, pdf_i in pdfs.iterrows():
-        for idx_j, pdf_j in pdfs.iterrows():
-            if idx_i == idx_j:
-                js_distance_matrix[idx_i, idx_j] = 0
-            elif idx_i > idx_j: # lower triangle only
+    js_distance_matrix = pd.DataFrame(
+        np.zeros((pdfs.shape[0],pdfs.shape[0])),
+        columns=pdfs.index,
+        index=pdfs.index
+    )
+    for parc_i, pdf_i in pdfs.iterrows():
+        for parc_j, pdf_j in pdfs.iterrows():
+            if parc_i == parc_j:
+                js_distance_matrix.loc[parc_i, parc_j] = 0
+            elif parc_i > parc_j: # lower triangle only
                 #> find the min and max curv across the pair of parcels and 
                 #  create a linearly spaced discrete array [min, max]
                 #  used for sampling PDFs of curvature in each parcel
@@ -103,15 +107,15 @@ def create_curvature_similarity_matrix(parcellation_name):
                 Y_j = pdf_j['pdf'].evaluate(X_pair)
                 Y_i /= Y_i.sum()
                 Y_j /= Y_j.sum()
-                js_distance_matrix[idx_i, idx_j] = scipy.spatial.distance.jensenshannon(Y_i, Y_j)    #> calcualte curvature similarity as 1 - distance (TODO: is this the best approach?)
+                js_distance_matrix.loc[parc_i, parc_j] = scipy.spatial.distance.jensenshannon(Y_i, Y_j)    #> calcualte curvature similarity as 1 - distance (TODO: is this the best approach?)
     #> make sure that there are no np.infs and the distance is bound by 0 and 1
-    assert (js_distance_matrix.min() >= 0) and (js_distance_matrix.max() <= 1)
+    assert (js_distance_matrix.values.min() >= 0) and (js_distance_matrix.values.max() <= 1)
     #> calcualate similarity as 1 - dintance
     curv_similarity_matrix = 1 - js_distance_matrix
     #> copy the lower triangle to the upper triangle
     i_upper = np.triu_indices(curv_similarity_matrix.shape[0], 1)
-    curv_similarity_matrix[i_upper] = curv_similarity_matrix.T[i_upper]
-    np.savetxt(out_path, curv_similarity_matrix)
+    curv_similarity_matrix.values[i_upper] = curv_similarity_matrix.T.values[i_upper]
+    curv_similarity_matrix.to_csv(out_path, index_label='parcel')
     print(f"Curvature similiarity matrix created in {out_path}")
 
 def create_pairwise_geodesic_distance_matrix(parcellation_name, fill_l2r=False, approach='center-to-center'):
@@ -137,9 +141,9 @@ def create_pairwise_geodesic_distance_matrix(parcellation_name, fill_l2r=False, 
     """
     # Set up
     outPath = os.path.join(DATA_DIR, 'matrix', f'geodesic_parc-{parcellation_name}_approach-{approach}{"_l2r_filled" if fill_l2r else ""}')
-    if os.path.exists(outPath+'.txt'):
+    if os.path.exists(outPath+'.csv'):
         # skip this if GD matrix already exist
-        print(f"GD matrix exists in {outPath+'.txt'}")
+        print(f"GD matrix exists in {outPath+'.csv'}")
 
     GDs = {}
     for hem in ['L', 'R']:
@@ -161,10 +165,12 @@ def create_pairwise_geodesic_distance_matrix(parcellation_name, fill_l2r=False, 
         _, _, names = nibabel.freesurfer.io.read_annot(
             os.path.join(
                 DATA_DIR, 'parcellation', 
-                f'{hem.lower()}h.{parcellation_name}.annot')
+                f'{hem.lower()}h_{parcellation_name}.annot')
         )
         if parcellation_name == 'sjh':
             names = list(map(lambda l: int(l.decode().replace('sjh_','')), names))
+        elif parcellation_name == 'schaefer400':
+            names = list(map(lambda l: l.decode(), names))
         transdict = dict(enumerate(names))
         parc = np.vectorize(transdict.get)(labels)
         # find centre vertices
@@ -230,7 +236,8 @@ def create_pairwise_geodesic_distance_matrix(parcellation_name, fill_l2r=False, 
             #  while creating GD_full
             GD_full.iloc[0, GDs['L'].shape[0]:] = GDs['R'][0].iloc[1:]
             GD_full.iloc[GDs['L'].shape[0]:, 0] = GDs['R'][0].iloc[1:]
-    np.savetxt(outPath+'.txt', GD_full.values, fmt='%.12f')
+    # np.savetxt(outPath+'.txt', GD_full.values, fmt='%.12f')
+    GD_full.to_csv(outPath+'.csv', index_label='parcel')
     print("[ INFO ]..... Geodesic distance completed")
 
 def calculate_covariates():
@@ -241,7 +248,7 @@ def calculate_covariates():
     print("Creating the curvature map")
     create_curvature_surf_map()
     # 2) create pairwise geodesic distance matrices for each parcellation
-    for parcellation_name in ['sjh']:
+    for parcellation_name in ['sjh', 'schaefer400']:
         print(f"Creating the curvature similarity matrix for {parcellation_name} parcellation")
         create_curvature_similarity_matrix(parcellation_name)
         print(f"Creating pairwise geodesic distance matrix for {parcellation_name} parcellation")

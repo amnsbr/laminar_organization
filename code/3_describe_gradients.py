@@ -31,7 +31,7 @@ def plot_gradients(gradient_file, n_gradients=3):
             filename=gradient_file.replace('.npz', f'_g{gradient_num}.png')
         )
 
-def plot_binned_laminar_profile(gradient_file, n_gradients=3):
+def plot_binned_laminar_profile(gradient_file, parcellation_name, n_gradients=3):
     """
     Plots the relative laminar thickness (TODO: and density) of 10 bins of
     the first `n_gradients` of `gradient_file`
@@ -46,8 +46,8 @@ def plot_binned_laminar_profile(gradient_file, n_gradients=3):
     laminar_thickness = helpers.read_laminar_thickness(regress_out_curvature=regress_out_curvature)
     # laminar_density = helpers.read_laminar_density()
     #> parcellate the data
-    parcellated_gradients = helpers.parcellate(gradient_maps, 'sjh')
-    parcellated_laminar_thickness = helpers.parcellate(laminar_thickness, 'sjh')
+    parcellated_gradients = helpers.parcellate(gradient_maps, parcellation_name)
+    parcellated_laminar_thickness = helpers.parcellate(laminar_thickness, parcellation_name)
     parcellated_laminar_thickness = helpers.concat_hemispheres(parcellated_laminar_thickness, dropna=False)
     # re-normalize small deviations from sum=1 because of parcellation
     parcellated_laminar_thickness /= parcellated_laminar_thickness.sum(axis=1)
@@ -93,7 +93,7 @@ def plot_binned_laminar_profile(gradient_file, n_gradients=3):
         clfig.savefig(gradient_file.replace('gradients_surface.npz', f'binned_profile_g{gradient_num}_clbar.png'), dpi=192)
 
 #> describe all gradients
-gradient_files = glob.glob(os.path.join(DATA_DIR, 'gradient', '*', 'gradients_surface.npz'))
+gradient_files = glob.glob(os.path.join(DATA_DIR, 'result', '*', 'gradients_surface.npz'))
 for gradient_file in gradient_files:
     print("Gradient file:", gradient_file)
     plot_gradients(gradient_file)

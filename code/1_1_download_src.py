@@ -18,7 +18,7 @@ os.makedirs(SRC_DIR, exist_ok=True)
 #> Create 'data' and its subfolders
 DATA_DIR = os.path.abspath(os.path.join(cwd, '..', 'data'))
 os.makedirs(DATA_DIR, exist_ok=True)
-for subfolder in ['parcellation', 'parcellated_surface', 'surface', 'gradient', 'matrix']:
+for subfolder in ['parcellation', 'parcellated_surface', 'surface', 'result', 'matrix']:
     os.makedirs(os.path.join(DATA_DIR, subfolder), exist_ok=True)
 
 #TODO: Make all file names BIDS-like
@@ -29,6 +29,10 @@ helpers.download('https://ftp.bigbrainproject.org/bigbrain-ftp/BigBrainRelease.2
 # helpers.download_bigbrain_ftp(
 #     'BigBrainRelease.2015/3D_Volumes/Histological_Space/mnc/',
 #     'full16_100um_optbal.mnc')
+# Density profiles
+helpers.download('https://github.com/caseypaquola/BigBrainWarp/raw/master/spaces/tpl-bigbrain/tpl-bigbrain_desc-profiles.txt',
+                copy_to=os.path.join(DATA_DIR, 'surface', f'tpl-bigbrain_desc-profiles.txt'))
+
 for hem in ['L', 'R']:
     # Bigbrain space (copy in data/)
     helpers.download(
@@ -36,11 +40,15 @@ for hem in ['L', 'R']:
         copy_to=os.path.join(DATA_DIR, 'surface', f'tpl-bigbrain_hemi-{hem}_desc-mid.surf.gii'))
     # SJH 1012 parcellation
     helpers.download(f'https://github.com/MICA-MNI/micaopen/raw/master/MPC/maps/{hem.lower()}h.sjh.annot',f'{hem.lower()}h_sjh.annot',
-                     copy_to=os.path.join(DATA_DIR, 'parcellation', f'{hem.lower()}h.sjh.annot'))
+                     copy_to=os.path.join(DATA_DIR, 'parcellation', f'{hem.lower()}h_sjh.annot'))
+    # Schaefer 400 parcellation
+    helpers.download(f'https://github.com/ThomasYeoLab/CBIG/raw/master/stable_projects/brain_parcellation/Schaefer2018_LocalGlobal/Parcellations/FreeSurfer5.3/fsaverage/label/{hem.lower()}h.Schaefer2018_400Parcels_7Networks_order.annot',
+                     f'{hem.lower()}h_schaefer400.annot',
+                     copy_to=os.path.join(DATA_DIR, 'parcellation', f'{hem.lower()}h_schaefer400.annot'))
     # Hist MPC gradients
     for hist_g_num in range(1, 3):
         helpers.download(f'https://github.com/caseypaquola/BigBrainWarp/raw/master/spaces/tpl-bigbrain/tpl-bigbrain_hemi-{hem}_desc-Hist_G{hist_g_num}.txt',
-                        copy_to=os.path.join(DATA_DIR, 'gradient', f'tpl-bigbrain_hemi-{hem}_desc-Hist_G{hist_g_num}.txt'))
+                        copy_to=os.path.join(DATA_DIR, 'surface', f'tpl-bigbrain_hemi-{hem}_desc-Hist_G{hist_g_num}.txt'))
     # Von Economo regions
     helpers.download(f'https://github.com/DevelopmentalImagingMCRI/freesurfer_statsurf_display/raw/master/fsaverage_fs6/label/{hem.lower()}h.economo.annot', f'{hem.lower()}h_economo.annot')
     # Layers thicknesses (copy in data/surface)

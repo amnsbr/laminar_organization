@@ -6,8 +6,15 @@ source laminar_gradients_env/bin/activate && \
 laminar_gradients_env/bin/pip install --upgrade pip && \
 laminar_gradients_env/bin/pip install -r code/requirements.txt
 
+
 mkdir 'tools'
 cd 'tools'
 if ! [ -f 'bigbrainwarp.simg' ]; then
     singularity pull docker://caseypaquola/bigbrainwarp
 fi
+
+git clone https://github.com/MICA-MNI/ENIGMA.git
+cd ENIGMA
+source ../../laminar_gradients_env/bin/activate && \
+../../laminar_gradients_env/bin/python setup.py install
+

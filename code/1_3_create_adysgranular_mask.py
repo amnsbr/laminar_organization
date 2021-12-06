@@ -61,7 +61,7 @@ def create_adysgranular_mask(parcellation_name=None, tolerable_adys_in_parcels=0
         #> save the mask
         mask_filepath = os.path.join(
             DATA_DIR, 'surface', 
-            f'tpl-bigbrain_hemi-{hem}_desc-adysgranular_mask_parcellation-{str(parcellation_name).lower()}_thresh_{tolerable_adys_in_parcels}.npy'
+            f'tpl-bigbrain_hemi-{hem}_desc-adysgranular_mask_parcellation-{parcellation_name}_thresh_{tolerable_adys_in_parcels}.npy'
             )
         if not os.path.exists(mask_filepath):
             np.save(

@@ -2,7 +2,7 @@
 # Transforms parcellations to the bigbrain space
 cd "$(dirname "$0")/../src"
 SRC_PATH=$(realpath .)
-fsaverage_to_bigbrain=('sjh.annot' 'economo.annot')
+fsaverage_to_bigbrain=('sjh.annot' 'economo.annot' 'schaefer400.annot')
 for suffix in "${fsaverage_to_bigbrain[@]}"
 do
     if [ -f "../data/parcellation/tpl-bigbrain_hemi-L_desc-${suffix/.annot/_parcellation}.label.gii" ]; then

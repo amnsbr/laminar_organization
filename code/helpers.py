@@ -18,6 +18,10 @@ abspath = os.path.abspath(__file__)
 cwd = os.path.dirname(abspath)
 DATA_DIR = os.path.join(cwd, '..', 'data')
 
+MIDLINE_PARCELS = {
+    'schaefer400': ['Background+FreeSurfer_Defined_Medial_Wall'],
+    'sjh': [0]
+}
 ###### Loading data ######
 
 def download(url, file_name=None, copy_to=None, overwrite=False):
@@ -193,6 +197,8 @@ def load_parcellation_map(parcellation_name, concatenate):
         )
         if parcellation_name == 'sjh':
             sorted_labels = list(map(lambda l: int(l.decode().replace('sjh_','')), sorted_labels))
+        elif parcellation_name == 'schaefer400':
+            sorted_labels = list(map(lambda l: l.decode(), sorted_labels))
         transdict = dict(enumerate(sorted_labels))
         labeled_parcellation_map[hem] = np.vectorize(transdict.get)(parcellation_map)
     if concatenate:
@@ -200,7 +206,7 @@ def load_parcellation_map(parcellation_name, concatenate):
     else:
         return labeled_parcellation_map
 
-def parcellate(surface_data, parcellation_name, averaging_method='median'):
+def parcellate(surface_data, parcellation_name, averaging_method='median', na_midline=True):
     """
     Parcellates `surface data` using `parcellation` and by taking the
     median or mean (specified via `averaging_method`) of the vertices within each parcel.
@@ -213,6 +219,7 @@ def parcellate(surface_data, parcellation_name, averaging_method='median'):
         - 'median'
         - 'mean'
         - None (will return groupby object)
+    na_midline: (bool) make midline vertices NaN
 
     Returns
     ---------
@@ -226,6 +233,10 @@ def parcellate(surface_data, parcellation_name, averaging_method='median'):
             #> parcellate
             parcellated_vertices = (
                 pd.DataFrame(surface_data[hem], index=labeled_parcellation_maps[hem])
+            )
+            if na_midline:
+                parcellated_vertices.loc[MIDLINE_PARCELS[parcellation_name]] = np.NaN
+            parcellated_vertices = (parcellated_vertices
                 .reset_index(drop=False)
                 .groupby('index')
             )
@@ -242,6 +253,10 @@ def parcellate(surface_data, parcellation_name, averaging_method='median'):
         #> parcellate
         parcellated_vertices = (
             pd.DataFrame(surface_data, index=labeled_parcellation_maps)
+        )
+        if na_midline:
+            parcellated_vertices.loc[MIDLINE_PARCELS[parcellation_name]] = np.NaN
+        parcellated_vertices = (parcellated_vertices
             .reset_index(drop=False)
             .groupby('index')
         )

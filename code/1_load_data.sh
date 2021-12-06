@@ -18,6 +18,8 @@ bash "1_2_transformation_to_bigbrain.sh"
 echo "-----------Creating masks of bigbrain space including agranular and dysgranular region-----------"
 source "../laminar_gradients_env/bin/activate" &\
 "../laminar_gradients_env/bin/python" 1_3_create_adysgranular_mask.py -p sjh
+source "../laminar_gradients_env/bin/activate" &\
+"../laminar_gradients_env/bin/python" 1_3_create_adysgranular_mask.py -p schaefer400
 
 #> 4. Calculate the covariates (curvature and geodesic distance)
 echo "-----------Calculating covariates-----------"

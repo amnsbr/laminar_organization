@@ -9,6 +9,7 @@ import os
 import glob
 import itertools
 import gc
+import re
 import numpy as np
 from numpy.lib.function_base import gradient
 import pandas as pd
@@ -54,6 +55,7 @@ def create_spin_permutations_vertex(surface_data, n_perm, batch_prefix, batch_si
     print(f"Creating {n_perm} spin permutations by spinning vertices")
     if os.path.exists(os.path.join(SPIN_BATCHES_DIR, f'{batch_prefix}_batch0.npz')):
         print("Spin permutation batches already exist")
+        return
     #> read the bigbrain surface giftii files as a mesh that can be used by spin_permutations function
     lh_surf = brainspace.mesh.mesh_io.read_surface(os.path.join(DATA_DIR, 'surface', 'tpl-bigbrain_hemi-L_desc-mid.surf.gii'))
     rh_surf = brainspace.mesh.mesh_io.read_surface(os.path.join(DATA_DIR, 'surface', 'tpl-bigbrain_hemi-R_desc-mid.surf.gii'))
@@ -118,7 +120,7 @@ def create_spin_permutations_parcel(surface_data, n_perm, parcellation_name, sur
                 seed=921 # TODO: is it okay to have a fixed seed?
             )
             surrogates[hem][:, :, col_idx] = base(n=n_perm)
-    #> correctly concatenate hemispheres considering actual parcellation labels (e.g. wrt the sjh-0 parcel )
+    #> correctly concatenate hemispheres considering actual parcellation labels wrt shared parcels between hemispheres
     print("Concatenating hemispheres")
     n_parcels = helpers.parcellate(surface_data, parcellation_name).shape[0]
     concat_surrogates = np.zeros((n_perm, n_parcels, surface_data.shape[1]))
@@ -162,7 +164,7 @@ def spin_test_vertex(surface_data_to_spin, surface_data_target, n_perm, batch_pr
         batch_rh_surrogates = batch_perms['rh']
         concat_batch_surrogates = np.concatenate([batch_lh_surrogates, batch_rh_surrogates], axis=1)
         for perm_idx in range(batch_rh_surrogates.shape[0]):
-            surrogate = concat_batch_surrogates[perm_idx, :, :]
+            surrogate = pd.DataFrame(concat_batch_surrogates[perm_idx, :, :])
             #> calculate null correlation coefficient between all gradients and all other surface maps
             null_r = (
                 pd.concat([surrogate, surface_data_target], axis=1)
@@ -173,6 +175,7 @@ def spin_test_vertex(surface_data_to_spin, surface_data_target, n_perm, batch_pr
             #> add this to the null distribution
             null_distribution = np.concatenate([null_distribution, null_r], axis=0)
             #> free up memory
+            del surrogate
             gc.collect()
     #> remove the test_r from null_distribution
     null_distribution = null_distribution[1:, :, :]
@@ -321,14 +324,16 @@ def associate_cortical_types(gradient_file, n_gradients=3):
                          with the shape n_vert x total_n_gradients
     n_gradients: (int) number of gradients to associate with cortical types
     """
+    #> get parcellation name
+    parcellation_name = re.match(r".*parc-([a-z|-]+)_*", gradient_file).groups()[0]
     #> load gradient maps
     gradient_maps = np.load(gradient_file)['surface']
     #> load cortical types map
     cortical_types_map = load_cortical_types_map()
     #> parcellate the gradient maps
-    parcellated_gradients = helpers.parcellate(gradient_maps, 'sjh')
+    parcellated_gradients = helpers.parcellate(gradient_maps, parcellation_name)
     #> parcellate cortical types (using the most frequent type)
-    parcellation_map = helpers.load_parcellation_map('sjh', concatenate=True)
+    parcellation_map = helpers.load_parcellation_map(parcellation_name, concatenate=True)
     parcellated_cortical_types = (
         #>> create a dataframe of surface map including both cortical type and parcel index
         pd.DataFrame({'Cortical Type': cortical_types_map.reset_index(drop=True), 'Parcel': pd.Series(parcellation_map)})
@@ -409,6 +414,8 @@ def correlate_hist_gradients(gradient_file, n_laminar_gradients, n_perm):
     n_laminar_gradients: (int) number of gradients to associate with cortical types
     n_perm: (int) number of spin permutations
     """
+    #> get parcellation name
+    parcellation_name = re.match(r".*parc-([a-z|-]+)_*", gradient_file).groups()[0]
     print(f"Investigating correlation with Hist MPC gradients: {gradient_file}")
     #> load hist mpc gradients in n_vert * n_gradients shape
     hist_gradients = {}
@@ -417,7 +424,7 @@ def correlate_hist_gradients(gradient_file, n_laminar_gradients, n_perm):
         for hem in ['L', 'R']:
             hist_gradients[hist_gradient_num][hem] = np.loadtxt(
                 os.path.join(
-                    DATA_DIR, 'gradient',
+                    DATA_DIR, 'surface',
                     f'tpl-bigbrain_hemi-{hem}_desc-Hist_G{hist_gradient_num}.txt'
                 )
             )
@@ -444,7 +451,7 @@ def correlate_hist_gradients(gradient_file, n_laminar_gradients, n_perm):
             surface_data_to_spin = hist_gradients, 
             surface_data_target = gradient_maps[:, :n_laminar_gradients], 
             n_perm = n_perm,
-            parcellation_name='sjh',
+            parcellation_name=parcellation_name,
             surrogates_prefix='hist_gradients')
     #> save null distribution for future reference
     np.savez_compressed(
@@ -461,8 +468,8 @@ def correlate_hist_gradients(gradient_file, n_laminar_gradients, n_perm):
     with open(gradient_file.replace('gradients_surface.npz', f'correlation_HistG.txt'), 'w') as association_res_file:
         association_res_file.write(association_res_str)
     #> regression plots
-    parcellated_gradients = helpers.parcellate(gradient_maps, 'sjh')
-    parcellated_hist_gradients = helpers.parcellate(hist_gradients, 'sjh')
+    parcellated_gradients = helpers.parcellate(gradient_maps, parcellation_name)
+    parcellated_hist_gradients = helpers.parcellate(hist_gradients, parcellation_name)
     for gradient_num in range(1, n_laminar_gradients+1):
         fig, ax = plt.subplots(figsize=(4, 4))
         #> regression plot with hist G1 in blue
@@ -505,6 +512,8 @@ def correlate_laminar_properties_and_moments(gradient_file, n_laminar_gradients,
     n_laminar_gradients: (int) number of gradients to associate with cortical types
     n_perm: (int) number of spin permutations
     """
+    #> load parcellation name
+    parcellation_name = re.match(r".*parc-([a-z|-]+)_*", gradient_file).groups()[0]
     print(f"Investigating correlation with laminar properties and density moments: {gradient_file}")
     #> load laminar properties and density moments
     laminar_properties = load_laminar_properties(regress_out_cruvature=('corr-curv' in gradient_file))
@@ -525,15 +534,13 @@ def correlate_laminar_properties_and_moments(gradient_file, n_laminar_gradients,
             surface_data_to_spin = laminarprops_and_moments.values, 
             surface_data_target = gradient_maps[:, :n_laminar_gradients], 
             n_perm = n_perm,
-            parcellation_name='sjh',
+            parcellation_name=parcellation_name,
             surrogates_prefix='laminar_properties_density_moments')
     #> save null distribution for future reference
     np.savez_compressed(
         gradient_file.replace('gradients_surface.npz', f'correlation_LaminarPropsProfileMoments_null.npz'),
         coefs_null_dist=coefs_null_dist
     )
-    pvals = np.zeros((n_laminar_gradients, laminarprops_and_moments.shape[1]))
-    coefs = np.zeros((n_laminar_gradients, laminarprops_and_moments.shape[1]))
     #> clean and save the results as txt
     coefs = pd.DataFrame(coefs)
     pvals = pd.DataFrame(pvals)
@@ -545,8 +552,8 @@ def correlate_laminar_properties_and_moments(gradient_file, n_laminar_gradients,
         association_res_file.write(association_res_str)
     #> regression plots
     #>> parcellate gradients and laminar properties
-    parcellated_gradients = helpers.parcellate(gradient_maps, 'sjh')
-    parcellated_laminarprops_and_moments = helpers.parcellate(laminarprops_and_moments.values, 'sjh')
+    parcellated_gradients = helpers.parcellate(gradient_maps, parcellation_name)
+    parcellated_laminarprops_and_moments = helpers.parcellate(laminarprops_and_moments.values, parcellation_name)
     #>> add back the columns to parcellated laminar properties
     parcellated_laminarprops_and_moments = pd.DataFrame(
         parcellated_laminarprops_and_moments, 
@@ -579,7 +586,7 @@ def correlate_laminar_properties_and_moments(gradient_file, n_laminar_gradients,
                 )
 
 # > sample gradient file path
-gradient_files = glob.glob(os.path.join(DATA_DIR, 'gradient', '*', 'gradients_surface.npz'))
+gradient_files = glob.glob(os.path.join(DATA_DIR, 'result', '*', 'gradients_surface.npz'))
 for gradient_file in gradient_files[:1]: # testing
     print("Gradient:", gradient_file)
     associate_cortical_types(gradient_file)
