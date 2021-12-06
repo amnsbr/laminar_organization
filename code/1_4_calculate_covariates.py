@@ -216,20 +216,21 @@ def create_pairwise_geodesic_distance_matrix(parcellation_name, fill_l2r=False, 
             .set_index('index')
             .fillna(0))
     #> for SJH parcellation (and other parcellations with a midline overlapping parcel)
-    #  calculate L to R GD as GD(L parcel, parcel 0)+GD(parcel 0, R parcel)
-    if parcellation_name == 'sjh':
-        #> calculate GD(L parcel, parcel 0)+GD(parcel 0, R parcel) for
-        #  all pairs of (L parcel, R parcel)
-        GD_l2r = GDs['L'][0].values[1:].reshape(-1, 1) \
-                + GDs['R'][0].values[1:].reshape(1, -1)
-        #> use this to fill in the matrix
-        GD_full.iloc[1: GDs['L'].shape[0], GDs['L'].shape[0]:] = GD_l2r
-        GD_full.iloc[GDs['L'].shape[0]:, 1:GDs['L'].shape[0]] = GD_l2r.T
-        #> also fill in the (parcel 0, R parcel) GD which was removed
-        #  while creating GD_full
-        GD_full.iloc[0, GDs['L'].shape[0]:] = GDs['R'][0].iloc[1:]
-        GD_full.iloc[GDs['L'].shape[0]:, 0] = GDs['R'][0].iloc[1:]
-    np.savetxt(outPath+'.txt', GD_full, fmt='%.12f')
+    #  calculate L to R GD as GD(L parcel, parcel midline)+GD(parcel midline, R parcel)
+    if fill_l2r:
+        if parcellation_name == 'sjh': #TODO: this may not work as expected
+            #> calculate GD(L parcel, parcel 0)+GD(parcel 0, R parcel) for
+            #  all pairs of (L parcel, R parcel)
+            GD_l2r = GDs['L'][0].values[1:].reshape(-1, 1) \
+                    + GDs['R'][0].values[1:].reshape(1, -1)
+            #> use this to fill in the matrix
+            GD_full.iloc[1: GDs['L'].shape[0], GDs['L'].shape[0]:] = GD_l2r
+            GD_full.iloc[GDs['L'].shape[0]:, 1:GDs['L'].shape[0]] = GD_l2r.T
+            #> also fill in the (parcel 0, R parcel) GD which was removed
+            #  while creating GD_full
+            GD_full.iloc[0, GDs['L'].shape[0]:] = GDs['R'][0].iloc[1:]
+            GD_full.iloc[GDs['L'].shape[0]:, 0] = GDs['R'][0].iloc[1:]
+    np.savetxt(outPath+'.txt', GD_full.values, fmt='%.12f')
     print("[ INFO ]..... Geodesic distance completed")
 
 def calculate_covariates():

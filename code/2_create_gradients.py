@@ -1,10 +1,10 @@
 import os
-from argparse import ArgumentParser
 import pandas as pd
 import numpy as np
+import sklearn as sk
 import scipy.stats
 import matplotlib.pyplot as plt
-from seaborn import heatmap, scatterplot, lineplot
+import seaborn as sns
 import nilearn.surface
 import brainspace.gradient
 import helpers
@@ -30,7 +30,8 @@ adysgranular_masks = {
 
 #> laminar similarity matrix class
 class LaminarSimilarityMatrix:
-    def __init__(self, input_type, out_dir, normalize_by_total_thickness=True, 
+    def __init__(self, input_type, out_dir, normalize_by_total_thickness=True,
+                 similarity_method = 'partial_corr', similarity_scale='parcel',
                  exc_masks=None,  parcellation_name='sjh', correct_thickness_by_curvature=True):
         """
         Initializes laminar thickness/density similarity matrix object
@@ -42,6 +43,14 @@ class LaminarSimilarityMatrix:
             - 'density'
         out_dir: (str) path to the output directory
         normalize_by_total_thickness: (bool) Normalize by total thickness. Default: True
+        similarity_method: (str) how is similarity of laminar structure between two parcels determined
+            - 'partial_corr': partial correlation with mean thickness pattern as covariate
+            - 'euclidean': euclidean distance [will normalize to 0-1]; very similar to pearson
+            - 'pearson': Pearson's correlation coefficient
+        similarity_scale: (str) granularity of similarity measurement
+            - 'parcel': similarity method is used between average laminar profile of parcels
+            - 'vertex': similarity method is used between all pairs of vertices between two
+                        parcels and then the similarity metric is averaged
         exc_masks: (dict of str) Path to the surface masks of vertices that should be excluded (L and R) (format: .npy)
         correct_thickness_by_curvature: (bool) Regress out curvature. Default: True
         parcellation_name: (str) Parcellation scheme
@@ -50,6 +59,8 @@ class LaminarSimilarityMatrix:
         #> save parameters as class fields
         self.input_type = input_type
         self.normalize_by_total_thickness = normalize_by_total_thickness
+        self.similarity_method = similarity_method
+        self.similarity_scale = similarity_scale
         self.exc_masks = exc_masks
         self.parcellation_name = parcellation_name
         self.correct_thickness_by_curvature = correct_thickness_by_curvature
@@ -82,49 +93,117 @@ class LaminarSimilarityMatrix:
             self.laminar_data = helpers.read_laminar_density(
                 exc_masks=self.exc_masks
             )
-        #> Parcellate the data
-        print("Parcellating the data")
-        self.parcellated_laminar_data = helpers.parcellate(
-            self.laminar_data,
-            self.parcellation_name,
-            averaging_method='median'
-            )
-        #> Calculate parcel-wise full or partial correlation
-        print(f"Creating similarity matrix")
-        self.matrix = self.create_by_corr()
+        #> create the similarity matrix
+        if self.similarity_scale == 'parcel':
+            self.matrix, self.valid_parcels = self.create_at_parcels()
+        else:
+            self.matrix, self.valid_parcels = self.create_at_vertices()
 
-    def create_by_corr(self):
+    def create_at_parcels(self):
         """
-        Creates laminar thickness similarity matrix by taking partial with the average laminar thickness pattern 
-        as the covariate
+        Creates laminar thickness/density similarity matrix by taking Euclidean distance, Pearson's correlation
+        or partial correltation (with the average laminar thickness pattern as the covariate) between
+        average values of parcels
 
         Note: Partial correlation is based on "Using recursive formula" subsection in the wikipedia
         entry for "Partial correlation", which is also the same as Formula 2 in Paquola et al. PBio 2019
         (https://doi.org/10.1371/journal.pbio.3000284)
+        Note 2: Euclidean distance is reversed (* -1) and rescaled to 0-1 (with 1 showing max similarity)
 
         Returns
         -------
         matrix: (np.ndarray) n_parcels x n_parcels: how similar are each pair of parcels in their
                 laminar thickness pattern
         """
+        print("Concatenating and parcellating the data")
+        self.parcellated_laminar_data = helpers.parcellate(
+            self.laminar_data,
+            self.parcellation_name,
+            averaging_method='median'
+            )
         #> concatenate left and right hemispheres
-        concat_parcellated_laminar_data = helpers.concat_hemispheres(self.parcellated_laminar_data, dropna=True)
-        #> create similarity matrix
-        #> calculate partial correlation
-        r_ij = np.corrcoef(concat_parcellated_laminar_data)
-        mean_laminar_data = concat_parcellated_laminar_data.mean()
-        r_ic = concat_parcellated_laminar_data\
-                    .corrwith(mean_laminar_data, 
-                    axis=1) # r_ic and r_jc are the same
-        r_icjc = np.outer(r_ic, r_ic) # the second r_ic is actually r_jc
-        matrix = (r_ij - r_icjc) / np.sqrt(np.outer((1-r_ic**2),(1-r_ic**2)))
-        #> zero out correlations of 1 (to avoid division by 0)
-        matrix[matrix==1] = 0
-        #> Fisher's z-transformation
-        matrix = 0.5 * np.log((1 + matrix) /  (1 - matrix))
-        #> zero out NaNs and inf
-        matrix[np.isnan(matrix) | np.isinf(matrix)] = 0
-        return matrix
+        self.concat_parcellated_laminar_data = helpers.concat_hemispheres(self.parcellated_laminar_data, dropna=True)
+        print(f"Creating similarity matrix by {self.similarity_method} at parcel scale")
+        #> Calculate parcel-wise similarity matrix
+        if self.similarity_method in ['partial_corr', 'pearson']:
+            if self.similarity_method == 'partial_corr':
+                #> calculate partial correlation
+                r_ij = np.corrcoef(self.concat_parcellated_laminar_data)
+                mean_laminar_data = self.concat_parcellated_laminar_data.mean()
+                r_ic = self.concat_parcellated_laminar_data\
+                            .corrwith(mean_laminar_data, 
+                            axis=1) # r_ic and r_jc are the same
+                r_icjc = np.outer(r_ic, r_ic) # the second r_ic is actually r_jc
+                matrix = (r_ij - r_icjc) / np.sqrt(np.outer((1-r_ic**2),(1-r_ic**2)))
+            else:
+                np.corrcoef(self.concat_parcellated_laminar_data.values)
+            #> zero out correlations of 1 (to avoid division by 0)
+            matrix[matrix==1] = 0
+            #> Fisher's z-transformation
+            matrix = 0.5 * np.log((1 + matrix) /  (1 - matrix))
+            #> zero out NaNs and inf
+            matrix[np.isnan(matrix) | np.isinf(matrix)] = 0
+        elif self.similarity_method == 'euclidean':
+            #> calculate pair-wise euclidean distance
+            matrix = sk.metrics.pairwise.euclidean_distances(self.concat_parcellated_laminar_data.values)
+            #> make it negative (so higher = more similar) and rescale to range (0, 1)
+            matrix = sk.preprocessing.minmax_scale(-matrix, (0, 1))
+        #> determine valid parcels
+        valid_parcels = self.concat_parcellated_laminar_data.index.tolist()
+        return matrix, valid_parcels
+
+    def create_at_vertices(self):
+        """
+        Creates laminar thickness/density similarity matrix by taking Euclidean distance or Pearson's correlation
+        between all pairs of vertices between two pairs of parcels and then taking the average value of
+        the resulting n_vert_parcel_i x n_vert_parcel_j matrix for the cell i, j of the parcels similarity matrix
+
+        Note: Average euclidean distance is reversed (* -1) and rescaled to 0-1 (with 1 showing max similarity)
+
+        Returns
+        -------
+        matrix: (np.ndarray) n_parcels x n_parcels: how similar are each pair of parcels in their
+                laminar data pattern
+        """
+        if self.similarity_method != 'euclidean':
+            raise NotImplementedError("Correlation at vertex level is not implemented")
+        #> Concatenate and parcellate the data
+        print("Concatenating and parcellating the data")
+        concat_laminar_data = np.concatenate([self.laminar_data['L'], self.laminar_data['R']], axis=0)
+        self.concat_parcellated_laminar_data = helpers.parcellate(
+            concat_laminar_data,
+            self.parcellation_name,
+            averaging_method=None
+            ) # a groupby object
+        n_parcels = len(self.concat_parcellated_laminar_data)
+        #> Calculating similarity matrix
+        print(f"Creating similarity matrix by {self.similarity_method} at vertex scale")
+        matrix = pd.DataFrame(
+            np.zeros((n_parcels, n_parcels)),
+            columns = self.concat_parcellated_laminar_data.groups.keys(),
+            index = self.concat_parcellated_laminar_data.groups.keys()
+        )
+        invalid_parcs = []
+        for parc_i, vertices_i in self.concat_parcellated_laminar_data.groups.items():
+            print("\tParcel", parc_i) # printing parcel_i name since it'll take a long time per parcel
+            laminar_data_i = concat_laminar_data[vertices_i,:]
+            laminar_data_i = laminar_data_i[~np.isnan(laminar_data_i).any(axis=1)]
+            if laminar_data_i.shape[0] == 0: # sometimes all values may be NaN
+                matrix.loc[parc_i, :] = np.NaN
+                invalid_parcs.append(parc_i)
+                continue
+            for parc_j, vertices_j in self.concat_parcellated_laminar_data.groups.items():
+                laminar_data_j = concat_laminar_data[vertices_j,:]
+                laminar_data_j = laminar_data_j[~np.isnan(laminar_data_j).any(axis=1)]
+                if laminar_data_i.shape[0] == 0:
+                    matrix.loc[parc_i, :] = np.NaN
+                else:
+                    matrix.loc[parc_i, parc_j] = sk.metrics.pairwise.euclidean_distances(laminar_data_i, laminar_data_j).mean()
+        #> make ED values negative (so higher = more similar) and rescale to range (0, 1)
+        matrix = sk.preprocessing.minmax_scale(-matrix, (0, 1))
+        #> store the valid parcels
+        valid_parcels = sorted(list(set(self.concat_parcellated_laminar_data.groups.keys())-set(invalid_parcs)))
+        return matrix, valid_parcels
 
     def save(self):
         """
@@ -136,15 +215,30 @@ class LaminarSimilarityMatrix:
         """
         Plot the matrix as heatmap
         """
+        #> use different colors for different input types
+        if self.input_type == 'thickness':
+            cmap = 'RdBu_r'
+        else:
+            cmap = 'PiYG'
+        # cmap = sns.color_palette("mako", as_cmap=True)
         fig, ax = plt.subplots(figsize=(7,7))
-        heatmap(
+        sns.heatmap(
             self.matrix,
-            vmax=np.quantile(self.matrix.flatten(),0.75),
+            vmin=np.quantile(self.matrix.flatten(),0.025),
+            vmax=np.quantile(self.matrix.flatten(),0.975),
+            cmap=cmap,
             cbar=False,
             ax=ax)
         ax.axis('off')
         fig.tight_layout()
         fig.savefig(os.path.join(self.out_dir, self.filename)+'.png')
+        clbar_fig = helpers.make_colorbar(
+            vmin=np.quantile(self.matrix.flatten(),0.025),
+            vmax=np.quantile(self.matrix.flatten(),0.975),
+            cmap=cmap,
+            orientation='vertical'
+        )
+        clbar_fig.savefig(os.path.join(self.out_dir, self.filename)+'_clbar.png')
 
 #> laminar similarity gradients class
 class LaminarSimilarityGradients:
@@ -258,22 +352,16 @@ class LaminarSimilarityGradients:
         """
         #> load concatenated parcellation map
         concat_parcellation_map = helpers.load_parcellation_map(self.matrix_objs[0].parcellation_name, concatenate=True)
-        #> project the gradient values on the surface
-        #> add back the masked out parcels and set their gradient values as NaN
-        #  (there should be easier solutions but this was a simple method to do it in one line)
-        # TODO: make this more readable/understandable
-        #>> load parcellated laminar data (we only need the index for valid non-NaN parcels)
-        concat_parcellated_laminar_data = helpers.concat_hemispheres(self.matrix_objs[0].parcellated_laminar_data, dropna=False)
         #>> create a gradients dataframe including all parcels, where invalid parcels are NaN
         #   (this is necessary to be able to project it to the parcellation)
         gradients_df = pd.concat(
             [
                 pd.DataFrame(
                     self.gm.gradients_, 
-                    index=concat_parcellated_laminar_data.dropna().index # valid parcels
+                    index=self.matrix_objs[0].valid_parcels # valid parcels
                     ),
-                concat_parcellated_laminar_data.index.to_series() # all parcels
-            ], axis=1).set_index('index')
+                pd.Series(np.unique(concat_parcellation_map), name='parcels') # all parcels
+            ], axis=1).set_index('parcels')
         #> get the map of gradients by indexing at parcellation labels
         gradient_maps = gradients_df.loc[concat_parcellation_map].values # shape: vertex X gradient
         return gradient_maps
@@ -309,13 +397,13 @@ class LaminarSimilarityGradients:
         Save the scree plot
         """
         fig, axes = plt.subplots(1, 2, figsize=(12,5))
-        scatterplot(
+        sns.scatterplot(
             x = np.arange(1, self.gm.lambdas_.shape[0]+1).astype('str'),
             y = (self.gm.lambdas_ / self.gm.lambdas_.sum()),
             ax=axes[0]
             )
         axes[0].set_title(f'Variance explained by each gradient\n(relative to the total variance in the first {self.gm.lambdas_.shape[0]} gradients)')
-        lineplot(
+        sns.lineplot(
             x = np.arange(1, self.gm.lambdas_.shape[0]+1).astype('str'),
             y = np.cumsum(self.gm.lambdas_) / self.gm.lambdas_.sum(), 
             ax=axes[1]
@@ -332,7 +420,7 @@ class LaminarSimilarityGradients:
         Plot the concatenated matrix as heatmap
         """
         fig, ax = plt.subplots(figsize=(7*len(self.matrix_objs),7))
-        heatmap(
+        sns.heatmap(
             self.concat_matrix,
             vmax=np.quantile(self.concat_matrix.flatten(),0.75),
             cbar=False,
@@ -346,10 +434,10 @@ class LaminarSimilarityGradients:
 
 #> Create several gradients with different options
 #  The first loop is the main analysis and the rest are done for assessing robustness
-for gradient_input_type in ['thickness-density', 'thickness', 'density']:
+for gradient_input_type in ['thickness']: #['thickness', 'thickness-density']:
     for parcellation_name in ['sjh']:
-        for exc_masks in [adysgranular_masks, None]:
-            for correct_thickness_by_curvature in [True, False]:
+        for exc_masks in [None, adysgranular_masks]:
+            for correct_thickness_by_curvature in [False, True]:
                 gradients = LaminarSimilarityGradients(
                     gradient_input_type=gradient_input_type,
                     parcellation_name=parcellation_name,
