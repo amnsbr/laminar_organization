@@ -234,6 +234,7 @@ def parcellate(surface_data, parcellation_name, averaging_method='median', na_mi
             parcellated_vertices = (
                 pd.DataFrame(surface_data[hem], index=labeled_parcellation_maps[hem])
             )
+            #> remove midline data
             if na_midline:
                 parcellated_vertices.loc[MIDLINE_PARCELS[parcellation_name]] = np.NaN
             parcellated_vertices = (parcellated_vertices
@@ -409,6 +410,7 @@ def deparcellate(parcellated_data, parcellation_name):
             'tpl-bigbrain_hemi-L_desc-layer1_thickness.txt'
             )
         )
+    dummy_surf_data = np.zeros_like(dummy_surf_data)
     parcellated_dummy = parcellate(
         {'L': dummy_surf_data,
          'R': dummy_surf_data,},

@@ -148,7 +148,7 @@ def correlate_matrices_edge_wise(X, Y, prefix, xlabel, ylabel, nonpar=False):
     ax.text(text_x, text_y, 
             f'rho = {test_rho:.2f}',
             color='black',
-            size=8,
+            size=16,
             multialignment='left')
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)

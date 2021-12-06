@@ -325,7 +325,7 @@ def associate_cortical_types(gradient_file, n_gradients=3):
     n_gradients: (int) number of gradients to associate with cortical types
     """
     #> get parcellation name
-    parcellation_name = re.match(r".*parc-([a-z|-]+)_*", gradient_file).groups()[0]
+    parcellation_name = re.match(r".*parc-([a-z|-|0-9]+)_*", gradient_file).groups()[0]
     #> load gradient maps
     gradient_maps = np.load(gradient_file)['surface']
     #> load cortical types map
@@ -415,7 +415,7 @@ def correlate_hist_gradients(gradient_file, n_laminar_gradients, n_perm):
     n_perm: (int) number of spin permutations
     """
     #> get parcellation name
-    parcellation_name = re.match(r".*parc-([a-z|-]+)_*", gradient_file).groups()[0]
+    parcellation_name = re.match(r".*parc-([a-z|-|0-9]+)_*", gradient_file).groups()[0]
     print(f"Investigating correlation with Hist MPC gradients: {gradient_file}")
     #> load hist mpc gradients in n_vert * n_gradients shape
     hist_gradients = {}
@@ -513,7 +513,7 @@ def correlate_laminar_properties_and_moments(gradient_file, n_laminar_gradients,
     n_perm: (int) number of spin permutations
     """
     #> load parcellation name
-    parcellation_name = re.match(r".*parc-([a-z|-]+)_*", gradient_file).groups()[0]
+    parcellation_name = re.match(r".*parc-([a-z|-|0-9]+)_*", gradient_file).groups()[0]
     print(f"Investigating correlation with laminar properties and density moments: {gradient_file}")
     #> load laminar properties and density moments
     laminar_properties = load_laminar_properties(regress_out_cruvature=('corr-curv' in gradient_file))
@@ -586,8 +586,8 @@ def correlate_laminar_properties_and_moments(gradient_file, n_laminar_gradients,
                 )
 
 # > sample gradient file path
-gradient_files = glob.glob(os.path.join(DATA_DIR, 'result', '*', 'gradients_surface.npz'))
-for gradient_file in gradient_files[:1]: # testing
+gradient_files = glob.glob(os.path.join(DATA_DIR, 'result', '*parcor*', 'gradients_surface.npz'))
+for gradient_file in gradient_files: # testing
     print("Gradient:", gradient_file)
     associate_cortical_types(gradient_file)
     correlate_hist_gradients(gradient_file, n_laminar_gradients=3, n_perm=1000)

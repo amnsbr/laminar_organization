@@ -341,8 +341,21 @@ class LaminarSimilarityGradients:
         gradient_maps: (np.ndarray) n_vertices [both hemispheres] x n_gradients
         """
         #> load concatenated parcellation map
-        concat_parcellation_map = helpers.load_parcellation_map(self.matrix_objs[0].parcellation_name, concatenate=True)
-        #>> create a gradients dataframe including all parcels, where invalid parcels are NaN
+        concat_parcellation_map = helpers.load_parcellation_map(parcellation_name, concatenate=True)
+        #> load parcellated laminar data (we only need the index)
+        dummy_surf_data = np.loadtxt(os.path.join(
+                DATA_DIR, 'surface',
+                'tpl-bigbrain_hemi-L_desc-layer1_thickness.txt'
+                )
+            )
+        dummy_surf_data = np.zeros_like(dummy_surf_data)
+        parcellated_dummy = helpers.parcellate(
+            {'L': dummy_surf_data,
+            'R': dummy_surf_data,},
+            parcellation_name)
+        concat_parcellated_dummy = helpers.concat_hemispheres(parcellated_dummy, dropna=False)
+        all_parcels = concat_parcellated_dummy.index.to_series().rename('parcel')
+        #> create a gradients dataframe including all parcels, where invalid parcels are NaN
         #   (this is necessary to be able to project it to the parcellation)
         gradients_df = pd.concat(
             [
@@ -350,8 +363,8 @@ class LaminarSimilarityGradients:
                     self.gm.gradients_, 
                     index=self.matrix_objs[0].valid_parcels # valid parcels
                     ),
-                pd.Series(np.unique(concat_parcellation_map), name='parcels') # all parcels
-            ], axis=1).set_index('parcels')
+                all_parcels
+            ], axis=1).set_index('parcel')
         #> get the map of gradients by indexing at parcellation labels
         gradient_maps = gradients_df.loc[concat_parcellation_map].values # shape: vertex X gradient
         return gradient_maps
