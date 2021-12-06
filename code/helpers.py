@@ -471,7 +471,7 @@ def plot_on_bigbrain_brainspace(surface_data_files, outfile=None):
         color_bar=True, interactive=False, embed_nb=False, size=(1600, 400), zoom=1.2,
         screenshot=True, filename=outfile, transparent_bg=True, offscreen=True)
 
-def plot_on_bigbrain_nl(surface_data, filename):
+def plot_on_bigbrain_nl(surface_data, filename, layout='grid', cmap='viridis'):
     """
     Plots the `surface_data_files` on the bigbrain space and saves it in `outfile`
     using nilearn
@@ -479,7 +479,10 @@ def plot_on_bigbrain_nl(surface_data, filename):
     Parameters
     ----------
     surface_data: (np.ndarray or dict of np.ndarray) (n_vert,) surface data: concatenated or 'L' and 'R' hemispheres
-    outfile: (str) path to output; default would be the same as surface file
+    filename: (str) path to output; default would be the same as surface file
+    layout:
+        - horizontal: left-lateral, left-medial, right-medial, right-lateral
+        - grid: lateral views on the top and medial views on the bottom
     """
     #> split surface if it has been concatenated (e.g. gradients)
     #  and make sure the shape is correct
@@ -497,7 +500,11 @@ def plot_on_bigbrain_nl(surface_data, filename):
     else:
         assert surface_data['L'].shape[0] == n_hem_vertices
     #> initialize the figures
-    figure, axes = plt.subplots(1, 4, figsize=(24, 5), subplot_kw={'projection': '3d'})
+    if layout == 'horizontal':
+        figure, axes = plt.subplots(1, 4, figsize=(24, 5), subplot_kw={'projection': '3d'})
+    elif layout == 'grid':
+        figure, axes = plt.subplots(2, 2, figsize=(12, 10), subplot_kw={'projection': '3d'})
+        axes = axes.flatten(order='F')
     curr_ax_idx = 0
     for hemi in ['left', 'right']:
         #> plot the medial and lateral views
@@ -512,6 +519,7 @@ def plot_on_bigbrain_nl(surface_data, filename):
                 mesh_path,
                 surface_data[hemi[0].upper()],
                 hemi=hemi, view=view, axes=axes[curr_ax_idx],
+                cmap=cmap
             )
             curr_ax_idx += 1
     figure.subplots_adjust(wspace=0, hspace=0)

@@ -28,7 +28,8 @@ def plot_gradients(gradient_file, n_gradients=3):
     for gradient_num in range(1, n_gradients+1):
         helpers.plot_on_bigbrain_nl(
             gradient_maps[:, gradient_num-1],
-            filename=gradient_file.replace('.npz', f'_g{gradient_num}.png')
+            filename=gradient_file.replace('.npz', f'_G{gradient_num}_grid.png'),
+            layout='grid'
         )
 
 def plot_binned_laminar_profile(gradient_file, n_gradients=3):
@@ -91,7 +92,8 @@ def plot_binned_laminar_profile(gradient_file, n_gradients=3):
         fig.savefig(gradient_file.replace('gradients_surface.npz', f'binned_profile_g{gradient_num}.png'), dpi=192)
         clfig = helpers.make_colorbar(
             parcellated_gradients[gradient_num-1].min(), 
-            parcellated_gradients[gradient_num-1].max(), 
+            parcellated_gradients[gradient_num-1].max(),
+            bins=10, 
             orientation='horizontal', figsize=(6,4))
         clfig.savefig(gradient_file.replace('gradients_surface.npz', f'binned_profile_g{gradient_num}_clbar.png'), dpi=192)
 
