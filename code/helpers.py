@@ -189,7 +189,7 @@ def load_parcellation_map(parcellation_name, concatenate):
         _, _, sorted_labels = nibabel.freesurfer.io.read_annot(
             os.path.join(
                 DATA_DIR, 'parcellation', 
-                f'{hem.lower()}h.{parcellation_name}.annot')
+                f'{hem.lower()}h_{parcellation_name}.annot')
         )
         if parcellation_name == 'sjh':
             sorted_labels = list(map(lambda l: int(l.decode().replace('sjh_','')), sorted_labels))
@@ -254,14 +254,14 @@ def parcellate(surface_data, parcellation_name, averaging_method='median'):
             parcellated_data = parcellated_vertices
     return parcellated_data
 
-def concat_hemispheres(parcellated_data, dropna=True):
+def concat_hemispheres(parcellated_data, dropna=False):
     """
     Concatenates the parcellated data of L and R hemispheres
 
     Parameters
     ----------
     parcellated_data: (dict of pd.DataFrame) n_parcels x 6 for laminar data of L and R hemispheres
-    dropna: (bool) remove parcels with no data. Default: True
+    dropna: (bool) remove parcels with no data. Default: False
 
     Returns
     ----------
@@ -369,6 +369,41 @@ def regress_out_surf_covariates(input_surface_data, cov_surface_data, sig_only=F
     if renormalize:
         cleaned_surface_data /= cleaned_surface_data.sum(axis=1, keepdims=True)    
     return cleaned_surface_data
+
+def deparcellate(parcellated_data, parcellation_name):
+    """
+    Project the parcellated data to surface vertices.
+    Note: only use this with parcellated data that has lost
+    its parcel labels (e.g. surrogate maps)
+    TODO: Ideally there should be no need for this to exist
+
+    Parameters
+    ----------
+    parcellated_data: (np.ndarray) n_parcels x n_features
+    parcellation_name: (str)
+
+    Returns
+    -------
+    surface_map: (np.ndarray) n_vertices [both hemispheres] x n_gradients
+    """
+    #> load concatenated parcellation map
+    concat_parcellation_map = load_parcellation_map(parcellation_name, concatenate=True)
+    #> load parcellated laminar data (we only need the index)
+    dummy_surf_data = np.loadtxt(os.path.join(
+            DATA_DIR, 'surface',
+            'tpl-bigbrain_hemi-L_desc-layer1_thickness.txt'
+            )
+        )
+    parcellated_dummy = parcellate(
+        {'L': dummy_surf_data,
+         'R': dummy_surf_data,},
+         parcellation_name)
+    concat_parcellated_dummy = concat_hemispheres(parcellated_dummy, dropna=False)
+    #>> label parcellated_data with index from the dummy parcellated data
+    labeled_parcellated_data = pd.DataFrame(parcellated_data, index=concat_parcellated_dummy.index)
+    #> get the map of gradients by indexing at parcellation labels
+    surface_map = labeled_parcellated_data.loc[concat_parcellation_map].values # shape: vertex X gradient
+    return surface_map
 
 
 ###### Plotting ######
