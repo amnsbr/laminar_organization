@@ -17,6 +17,7 @@ import scipy.stats
 import matplotlib.pyplot as plt
 import seaborn as sns
 import nilearn.surface
+import nibabel
 import helpers
 import brainspace.null_models
 import brainspace.mesh
@@ -231,6 +232,7 @@ def spin_test_parcel(surface_data_to_spin, surface_data_target, n_perm, parcella
     return test_r, p_val, null_distribution
 
 #### Loading data ####
+# TODO: move to helpers or another file (maybe datasets.py?)
 def load_cortical_types_map():
     """
     Creates the surface map of cortical types (and saves it)
@@ -358,7 +360,7 @@ def associate_cortical_types(gradient_file, n_gradients=3):
     anova_res_str = "ANOVA Results\n--------\n"
     for gradient_num in range(1, n_gradients+1):
         fig, ax = plt.subplots(figsize=(4, 4))
-        #> boxplot
+        #> violinplot
         ax = sns.violinplot(
             data=gradients_cortical_types, 
             y=f'G{gradient_num}',
@@ -367,7 +369,7 @@ def associate_cortical_types(gradient_file, n_gradients=3):
             bw=.5, cut=1, linewidth=1,
             ax=ax
             )
-        #> aesthetics
+        #>> aesthetics
         plt.setp(ax.collections, alpha=.6)
         sns.despine(ax=ax, offset=10, trim=True)
         fig.tight_layout()
@@ -375,7 +377,7 @@ def associate_cortical_types(gradient_file, n_gradients=3):
             gradient_file.replace('gradients_surface.npz', f'cortical_type_G{gradient_num}.png'),
             dpi=192
             )
-        #> colorbar with the correct vmin and vmax
+        #>> colorbar with the correct vmin and vmax
         clbar_fig = helpers.make_colorbar(ax.get_yticks()[0], ax.get_yticks()[-1], figsize=(4, 4))
         clbar_fig.tight_layout()
         clbar_fig.savefig(
@@ -399,6 +401,135 @@ def associate_cortical_types(gradient_file, n_gradients=3):
                     anova_res_str += f"\t\t{type1} vs {type2}: T {t_statistic}, p {t_p}\n"
     print(anova_res_str)
     with open(gradient_file.replace('gradients_surface.npz', 'cortical_type_anova.txt'), 'w') as anova_res_file:
+        anova_res_file.write(anova_res_str)
+
+def associate_yeo_networks(gradient_file, n_gradients=3):
+    """
+    Calculates and plots the association of `gradient_file` first `n_gradients` with
+    the yeo networks using ANOVA. The ANOVA results are stored in a txt file with
+    _yeo_networks_anova.txt suffix.
+    Two plots are created: violin plot and stacked bar plot
+
+    Parameters
+    ---------
+    gradient_file: (str) input gradient file (.npz format) including an array 'surface' 
+                         with the shape n_vert x total_n_gradients
+    n_gradients: (int) number of gradients to associate with cortical types
+    """
+    # TODO: this is very similar to associate_cortical_types => merge them
+    #> get parcellation name
+    parcellation_name = re.match(r".*parc-([a-z|-|0-9]+)_*", gradient_file).groups()[0]
+    #> load gradient maps
+    gradient_maps = np.load(gradient_file)['surface']
+    #> load yeo networks map and colors
+    yeo_giftis = {}
+    for hem in ['L', 'R']:
+        yeo_giftis[hem] = nibabel.load(
+            os.path.join(
+                DATA_DIR, 'parcellation',
+                f'tpl-bigbrain_hemi-{hem}_desc-Yeo2011_7Networks_N1000.label.gii'
+            )
+        )
+    yeo_map = np.concatenate([
+        yeo_giftis['L'].darrays[0].data, 
+        yeo_giftis['R'].darrays[0].data
+        ])
+    yeo_colors = [l.rgba[:-1] for l in yeo_giftis['L'].labeltable.labels[1:]]
+    yeo_names = [
+        'Visual', 'Somatomotor', 'Dorsal attention', 
+        'Ventral attention', 'Limbic', 'Frontoparietal', 'Default'
+        ]
+    #> create a df combining the gradient values and yeo_networks
+    gradient_map_yeo = pd.DataFrame(
+        gradient_maps[:, :n_gradients],
+        columns=[f'G{g_n}' for g_n in range(1, n_gradients+1)]
+        )
+    gradient_map_yeo['Yeo Network'] = yeo_map
+    #> remove NaNs and Yeo 0 (midline)
+    gradient_map_yeo = gradient_map_yeo[gradient_map_yeo['Yeo Network']!=0].dropna()
+    gradient_map_yeo['Yeo Network'] = (gradient_map_yeo['Yeo Network']
+                                    .astype('category')
+                                    .cat.remove_unused_categories()
+                                    .cat.rename_categories(yeo_names))
+    #> investigate the association of gradient values and Yeo networks (visually and statistically)
+    anova_res_str = "ANOVA Results\n--------\n"
+    for g_n in range(1, n_gradients+1):
+        #> 1) plot networks frequency in each gradient bin
+        #>> assign each vertex to one of the 10 bins
+        _, bin_edges = np.histogram(gradient_map_yeo.loc[:,f'G{g_n}'], bins=10)
+        gradient_map_yeo[f'G{g_n}_bin'] = np.digitize(gradient_map_yeo.loc[:,f'G{g_n}'], bin_edges[:-1])
+        #>> calculate ratio of yeo networks in each bin
+        gradient_bins_yeo_counts = (gradient_map_yeo
+                                    .groupby([f'G{g_n}_bin','Yeo Network'])
+                                    .size().unstack(fill_value=0))
+        gradient_bins_yeo_freq = gradient_bins_yeo_counts.divide(gradient_bins_yeo_counts.sum(axis=1), axis=0)
+        #>> plot stacked bars at each bin showing freq of the Yeo networks
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.bar(
+            x = gradient_bins_yeo_freq.index,
+            height = gradient_bins_yeo_freq.iloc[:, 0],
+            width = 0.95,
+            color=yeo_colors[0],
+            label=yeo_names[0]
+            )
+        for yeo_idx in range(1, 7):
+            ax.bar(
+                x = gradient_bins_yeo_freq.index,
+                height = gradient_bins_yeo_freq.iloc[:, yeo_idx],
+                width = 0.95,
+                bottom = gradient_bins_yeo_freq.cumsum(axis=1).iloc[:, yeo_idx-1],
+                color=yeo_colors[yeo_idx],
+                label=yeo_names[yeo_idx]
+                )
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_xlabel(f'G{g_n} bins')
+        ax.set_ylabel('Proportion of networks')
+        for _, spine in ax.spines.items():
+            spine.set_visible(False)
+        ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+        fig.tight_layout()
+        fig.savefig(
+            gradient_file.replace('gradients_surface.npz', f'yeo_network_stacked_G{g_n}.png'),
+            dpi=192
+            )
+        #> 2) violinplot
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax = sns.violinplot(
+            data=gradient_map_yeo, 
+            y=f'G{g_n}',
+            x='Yeo Network',
+            palette=yeo_colors,
+            bw=.5, cut=1, linewidth=1,
+            ax=ax
+            )
+        plt.setp(ax.collections, alpha=.6)
+        sns.despine(ax=ax, offset=10, trim=True)
+        for tick in ax.get_xticklabels():
+            tick.set_rotation(20)
+        fig.tight_layout()
+        fig.savefig(
+            gradient_file.replace('gradients_surface.npz', f'yeo_network_violin_G{g_n}.png'),
+            dpi=192
+            )
+        #> 3) ANOVA [TODO: all tests are bound to be sig at the vertex level; fix it!]
+        F_stat, p_val = (scipy.stats.f_oneway(*[
+                                    yeo_network_data[1][f'G{g_n}'].dropna().values \
+                                    for yeo_network_data in gradient_map_yeo.groupby('Yeo Network')
+                                    ]))
+        anova_res_str += f'----\nGradient {g_n}: F statistic {F_stat}, pvalue {p_val}\n'
+        if p_val < 0.05:
+            alpha = 0.05 / len(list(itertools.combinations(gradient_map_yeo['Yeo Network'].cat.categories, 2))) #bonferroni correction
+            anova_res_str += f"\tPost-hocs passing alpha of {alpha}:\n"
+            for network1, network2 in itertools.combinations(gradient_map_yeo['Yeo Network'].cat.categories, 2):
+                t_statistic, t_p = scipy.stats.ttest_ind(
+                    gradient_map_yeo.loc[gradient_map_yeo['Yeo Network']==network1, f'G{g_n}'].dropna(),
+                    gradient_map_yeo.loc[gradient_map_yeo['Yeo Network']==network2, f'G{g_n}'].dropna(),
+                )
+                if t_p < alpha:
+                    anova_res_str += f"\t\t{network1} - {network2}: T {t_statistic}, p {t_p}\n"
+    print(anova_res_str)
+    with open(gradient_file.replace('gradients_surface.npz', 'yeo_networks_anova.txt'), 'w') as anova_res_file:
         anova_res_file.write(anova_res_str)
 
 def correlate_hist_gradients(gradient_file, n_laminar_gradients, n_perm):
@@ -587,8 +718,9 @@ def correlate_laminar_properties_and_moments(gradient_file, n_laminar_gradients,
 
 # > sample gradient file path
 gradient_files = glob.glob(os.path.join(DATA_DIR, 'result', '*parcor*', 'gradients_surface.npz'))
-for gradient_file in gradient_files: # testing
+for gradient_file in gradient_files[:1]: # testing
     print("Gradient:", gradient_file)
     associate_cortical_types(gradient_file)
+    associate_yeo_networks(gradient_file)
     correlate_hist_gradients(gradient_file, n_laminar_gradients=3, n_perm=1000)
     correlate_laminar_properties_and_moments(gradient_file, n_laminar_gradients=3, n_perm=1000)

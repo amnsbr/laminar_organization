@@ -38,6 +38,11 @@ for hem in ['L', 'R']:
     helpers.download(
         f'https://github.com/caseypaquola/BigBrainWarp/raw/master/spaces/tpl-bigbrain/tpl-bigbrain_hemi-{hem}_desc-mid.surf.gii',
         copy_to=os.path.join(DATA_DIR, 'surface', f'tpl-bigbrain_hemi-{hem}_desc-mid.surf.gii'))
+    # Yeo networks in bigbrain space
+    helpers.download(
+        f'https://github.com/caseypaquola/BigBrainWarp/raw/master/spaces/tpl-bigbrain/tpl-bigbrain_hemi-{hem}_desc-Yeo2011_7Networks_N1000.label.gii',
+        copy_to=os.path.join(DATA_DIR, 'parcellation', f'tpl-bigbrain_hemi-{hem}_desc-Yeo2011_7Networks_N1000.label.gii')
+    )
     # SJH 1012 parcellation
     helpers.download(f'https://github.com/MICA-MNI/micaopen/raw/master/MPC/maps/{hem.lower()}h.sjh.annot',f'{hem.lower()}h_sjh.annot',
                      copy_to=os.path.join(DATA_DIR, 'parcellation', f'{hem.lower()}h_sjh.annot'))
