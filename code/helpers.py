@@ -20,7 +20,8 @@ DATA_DIR = os.path.join(cwd, '..', 'data')
 
 MIDLINE_PARCELS = {
     'schaefer400': ['Background+FreeSurfer_Defined_Medial_Wall'],
-    'sjh': [0]
+    'sjh': [0],
+    'aparc': ['L_unknown', 'None']
 }
 ###### Loading data ######
 
@@ -195,10 +196,13 @@ def load_parcellation_map(parcellation_name, concatenate):
                 DATA_DIR, 'parcellation', 
                 f'{hem.lower()}h_{parcellation_name}.annot')
         )
+        #> labels post-processing for each specific parcellation
         if parcellation_name == 'sjh':
             sorted_labels = list(map(lambda l: int(l.decode().replace('sjh_','')), sorted_labels))
         elif parcellation_name == 'schaefer400':
-            sorted_labels = list(map(lambda l: l.decode(), sorted_labels))
+            sorted_labels = list(map(lambda l: l.decode(), sorted_labels)) # b'name' => 'name'
+        elif parcellation_name == 'aparc':
+            sorted_labels = list(map(lambda l: f'{hem}_{l.decode()}', sorted_labels)) # so that it matches ENIGMA toolbox dataset
         transdict = dict(enumerate(sorted_labels))
         labeled_parcellation_map[hem] = np.vectorize(transdict.get)(parcellation_map)
     if concatenate:
@@ -236,7 +240,9 @@ def parcellate(surface_data, parcellation_name, averaging_method='median', na_mi
             )
             #> remove midline data
             if na_midline:
-                parcellated_vertices.loc[MIDLINE_PARCELS[parcellation_name]] = np.NaN
+                for midline_parcel in MIDLINE_PARCELS[parcellation_name]:
+                    if midline_parcel in parcellated_vertices.index:
+                        parcellated_vertices.loc[midline_parcel] = np.NaN
             parcellated_vertices = (parcellated_vertices
                 .reset_index(drop=False)
                 .groupby('index')
@@ -256,7 +262,9 @@ def parcellate(surface_data, parcellation_name, averaging_method='median', na_mi
             pd.DataFrame(surface_data, index=labeled_parcellation_maps)
         )
         if na_midline:
-            parcellated_vertices.loc[MIDLINE_PARCELS[parcellation_name]] = np.NaN
+            for midline_parcel in MIDLINE_PARCELS[parcellation_name]:
+                if midline_parcel in parcellated_vertices.index:
+                    parcellated_vertices.loc[midline_parcel] = np.NaN
         parcellated_vertices = (parcellated_vertices
             .reset_index(drop=False)
             .groupby('index')

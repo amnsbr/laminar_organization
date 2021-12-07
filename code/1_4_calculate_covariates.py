@@ -248,7 +248,7 @@ def calculate_covariates():
     print("Creating the curvature map")
     create_curvature_surf_map()
     # 2) create pairwise geodesic distance matrices for each parcellation
-    for parcellation_name in ['sjh', 'schaefer400']:
+    for parcellation_name in ['sjh', 'schaefer400', 'aparc']:
         print(f"Creating the curvature similarity matrix for {parcellation_name} parcellation")
         create_curvature_similarity_matrix(parcellation_name)
         print(f"Creating pairwise geodesic distance matrix for {parcellation_name} parcellation")

@@ -23,7 +23,7 @@ import brainspace.null_models
 import brainspace.mesh
 import brainsmash.mapgen
 import ptitprince # for RainCloud plots
-
+import enigmatoolbox.datasets
 
 
 #> specify the data dir and create gradients and matrices subfolders
@@ -313,6 +313,27 @@ def load_profile_moments():
     profile_moments['Intensity kurtosis'] = scipy.stats.kurtosis(profiles, axis=0)
     profile_moments.to_csv(out_path, sep=',', index=False)
     return profile_moments
+
+def load_disorder_atrophy_maps():
+    out_path = os.path.join(DATA_DIR, 'surface', 'disorder_atrophy_maps.csv')
+    if os.path.exists(out_path):
+        return pd.read_csv(out_path, sep=",", index_col='Structure')
+    disorder_atrophy_maps = pd.DataFrame()
+    for disorder in ['adhd', 'bipolar', 'depression', 'ocd']:
+        disorder_atrophy_maps[disorder] = (
+            enigmatoolbox.datasets.load_summary_stats(disorder)
+            ['CortThick_case_vs_controls_adult']
+            .set_index('Structure')['d_icv'])
+    disorder_atrophy_maps['schizophrenia'] = (
+        enigmatoolbox.datasets.load_summary_stats('schizophrenia')
+        ['CortThick_case_vs_controls']
+        .set_index('Structure')['d_icv'])
+    disorder_atrophy_maps['epilepsy'] = (
+        enigmatoolbox.datasets.load_summary_stats('epilepsy')
+        ['CortThick_case_vs_controls_allepilepsy']
+        .set_index('Structure')['d_icv'])
+    disorder_atrophy_maps.to_csv(out_path, sep=",", index_label='Structure')
+    return disorder_atrophy_maps
 
 #### Associations ####
 def associate_cortical_types(gradient_file, n_gradients=3):
@@ -731,11 +752,91 @@ def correlate_laminar_properties_and_moments(gradient_file, n_laminar_gradients,
                 dpi=192
                 )
 
-# > sample gradient file path
-gradient_files = glob.glob(os.path.join(DATA_DIR, 'result', '*parcor*', 'gradients_surface.npz'))
-for gradient_file in gradient_files: # testing
+def correlate_disorder_atrophy_maps(gradient_file, n_laminar_gradients, n_perm):
+    """
+    Calculates the correlation between disorder atrophy maps downloaded from
+    ENIGMA toolbox  with laminar gradient `gradient_file` (its first `n_laminar_gradients`). 
+    Corrects for spatial autocorrelation by doing spin test with `n_perm` permutations.
+
+    Parameters
+    ---------
+    gradient_file: (str) input gradient file (.npz format) including an array 'surface' 
+                         with the shape n_vert x total_n_gradients
+    n_laminar_gradients: (int) number of gradients to associate with cortical types
+    n_perm: (int) number of spin permutations
+    """
+    print(f"Investigating correlation with disorder atrophy maps: {gradient_file}")
+    #> load gradient maps
+    gradient_maps = np.load(gradient_file)['surface']
+    #> load disorder atrophy maps
+    parcellated_disorder_atrophy_maps = load_disorder_atrophy_maps()
+    #> project it back to surface
+    disorder_atrophy_maps = helpers.deparcellate(parcellated_disorder_atrophy_maps, 'aparc')
+    #> create spin permtations of hist gradients
+    print(f"\tCalculating correlations with spin test")
+    if SPIN_TEST_LEVEL == 'vertex':
+        coefs, pvals, coefs_null_dist =  spin_test_vertex(
+            surface_data_to_spin = disorder_atrophy_maps, 
+            surface_data_target = gradient_maps[:, :n_laminar_gradients], 
+            n_perm = n_perm,
+            batch_prefix='disorder_atrophy')
+    elif SPIN_TEST_LEVEL == 'parcel':
+        coefs, pvals, coefs_null_dist =  spin_test_parcel(
+            surface_data_to_spin = disorder_atrophy_maps, 
+            surface_data_target = gradient_maps[:, :n_laminar_gradients], 
+            n_perm = n_perm,
+            parcellation_name='aparc',
+            surrogates_prefix='disorder_atrophy')
+    #> save null distribution for future reference
+    np.savez_compressed(
+        gradient_file.replace('gradients_surface.npz', f'correlation_DisorderAtrophy_null.npz'),
+        coefs_null_dist=coefs_null_dist
+    )
+    #> clean and save the results as txt
+    coefs = pd.DataFrame(coefs)
+    pvals = pd.DataFrame(pvals)
+    coefs.columns = pvals.columns = disorder_atrophy_maps.columns
+    coefs.index = pvals.index = [f'Laminar-G{gradient_num}' for gradient_num in range(1, n_laminar_gradients+1)]
+    association_res_str = f"Association with disorder atrophy maps (spin test)\n--------\nCorrelation coefficients:{coefs.T}\nP-values:{pvals.T}\n"
+    print(association_res_str)
+    with open(gradient_file.replace('gradients_surface.npz', f'correlation_DisorderAtrophy_null.txt'), 'w') as association_res_file:
+        association_res_file.write(association_res_str)
+    #> regression plots
+    #> parcellate gradients to aparc
+    parcellated_gradients = helpers.parcellate(gradient_maps, 'aparc')
+    for gradient_num in range(1, n_laminar_gradients+1):
+        for ylabel in parcellated_disorder_atrophy_maps.columns:
+            fig, ax = plt.subplots(figsize=(4, 4))
+            sns.regplot(
+                x=parcellated_gradients.iloc[:,gradient_num-1], 
+                y=parcellated_disorder_atrophy_maps.loc[:, ylabel],
+                color='C3', 
+                scatter_kws={'alpha':0.2, 's':5},
+                ax=ax)
+            sns.despine(offset=10, trim=True, ax=ax)
+            ax.set_xlabel(f'G{gradient_num}')
+            ax.set_ylabel(ylabel)
+            #> add correlation coefficients and p vals on the figure
+            text_x = ax.get_xlim()[0]+(ax.get_xlim()[1]-ax.get_xlim()[0])*0.05
+            text_y = ax.get_ylim()[0]+(ax.get_ylim()[1]-ax.get_ylim()[0])*0.05
+            ax.text(text_x, text_y, 
+                    f'r = {coefs.iloc[gradient_num-1][ylabel]:.2f}; $\mathregular{{p_{{spin}}}}$ = {pvals.iloc[gradient_num-1][ylabel]:.2f}',
+                    color='C3',
+                    size=8,
+                    multialignment='left')
+            fig.tight_layout()
+            fig.savefig(
+                gradient_file.replace('gradients_surface.npz', f'correlation_{ylabel.replace(" ","_")}_G{gradient_num}.png'),
+                dpi=192
+                )
+
+#> run all functions
+# gradient_files = glob.glob(os.path.join(DATA_DIR, 'result', '*parcor*', 'gradients_surface.npz'))
+gradient_files = [os.path.join(DATA_DIR, 'result', 'input-thickness_parc-sjh_approach-dm_metric-parcor_parcel', 'gradients_surface.npz')]
+for gradient_file in gradient_files:
     print("Gradient:", gradient_file)
     associate_cortical_types(gradient_file)
     associate_yeo_networks(gradient_file)
     correlate_hist_gradients(gradient_file, n_laminar_gradients=3, n_perm=1000)
     correlate_laminar_properties_and_moments(gradient_file, n_laminar_gradients=3, n_perm=1000)
+    correlate_disorder_atrophy_maps(gradient_file, n_laminar_gradients=3, n_perm=1000)

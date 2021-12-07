@@ -56,6 +56,9 @@ for hem in ['L', 'R']:
                         copy_to=os.path.join(DATA_DIR, 'surface', f'tpl-bigbrain_hemi-{hem}_desc-Hist_G{hist_g_num}.txt'))
     # Von Economo regions
     helpers.download(f'https://github.com/DevelopmentalImagingMCRI/freesurfer_statsurf_display/raw/master/fsaverage_fs6/label/{hem.lower()}h.economo.annot', f'{hem.lower()}h_economo.annot')
+    # DK atlas
+    helpers.download(f'https://github.com/DevelopmentalImagingMCRI/freesurfer_statsurf_display/raw/master/fsaverage_fs6/label/{hem.lower()}h.aparc.annot', f'{hem.lower()}h_aparc.annot',
+                     copy_to=os.path.join(DATA_DIR, 'parcellation', f'{hem.lower()}h_aparc.annot'))
     # Layers thicknesses (copy in data/surface)
     for layer_num in range(1,7):
         helpers.download(
