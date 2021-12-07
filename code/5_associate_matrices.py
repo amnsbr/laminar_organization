@@ -183,10 +183,17 @@ def correlate_matrices_node_wise(X, Y, prefix, parcellation_name):
     X, Y: (np.ndarray) n_parc x n_parc
     prefix: (str) prefix for the output filenames
     """
+    #> reorder and select valid parcels for X
+    #  + convert them to np.ndarray
+    parcels = Y.index
+    X = X.loc[Y.index, Y.columns].values
+    Y = Y.values
+    #> 
     node_rhos = np.empty(X.shape[0])
     for row_idx in range(X.shape[0]):
         node_rhos[row_idx] = scipy.stats.spearmanr(X[row_idx, :], Y[row_idx, :]).correlation
-    node_rhos_surface = helpers.deparcellate(node_rhos[:, np.newaxis], parcellation_name)
+    node_rhos = pd.Series(node_rhos, index=parcels)
+    node_rhos_surface = helpers.deparcellate(node_rhos, parcellation_name)
     np.savez_compressed(prefix + '_nodewise_surface.npz', surface=node_rhos_surface)
     helpers.plot_on_bigbrain_nl(
         node_rhos_surface,
@@ -220,7 +227,7 @@ def correlate_laminar_similarity_matrix(matrix_file):
     #> with Schaefer parcellation add FC and SC as well
     #  TODO: calculate FC and SC for other parcellations as well
     if parcellation_name == 'schaefer400':
-        X_matrices['Functional connecitivty'], X_matrices['Structural connecitivty'] = load_conn_matrices(matrix_file)
+        X_matrices['Functional connectivity'], X_matrices['Structural connectivity'] = load_conn_matrices(matrix_file)
     #> If this is a density similarity matrix and has a thickness counterpart
     #  also add that to the X_matrices
     ylabel = 'Laminar thickness similarity'
@@ -248,10 +255,11 @@ def correlate_laminar_similarity_matrix(matrix_file):
             )
         # node-wise correlations
         if X_matrix_name in do_node_wise:
+            print(f"Node-wise correlation with {X_matrix_name}")
             correlate_matrices_node_wise(
                 X = X_matrix,
                 Y = Y_matrix,
-                prefix = prefix + f'_correlation_{X_matrix_name}',
+                prefix = prefix + f'_correlation_{X_matrix_name.replace(" ","_").lower()}',
                 parcellation_name = parcellation_name
             )
 

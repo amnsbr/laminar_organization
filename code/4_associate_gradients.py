@@ -22,6 +22,7 @@ import helpers
 import brainspace.null_models
 import brainspace.mesh
 import brainsmash.mapgen
+import ptitprince # for RainCloud plots
 
 
 
@@ -347,9 +348,12 @@ def associate_cortical_types(gradient_file, n_gradients=3):
     #> create a df combining the gradient values and cortical types at each parcel
     gradients_cortical_types = parcellated_gradients.copy()
     gradients_cortical_types['Cortical Type'] = parcellated_cortical_types.astype('category')
+    #> specify type colors
+    type_colors = sns.color_palette("RdYlGn_r", 6)
     #> exclude some types
     if ('excmask' in gradient_file):
         excluded_types = ['ALO', 'AG', 'DG']
+        type_colors = type_colors[2:]
     else:
         excluded_types = ['ALO']
     gradients_cortical_types = gradients_cortical_types[~gradients_cortical_types['Cortical Type'].isin(excluded_types)]
@@ -359,18 +363,29 @@ def associate_cortical_types(gradient_file, n_gradients=3):
     #> investigate the association of gradient values and cortical types (visually and statistically)
     anova_res_str = "ANOVA Results\n--------\n"
     for gradient_num in range(1, n_gradients+1):
-        fig, ax = plt.subplots(figsize=(4, 4))
-        #> violinplot
-        ax = sns.violinplot(
+        # fig, ax = plt.subplots(figsize=(4, 4))
+        # #> violinplot
+        # ax = sns.violinplot(
+        #     data=gradients_cortical_types, 
+        #     y=f'G{gradient_num}',
+        #     x='Cortical Type',
+        #     palette=type_colors,
+        #     bw=.5, cut=1, linewidth=1,
+        #     ax=ax
+        #     )
+        # #>> aesthetics
+        # plt.setp(ax.collections, alpha=.6)
+        # sns.despine(ax=ax, offset=10, trim=True)
+        #> raincloud plot
+        fig, ax = plt.subplots(figsize=(5, 5))
+        ax=ptitprince.RainCloud(
             data=gradients_cortical_types, 
             y=f'G{gradient_num}',
             x='Cortical Type',
-            palette='Set3',
-            bw=.5, cut=1, linewidth=1,
-            ax=ax
-            )
-        #>> aesthetics
-        plt.setp(ax.collections, alpha=.6)
+            palette=type_colors,
+            bw = 0.2, width_viol = 1, 
+            orient = 'h', move = 0.2, alpha = 0.4,
+            ax=ax)
         sns.despine(ax=ax, offset=10, trim=True)
         fig.tight_layout()
         fig.savefig(
@@ -718,7 +733,7 @@ def correlate_laminar_properties_and_moments(gradient_file, n_laminar_gradients,
 
 # > sample gradient file path
 gradient_files = glob.glob(os.path.join(DATA_DIR, 'result', '*parcor*', 'gradients_surface.npz'))
-for gradient_file in gradient_files[:1]: # testing
+for gradient_file in gradient_files: # testing
     print("Gradient:", gradient_file)
     associate_cortical_types(gradient_file)
     associate_yeo_networks(gradient_file)

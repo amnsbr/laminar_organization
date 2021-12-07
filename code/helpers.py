@@ -395,7 +395,7 @@ def deparcellate(parcellated_data, parcellation_name):
 
     Parameters
     ----------
-    parcellated_data: (np.ndarray) n_parcels x n_features
+    parcellated_data: (pd.DataFrame | pd.Series) n_parcels x n_features | 1
     parcellation_name: (str)
 
     Returns
@@ -416,6 +416,15 @@ def deparcellate(parcellated_data, parcellation_name):
          'R': dummy_surf_data,},
          parcellation_name)
     concat_parcellated_dummy = concat_hemispheres(parcellated_dummy, dropna=False)
+    all_parcels = concat_parcellated_dummy.index.to_series().rename('parcel')
+    #> create a gradients dataframe including all parcels, where invalid parcels are NaN
+    #   (this is necessary to be able to project it to the parcellation)
+    labeled_parcellated_data = pd.concat(
+        [
+            parcellated_data,
+            all_parcels
+        ], axis=1).set_index('parcel')
+
     #>> label parcellated_data with index from the dummy parcellated data
     labeled_parcellated_data = pd.DataFrame(parcellated_data, index=concat_parcellated_dummy.index)
     #> get the map of gradients by indexing at parcellation labels
