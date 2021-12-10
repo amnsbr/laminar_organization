@@ -60,7 +60,8 @@ def load_mpc_matrix(parcellation_name):
 def load_conn_matrices(matrix_file):
     """
     Loads FC and SC matrices in Schaefer parcellation (400) from ENIGMA toolbox 
-    and reorders it according to `matrix_file`
+    and reorders it according to `matrix_file`. For SC matrix also makes contralateral
+    values 0 (so that they are not included in correlations)
 
     Parameters
     ----------
@@ -70,13 +71,19 @@ def load_conn_matrices(matrix_file):
     ---------
     reordered_fc_ctx, reordered_sc_ctx: (np.ndarray) (400, 400) reordered FC and SC matrices
     """
+    #> load laminar similarity matrix for its correctly ordered index
     laminar_sim_matrix = pd.read_csv(matrix_file, index_col='parcel')
+    #> FC
     fc_ctx, fc_ctx_labels, _, _ = enigmatoolbox.datasets.load_fc('schaefer_400')
     fc_ctx_df = pd.DataFrame(fc_ctx, columns=fc_ctx_labels, index=fc_ctx_labels)
     reordered_fc_ctx = fc_ctx_df.loc[laminar_sim_matrix.index, laminar_sim_matrix.index]
+    #> SC
     sc_ctx, sc_ctx_labels, _, _ = enigmatoolbox.datasets.load_sc('schaefer_400')
     sc_ctx_df = pd.DataFrame(sc_ctx, columns=sc_ctx_labels, index=sc_ctx_labels)
     reordered_sc_ctx = sc_ctx_df.loc[laminar_sim_matrix.index, laminar_sim_matrix.index]
+    #> zero out SC contralateral
+    reordered_sc_ctx.iloc[:200, 200:] = 0
+    reordered_sc_ctx.iloc[200:, :200] = 0
     return reordered_fc_ctx, reordered_sc_ctx
 
 def correlate_matrices_edge_wise(X, Y, prefix, xlabel, ylabel, nonpar=False):
@@ -191,7 +198,14 @@ def correlate_matrices_node_wise(X, Y, prefix, parcellation_name):
     #> 
     node_rhos = np.empty(X.shape[0])
     for row_idx in range(X.shape[0]):
-        node_rhos[row_idx] = scipy.stats.spearmanr(X[row_idx, :], Y[row_idx, :]).correlation
+        #> remove zero values (TODO make sure this is valid with all matrices)
+        row_x = X[row_idx, :]
+        row_y = Y[row_idx, :]
+        mask = np.logical_and(row_x!=0, row_y!=0)
+        row_x = row_x[mask]
+        row_y = row_y[mask]
+        #> calculate spearman correlation
+        node_rhos[row_idx] = scipy.stats.spearmanr(row_x, row_y).correlation
     node_rhos = pd.Series(node_rhos, index=parcels)
     node_rhos_surface = helpers.deparcellate(node_rhos, parcellation_name)
     np.savez_compressed(prefix + '_nodewise_surface.npz', surface=node_rhos_surface)

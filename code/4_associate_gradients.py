@@ -795,7 +795,7 @@ def correlate_disorder_atrophy_maps(gradient_file, n_laminar_gradients, n_perm):
     #> clean and save the results as txt
     coefs = pd.DataFrame(coefs)
     pvals = pd.DataFrame(pvals)
-    coefs.columns = pvals.columns = disorder_atrophy_maps.columns
+    coefs.columns = pvals.columns = parcellated_disorder_atrophy_maps.columns
     coefs.index = pvals.index = [f'Laminar-G{gradient_num}' for gradient_num in range(1, n_laminar_gradients+1)]
     association_res_str = f"Association with disorder atrophy maps (spin test)\n--------\nCorrelation coefficients:{coefs.T}\nP-values:{pvals.T}\n"
     print(association_res_str)
@@ -803,7 +803,7 @@ def correlate_disorder_atrophy_maps(gradient_file, n_laminar_gradients, n_perm):
         association_res_file.write(association_res_str)
     #> regression plots
     #> parcellate gradients to aparc
-    parcellated_gradients = helpers.parcellate(gradient_maps, 'aparc')
+    parcellated_gradients = helpers.parcellate(gradient_maps, 'aparc').dropna()
     for gradient_num in range(1, n_laminar_gradients+1):
         for ylabel in parcellated_disorder_atrophy_maps.columns:
             fig, ax = plt.subplots(figsize=(4, 4))

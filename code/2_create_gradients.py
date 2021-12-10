@@ -207,7 +207,7 @@ class LaminarSimilarityMatrix:
         """
         #> use different colors for different input types
         if self.input_type == 'thickness':
-            cmap = sns.color_palette("rocket", as_cmap=True)
+            cmap = sns.color_palette("RdBu_r", as_cmap=True)
         else:
             cmap = sns.color_palette("viridis", as_cmap=True)
         # cmap = sns.color_palette("mako", as_cmap=True)
