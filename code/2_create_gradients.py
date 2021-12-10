@@ -396,27 +396,45 @@ class LaminarSimilarityGradients:
             self.gm.lambdas_
         )
 
-    def plot_scree(self):
+    def plot_scree(self, normalize=False):
         """
         Save the scree plot
+
+        Parameters
+        ---------
+        normalize: (bool) normalize the lambdas by sum
         """
-        fig, axes = plt.subplots(1, 2, figsize=(12,5))
-        sns.scatterplot(
+        #> scree
+        fig, ax = plt.subplots(figsize=(6, 4))
+        if normalize:
+            y = (self.gm.lambdas_ / self.gm.lambdas_.sum())
+        else:
+            y = self.gm.lambdas_
+        ax.plot(
+            x = np.arange(1, self.gm.lambdas_.shape[0]+1).astype('str'),
+            y = y,
+            marker = 'o', 
+            linestyle = 'dashed',
+            linewidth = 0.5,
+            markersize = 2,
+            color = 'black',
+        )
+        ax.spines['right'].set_visible(False)
+        ax.spines['top'].set_visible(False)
+        ax.set_xticks(range(1, 11))
+        fig.savefig(
+            os.path.join(self.get_out_dir(),f'scree{"_normalized" if normalize else ""}.png'),
+            dpi=192)
+        #> cumulative variance explained
+        fig, ax = plt.subplots(figsize=(6,4))
+        ax.plot(
             x = np.arange(1, self.gm.lambdas_.shape[0]+1).astype('str'),
             y = (self.gm.lambdas_ / self.gm.lambdas_.sum()),
-            ax=axes[0]
-            )
-        axes[0].set_title(f'Variance explained by each gradient\n(relative to the total variance in the first {self.gm.lambdas_.shape[0]} gradients)')
-        sns.lineplot(
-            x = np.arange(1, self.gm.lambdas_.shape[0]+1).astype('str'),
-            y = np.cumsum(self.gm.lambdas_) / self.gm.lambdas_.sum(), 
-            ax=axes[1]
-            )
-        axes[1].set_title(f'Cumulative variance explained by the gradients\n(out of total variance in the first {self.gm.lambdas_.shape[0]} gradients)')
-        for ax in axes:
-            ax.set_xlabel('Gradient')
+            linewidth = 0.5,
+            color = 'grey',
+        )
         fig.savefig(
-            os.path.join(self.get_out_dir(),'scree.png'),
+            os.path.join(self.get_out_dir(),'scree_cum.png'),
             dpi=192)
 
     def plot_concat_matrix(self):
@@ -439,7 +457,7 @@ class LaminarSimilarityGradients:
         """
         Plot scatter plot of gradient values fo G1 (x-axis) and G2 (y-axis) with
         colors representing G3
-        
+
         Parameters
         ----------
         remove_ticks: (bool) remove ticks so that colorbars can replace them (manually)
