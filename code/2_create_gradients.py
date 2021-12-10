@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import brainspace.gradient
 import helpers
+import cmcrameri.cm # color maps
 
 #> specify the data dir and create gradients and matrices subfolders
 abspath = os.path.abspath(__file__)
@@ -432,6 +433,34 @@ class LaminarSimilarityGradients:
         fig.tight_layout()
         fig.savefig(
             os.path.join(self.get_out_dir(),f'matrix_input-{self.gradient_input_type}.png'), 
+            dpi=192)
+
+    def plot_gradient_space(self, remove_ticks=True):
+        """
+        Plot scatter plot of gradient values fo G1 (x-axis) and G2 (y-axis) with
+        colors representing G3
+        
+        Parameters
+        ----------
+        remove_ticks: (bool) remove ticks so that colorbars can replace them (manually)
+        """
+        fig, ax = plt.subplots(figsize=(6,5))
+        ax = sns.scatterplot(
+            data=pd.DataFrame(self.gm.gradients_), 
+            x=0, # G1
+            y=1, # G2
+            hue=2, # G3
+            palette=cmcrameri.cm.lajolla_r, # G3 cmap
+            legend=False, ax=ax)
+        ax.set_xlabel('G1')
+        ax.set_ylabel('G2')
+        if remove_ticks:
+            ax.set_xticks([])
+            ax.set_yticks([])
+        ax.spines['right'].set_visible(False)
+        ax.spines['top'].set_visible(False)
+        fig.savefig(
+            os.path.join(self.get_out_dir(),f'gradient_scatter.png'), 
             dpi=192)
 
 
