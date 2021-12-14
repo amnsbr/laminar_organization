@@ -251,20 +251,10 @@ def associate_cortical_types(gradient_file, n_gradients=3):
     parcellation_name = re.match(r".*parc-([a-z|-|0-9]+)_*", gradient_file).groups()[0]
     #> load gradient maps
     gradient_maps = np.load(gradient_file)['surface']
-    #> load cortical types map
-    cortical_types_map = datasets.load_cortical_types_map()
     #> parcellate the gradient maps
     parcellated_gradients = helpers.parcellate(gradient_maps, parcellation_name)
-    #> parcellate cortical types (using the most frequent type)
-    parcellation_map = helpers.load_parcellation_map(parcellation_name, concatenate=True)
-    parcellated_cortical_types = (
-        #>> create a dataframe of surface map including both cortical type and parcel index
-        pd.DataFrame({'Cortical Type': cortical_types_map.reset_index(drop=True), 'Parcel': pd.Series(parcellation_map)})
-        #>> group by parcel
-        .groupby('Parcel')
-        #>> find the cortical types with the highest count
-        ['Cortical Type'].value_counts(sort=True).unstack().idxmax(axis=1)
-        )
+    #> load parcellated cortical types map
+    parcellated_cortical_types = datasets.load_cortical_types(parcellation_name)
     #> create a df combining the gradient values and cortical types at each parcel
     gradients_cortical_types = parcellated_gradients.copy()
     gradients_cortical_types['Cortical Type'] = parcellated_cortical_types.astype('category')
@@ -736,7 +726,7 @@ gradient_files = [os.path.join(DATA_DIR, 'result', 'input-thickness_parc-sjh_app
 for gradient_file in gradient_files:
     print("Gradient:", gradient_file)
     associate_cortical_types(gradient_file)
-    # associate_yeo_networks(gradient_file)
-    # correlate_hist_gradients(gradient_file, n_laminar_gradients=3, n_perm=1000)
-    # correlate_laminar_properties_and_moments(gradient_file, n_laminar_gradients=3, n_perm=1000)
-    # correlate_disorder_atrophy_maps(gradient_file, n_laminar_gradients=3, n_perm=1000)
+    associate_yeo_networks(gradient_file)
+    correlate_hist_gradients(gradient_file, n_laminar_gradients=3, n_perm=1000)
+    correlate_laminar_properties_and_moments(gradient_file, n_laminar_gradients=3, n_perm=1000)
+    correlate_disorder_atrophy_maps(gradient_file, n_laminar_gradients=3, n_perm=1000)

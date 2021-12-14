@@ -91,7 +91,7 @@ def parcellate(surface_data, parcellation_name, averaging_method='median', na_mi
     """
     if isinstance(surface_data, dict):
         #> load parcellation map
-        labeled_parcellation_maps = load_parcellation_map(parcellation_name, concatenate=False)
+        labeled_parcellation_maps = datasets.load_parcellation_map(parcellation_name, concatenate=False)
         parcellated_data = {}
         for hem in ['L', 'R']:
             #> parcellate
@@ -116,7 +116,7 @@ def parcellate(surface_data, parcellation_name, averaging_method='median', na_mi
                 parcellated_data[hem] = parcellated_vertices
     elif isinstance(surface_data, np.ndarray):
         #> load parcellation map
-        labeled_parcellation_maps = load_parcellation_map(parcellation_name, concatenate=True)
+        labeled_parcellation_maps = datasets.load_parcellation_map(parcellation_name, concatenate=True)
         #> parcellate
         parcellated_vertices = (
             pd.DataFrame(surface_data, index=labeled_parcellation_maps)
@@ -271,7 +271,7 @@ def deparcellate(parcellated_data, parcellation_name):
     surface_map: (np.ndarray) n_vertices [both hemispheres] x n_gradients
     """
     #> load concatenated parcellation map
-    concat_parcellation_map = load_parcellation_map(parcellation_name, concatenate=True)
+    concat_parcellation_map = datasets.load_parcellation_map(parcellation_name, concatenate=True)
     #> load parcellated laminar data (we only need the index)
     dummy_surf_data = np.loadtxt(os.path.join(
             DATA_DIR, 'surface',

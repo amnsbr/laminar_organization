@@ -3,6 +3,11 @@ import numpy as np
 import os
 import matplotlib.pyplot as plt
 
+#> specify the data dir
+abspath = os.path.abspath(__file__)
+cwd = os.path.dirname(abspath)
+DATA_DIR = os.path.join(cwd, '..', 'data')
+
 
 def plot_parcels_laminar_profile(parcellation_name, exc_masks=None, palette='bigbrain'):
     """
@@ -59,18 +64,18 @@ def plot_parcels_laminar_profile(parcellation_name, exc_masks=None, palette='big
     fig.tight_layout()
     fig.savefig(
         os.path.join(
-            helpers.DATA_DIR, 'parcellated_surface',
+            DATA_DIR, 'parcellated_surface',
             f'brain_laminar_profile_parc-{parcellation_name}{"_excmask" if exc_masks else ""}'
             ))
 
 for parcellation_name in ['sjh', 'schaefer400']:
     adysgranular_masks = {
         'L': os.path.join(
-            helpers.DATA_DIR, 'surface',
+            DATA_DIR, 'surface',
             f'tpl-bigbrain_hemi-L_desc-adysgranular_mask_parcellation-{parcellation_name}_thresh_0.1.npy'
         ),
         'R': os.path.join(
-            helpers.DATA_DIR, 'surface',
+            DATA_DIR, 'surface',
             f'tpl-bigbrain_hemi-R_desc-adysgranular_mask_parcellation-{parcellation_name}_thresh_0.1.npy'
         )
     }

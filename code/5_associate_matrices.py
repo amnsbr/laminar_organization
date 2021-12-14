@@ -9,7 +9,6 @@ Calculate the association between laminar similarity matrices and:
 import os
 import glob
 import re
-import helpers
 import numpy as np
 import pandas as pd
 import scipy.stats
@@ -17,6 +16,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import enigmatoolbox.datasets
 import cmcrameri.cm
+
+import helpers
+import datasets
 
 
 #> specify the data dir
@@ -314,7 +316,7 @@ def correlate_laminar_similarity_matrix(matrix_file):
         )
         clfig.savefig(fig_outpath+'_clbar.png', dpi=192)
 
-def associate_w_cortical_types(matrix_file):
+def associate_cortical_types(matrix_file):
     """
     Calculates within and between type similarity and plots a collapsed
     similarity matrix by cortical types. Excludes a-/dysgranular as indicated
@@ -324,7 +326,103 @@ def associate_w_cortical_types(matrix_file):
     ---------
     matrix_file: (str) path to matrix file    
     """
-    pass
+    matrix = pd.read_csv(matrix_file, index_col='parcel')
+    matrix.columns = matrix.index
+    #> get parcellation name based on matrix_file
+    parcellation_name = re.match(r".*parc-([a-z|-|0-9]+)_*", matrix_file).groups()[0]
+    #> load cortical types
+    parcellated_cortical_types = datasets.load_cortical_types(parcellation_name)
+    #> list the excluded types based on matrix path 
+    if ('excmask' in matrix_file):
+        included_types = ['EU1', 'EU2', 'EU3', 'KO']
+        excluded_types = ['ALO', 'AG', 'DG']
+        n_types = 4
+    else:
+        included_types = ['AG', 'DG', 'EU1', 'EU2', 'EU3', 'KO']
+        excluded_types = ['ALO']
+        n_types = 6
+    matrix = matrix.loc[
+        ~parcellated_cortical_types.isin(excluded_types), 
+        ~parcellated_cortical_types.isin(excluded_types)
+    ]
+    #> collapse matrix to mean values per cortical type
+    mean_matrix_by_cortical_type = pd.DataFrame(np.zeros((n_types, n_types)),
+                                                columns=included_types,
+                                                index=included_types)
+    for group_idx, group_df in matrix.groupby(parcellated_cortical_types):
+        mean_matrix_by_cortical_type.loc[group_idx, :] = \
+            (group_df
+            .T.groupby(parcellated_cortical_types) # group columns by cortical type
+            .mean() # take average of cortical types for each row (parcel)
+            .mean(axis=1)) # take the average of average of rows in each cortical type
+    #> plot it
+    if 'thickness' in matrix_file:
+        cmap = sns.color_palette("RdBu_r", as_cmap=True)
+    elif 'density' in matrix_file:
+        cmap = sns.color_palette("viridis", as_cmap=True)
+    fig, ax = plt.subplots(figsize=(3,3))
+    sns.heatmap(
+        mean_matrix_by_cortical_type,
+        cmap=cmap,
+        cbar=False,
+        ax=ax)
+    ax.axis('off')
+    fig.tight_layout()
+    fig.savefig(matrix_file.replace('.csv', '_collapsed_cortical_types'))
+    helpers.make_colorbar(
+        vmin=mean_matrix_by_cortical_type.min().min(),
+        vmax=mean_matrix_by_cortical_type.max().min(),
+        cmap=cmap
+    ).savefig(matrix_file.replace('.csv', '_collapsed_cortical_types_clbar'))
+    #> quantify intra and intertype similarity
+    intra_intertype = pd.DataFrame(
+        np.zeros((n_types, 2)),
+        columns=['intra', 'inter'],
+        index=included_types)
+    for group_idx, group_df in matrix.groupby(parcellated_cortical_types):
+        intra_intertype.loc[group_idx, 'intra'] = \
+            (group_df
+            .T.groupby(parcellated_cortical_types) # group columns by cortical type
+            .mean() # take average of cortical types for each row (parcel)
+            .loc[group_idx].mean()) # take the average of average of rows in each cortical type
+        intra_intertype.loc[group_idx, 'inter'] = \
+            (group_df
+            .T.groupby(parcellated_cortical_types) # group columns by cortical type
+            .mean() # take average of cortical types for each row (parcel)
+            .drop(index=group_idx) # remove the same type
+            .values.mean()) # take the average of average of rows in each cortical type
+    #> test significance using permutation
+    null_dist_intra_intertype = np.zeros((1000, n_types, 2))
+    for perm_idx in range(1000):
+        #> create a surrogate shuffled matrix
+        shuffled_parcels = np.random.permutation(matrix.index.tolist())
+        surrogate = matrix.loc[shuffled_parcels, shuffled_parcels]
+        surrogate.index = matrix.index
+        surrogate.columns = matrix.columns
+        null_intra_intertype = pd.DataFrame(
+            np.zeros((n_types, 2)),
+            columns=['intra', 'inter'],
+            index=included_types)
+        for group_idx, group_df in surrogate.groupby(parcellated_cortical_types):
+            null_intra_intertype.loc[group_idx, 'intra'] = \
+                (group_df
+                .T.groupby(parcellated_cortical_types) # group columns by cortical type
+                .mean() # take average of cortical types for each row (parcel)
+                .loc[group_idx].mean()) # take the average of average of rows in each cortical type
+            null_intra_intertype.loc[group_idx, 'inter'] = \
+                (group_df
+                .T.groupby(parcellated_cortical_types) # group columns by cortical type
+                .mean() # take average of cortical types for each row (parcel)
+                .drop(index=group_idx) # remove the same type
+                .dropna() # drop unknown and ALO
+                .values.mean()) # take the average of average of rows in each cortical type
+        null_dist_intra_intertype[perm_idx, :, :] = null_intra_intertype.values
+    null_dist_diff_intra_inter = null_dist_intra_intertype[:, :, 0] - null_dist_intra_intertype[:, :, 1]
+    diff_intra_inter = (intra_intertype.iloc[:, 0] - intra_intertype.iloc[:, 1]).values.reshape(1, -1)
+    intra_intertype['pvals'] = (null_dist_diff_intra_inter > diff_intra_inter).mean(axis=0)
+    with open(matrix_file.replace('.csv', '_intra_intertype_diff.txt'), 'w') as outfile:
+        outfile.write(str(intra_intertype))
+
 
 matrix_files = glob.glob(os.path.join(DATA_DIR, 'result', '*', 'matrix*.csv'))
 for matrix_file in matrix_files:
@@ -334,5 +432,5 @@ for matrix_file in matrix_files:
         print("\tNot square")
         continue
     else:
-        associate_w_cortical_types(matrix_file)
+        associate_cortical_types(matrix_file)
         correlate_laminar_similarity_matrix(matrix_file)

@@ -6,7 +6,12 @@ import nilearn.surface
 import nibabel
 import helpers
 import enigmatoolbox.datasets
-from helpers import DATA_DIR
+
+#> specify the data dir
+abspath = os.path.abspath(__file__)
+cwd = os.path.dirname(abspath)
+DATA_DIR = os.path.join(cwd, '..', 'data')
+
 
 def load_laminar_thickness(exc_masks=None, normalize_by_total_thickness=True, regress_out_curvature=False):
     """
@@ -137,10 +142,10 @@ def load_parcellation_map(parcellation_name, concatenate):
         #> labels post-processing for each specific parcellation
         if parcellation_name == 'sjh':
             sorted_labels = list(map(lambda l: int(l.decode().replace('sjh_','')), sorted_labels))
-        elif parcellation_name == 'schaefer400':
-            sorted_labels = list(map(lambda l: l.decode(), sorted_labels)) # b'name' => 'name'
         elif parcellation_name == 'aparc':
             sorted_labels = list(map(lambda l: f'{hem}_{l.decode()}', sorted_labels)) # so that it matches ENIGMA toolbox dataset
+        elif parcellation_name in ['schaefer400', 'economo']:
+            sorted_labels = list(map(lambda l: l.decode(), sorted_labels)) # b'name' => 'name'
         transdict = dict(enumerate(sorted_labels))
         labeled_parcellation_map[hem] = np.vectorize(transdict.get)(parcellation_map)
     if concatenate:
@@ -148,9 +153,15 @@ def load_parcellation_map(parcellation_name, concatenate):
     else:
         return labeled_parcellation_map
 
-def load_cortical_types_map():
+def load_cortical_types(parcellation_name=None):
     """
-    Creates the surface map of cortical types (and saves it)
+    Loads the surface map of cortical types parcellated or unparcellated
+
+    Parameters
+    ---------
+    parcellation_name: (str or None)
+        - None: vertex-wise
+        - str: parcellation name (must exists in data/parcellation)
     """
     #> load the economo map and concatenate left and right hemispheres
     economo_maps = {}
@@ -173,14 +184,27 @@ def load_cortical_types_map():
     #> create the cortical types surface map
     cortical_types_map = economo_cortical_types.loc[economo_map, 'Cortical Type'].astype('category').reset_index(drop=True)
     cortical_types_map = cortical_types_map.cat.reorder_categories(['ALO', 'AG', 'DG', 'EU1', 'EU2', 'EU3', 'KO'])
-    #> save the map
-    # TODO: maybe split hemispheres
-    np.save(
-        os.path.join(
-            DATA_DIR, 'parcellation',
-            f'tpl-bigbrain_desc-cortical_types_parcellation.npy'
-        ), cortical_types_map.cat.codes.values)
-    return cortical_types_map
+    if parcellation_name:
+        #> load parcellation map
+        parcellation_map = load_parcellation_map(parcellation_name, concatenate=True)
+        parcellated_cortical_types_map = (
+            #>> create a dataframe of surface map including both cortical type and parcel index
+            pd.DataFrame({'Cortical Type': cortical_types_map, 'Parcel': pd.Series(parcellation_map)})
+            #>> group by parcel
+            .groupby('Parcel')
+            #>> find the cortical types with the highest count
+            ['Cortical Type'].value_counts(sort=True).unstack().idxmax(axis=1)
+        )
+        return parcellated_cortical_types_map
+    else:
+        # #> save the map
+        # # TODO: maybe split hemispheres
+        # np.save(
+        #     os.path.join(
+        #         DATA_DIR, 'parcellation',
+        #         f'tpl-bigbrain_desc-cortical_types_parcellation.npy'
+        #     ), cortical_types_map.cat.codes.values)
+        return cortical_types_map      
 
 def load_laminar_properties(regress_out_cruvature):
     """
