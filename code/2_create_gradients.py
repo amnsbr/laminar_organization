@@ -17,6 +17,7 @@ os.makedirs(os.path.join(DATA_DIR, 'result'), exist_ok=True)
 os.makedirs(os.path.join(DATA_DIR, 'matrix'), exist_ok=True)
 
 #> laminar similarity matrix class
+# TODO: combine the two classes
 class LaminarSimilarityMatrix:
     def __init__(self, input_type, out_dir, normalize_by_total_thickness=True,
                  similarity_method = 'euclidean', similarity_scale='parcel',
@@ -56,7 +57,6 @@ class LaminarSimilarityMatrix:
         self.out_dir = out_dir
         self.filename = f'matrix_input-{self.input_type}'
         self.create()
-        self.plot()
         self.save()
 
     def create(self):
@@ -202,40 +202,12 @@ class LaminarSimilarityMatrix:
         labeled_matrix = pd.DataFrame(self.matrix, columns=self.valid_parcels, index=self.valid_parcels)
         labeled_matrix.to_csv(os.path.join(self.out_dir, self.filename)+'.csv', index_label='parcel')
 
-    def plot(self):
-        """
-        Plot the matrix as heatmap
-        """
-        #> use different colors for different input types
-        if self.input_type == 'thickness':
-            cmap = sns.color_palette("RdBu_r", as_cmap=True)
-        else:
-            cmap = sns.color_palette("viridis", as_cmap=True)
-        # cmap = sns.color_palette("mako", as_cmap=True)
-        fig, ax = plt.subplots(figsize=(7,7))
-        sns.heatmap(
-            self.matrix,
-            vmin=np.quantile(self.matrix.flatten(),0.025),
-            vmax=np.quantile(self.matrix.flatten(),0.975),
-            cmap=cmap,
-            cbar=False,
-            ax=ax)
-        ax.axis('off')
-        fig.tight_layout()
-        fig.savefig(os.path.join(self.out_dir, self.filename)+'.png')
-        clbar_fig = helpers.make_colorbar(
-            vmin=np.quantile(self.matrix.flatten(),0.025),
-            vmax=np.quantile(self.matrix.flatten(),0.975),
-            cmap=cmap,
-            orientation='vertical'
-        )
-        clbar_fig.savefig(os.path.join(self.out_dir, self.filename)+'_clbar.png')
-
 #> laminar similarity gradients class
 class LaminarSimilarityGradients:
     def __init__(self, gradient_input_type='thickness-density',
                  n_components=10, approach='dm',
-                 kernel='normalized_angle', sparsity=0.9, **matrix_kwargs):
+                 kernel='normalized_angle', sparsity=0.9,
+                  **matrix_kwargs):
         """
         Initializes laminar similarity gradients based on LaminarSimilarityMatrix objects
         and the gradients fitting parameters
@@ -273,9 +245,10 @@ class LaminarSimilarityGradients:
         print("Creating gradients")
         self.create()
         #> save the data
-        print("Saving the gradients and plotting the scree plot")
+        print("Saving the gradients and plotting the scree plot and matrix/ces")
         self.save()
         self.plot_scree()
+        self.plot_concat_matrix()
         print(f"Gradients saved in {self.get_out_dir()}")
 
     def create_matrices(self, **matrix_kwargs):
@@ -342,7 +315,7 @@ class LaminarSimilarityGradients:
         gradient_maps: (np.ndarray) n_vertices [both hemispheres] x n_gradients
         """
         #> load concatenated parcellation map
-        concat_parcellation_map = helpers.load_parcellation_map(parcellation_name, concatenate=True)
+        concat_parcellation_map = helpers.load_parcellation_map(self._matrix_kwargs["parcellation_name"], concatenate=True)
         #> load parcellated laminar data (we only need the index)
         dummy_surf_data = np.loadtxt(os.path.join(
                 DATA_DIR, 'surface',
@@ -353,7 +326,7 @@ class LaminarSimilarityGradients:
         parcellated_dummy = helpers.parcellate(
             {'L': dummy_surf_data,
             'R': dummy_surf_data,},
-            parcellation_name)
+            self._matrix_kwargs["parcellation_name"])
         concat_parcellated_dummy = helpers.concat_hemispheres(parcellated_dummy, dropna=False)
         all_parcels = concat_parcellated_dummy.index.to_series().rename('parcel')
         #> create a gradients dataframe including all parcels, where invalid parcels are NaN
@@ -406,13 +379,13 @@ class LaminarSimilarityGradients:
         """
         #> scree
         fig, ax = plt.subplots(figsize=(6, 4))
+        x = np.arange(1, self.gm.lambdas_.shape[0]+1).astype('str')
         if normalize:
             y = (self.gm.lambdas_ / self.gm.lambdas_.sum())
         else:
             y = self.gm.lambdas_
         ax.plot(
-            x = np.arange(1, self.gm.lambdas_.shape[0]+1).astype('str'),
-            y = y,
+            x, y,
             marker = 'o', 
             linestyle = 'dashed',
             linewidth = 0.5,
@@ -428,8 +401,8 @@ class LaminarSimilarityGradients:
         #> cumulative variance explained
         fig, ax = plt.subplots(figsize=(6,4))
         ax.plot(
-            x = np.arange(1, self.gm.lambdas_.shape[0]+1).astype('str'),
-            y = (self.gm.lambdas_ / self.gm.lambdas_.sum()),
+            x,
+            (self.gm.lambdas_ / self.gm.lambdas_.sum()),
             linewidth = 0.5,
             color = 'grey',
         )
@@ -441,17 +414,56 @@ class LaminarSimilarityGradients:
         """
         Plot the concatenated matrix as heatmap
         """
-        fig, ax = plt.subplots(figsize=(7*len(self.matrix_objs),7))
-        sns.heatmap(
-            self.concat_matrix,
-            vmax=np.quantile(self.concat_matrix.flatten(),0.75),
-            cbar=False,
-            ax=ax)
-        ax.axis('off')
-        fig.tight_layout()
-        fig.savefig(
-            os.path.join(self.get_out_dir(),f'matrix_input-{self.gradient_input_type}.png'), 
-            dpi=192)
+        #> use different colors for different input types
+        if self.gradient_input_type == 'thickness':
+            cmap = sns.color_palette("RdBu_r", as_cmap=True)
+        elif self.gradient_input_type == 'density':
+            cmap = sns.color_palette("viridis", as_cmap=True)
+        else:
+            cmap = sns.color_palette("rocket", as_cmap=True)
+        #> specify matrices to be plotted ordered by default or the gradients
+        matrices = {'default': self.concat_matrix}
+        if len(self.matrix_objs) == 1:
+            #> in unimodal case add ordered matrices by the first 3 gradients
+            labeled_matrix = pd.DataFrame(
+                self.concat_matrix,
+                index=self.matrix_objs[0].valid_parcels,
+                columns=self.matrix_objs[0].valid_parcels
+            )
+            labeled_gradients = pd.DataFrame(
+                self.gm.gradients_, 
+                index=self.matrix_objs[0].valid_parcels # valid parcels
+                )
+            for g_idx in range(3):
+                sorted_parcels = labeled_gradients.sort_values(by=g_idx).index
+                matrices[f'G{g_idx+1}'] = labeled_matrix.loc[sorted_parcels, sorted_parcels].values
+        else:
+            print("Plotting ordered matrices is not implemented for multimodal matrices")
+        #> plot the originally ordered matrix and colorbar
+        vmin = np.quantile(self.concat_matrix.flatten(),0.025)
+        vmax = np.quantile(self.concat_matrix.flatten(),0.975)
+        for order, matrix in matrices.items():
+            fig, ax = plt.subplots(figsize=(7*len(self.matrix_objs),7))
+            sns.heatmap(
+                matrix,
+                vmin=vmin, vmax=vmax,
+                cmap=cmap, cbar=False,
+                ax=ax)
+            ax.axis('off')
+            fig.tight_layout()
+            fig.savefig(
+                os.path.join(self.get_out_dir(),f'matrix_input-{self.gradient_input_type}_order-{order}.png'),
+                dpi=192
+            )
+        clbar_fig = helpers.make_colorbar(
+            vmin=vmin, vmax=vmax,
+            cmap=cmap, orientation='vertical'
+        )
+        clbar_fig.savefig(
+            os.path.join(self.get_out_dir(),f'matrix_input-{self.gradient_input_type}_clbar.png'),
+            dpi=192
+            )
+
 
     def plot_gradient_space(self, remove_ticks=True):
         """
