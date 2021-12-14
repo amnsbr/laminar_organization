@@ -6,8 +6,10 @@ import scipy.stats
 import matplotlib.pyplot as plt
 import seaborn as sns
 import brainspace.gradient
-import helpers
 import cmcrameri.cm # color maps
+
+import helpers
+import datasets
 
 #> specify the data dir and create gradients and matrices subfolders
 abspath = os.path.abspath(__file__)
@@ -72,13 +74,13 @@ class LaminarSimilarityMatrix:
         #> Reading laminar thickness or density
         print("Reading laminar input files")
         if self.input_type == 'thickness':
-            self.laminar_data = helpers.read_laminar_thickness(
+            self.laminar_data = datasets.load_laminar_thickness(
                 exc_masks=self.exc_masks, 
                 normalize_by_total_thickness=self.normalize_by_total_thickness, 
                 regress_out_curvature=self.correct_thickness_by_curvature
             )
         elif self.input_type == 'density':
-            self.laminar_data = helpers.read_laminar_density(
+            self.laminar_data = datasets.load_laminar_density(
                 exc_masks=self.exc_masks
             )
         #> create the similarity matrix
@@ -315,7 +317,7 @@ class LaminarSimilarityGradients:
         gradient_maps: (np.ndarray) n_vertices [both hemispheres] x n_gradients
         """
         #> load concatenated parcellation map
-        concat_parcellation_map = helpers.load_parcellation_map(self._matrix_kwargs["parcellation_name"], concatenate=True)
+        concat_parcellation_map = datasets.load_parcellation_map(self._matrix_kwargs["parcellation_name"], concatenate=True)
         #> load parcellated laminar data (we only need the index)
         dummy_surf_data = np.loadtxt(os.path.join(
                 DATA_DIR, 'surface',

@@ -18,12 +18,14 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import nilearn.surface
 import nibabel
-import helpers
 import brainspace.null_models
 import brainspace.mesh
 import brainsmash.mapgen
 import ptitprince # for RainCloud plots
 import enigmatoolbox.datasets
+
+import helpers
+import datasets
 
 
 #> specify the data dir and create gradients and matrices subfolders
@@ -232,109 +234,6 @@ def spin_test_parcel(surface_data_to_spin, surface_data_target, n_perm, parcella
     test_r = test_r[0, :, :]
     return test_r, p_val, null_distribution
 
-#### Loading data ####
-# TODO: move to helpers or another file (maybe datasets.py?)
-def load_cortical_types_map():
-    """
-    Creates the surface map of cortical types (and saves it)
-    """
-    #> load the economo map and concatenate left and right hemispheres
-    economo_maps = {}
-    for hem in ['L', 'R']:
-        economo_maps[hem] = nilearn.surface.load_surf_data(
-            os.path.join(
-                DATA_DIR, 'parcellation',
-                f'tpl-bigbrain_hemi-{hem}_desc-economo_parcellation.label.gii'
-                )
-            )
-    economo_map = np.concatenate([economo_maps['L'], economo_maps['R']])
-    #> load the cortical types for each economo parcel
-    economo_cortical_types = pd.read_csv(
-        os.path.join(
-            DATA_DIR, 'parcellated_surface',
-            'economo_cortical_types.csv'
-            )
-        )
-    economo_cortical_types.columns=['Label', 'Cortical Type']
-    #> create the cortical types surface map
-    cortical_types_map = economo_cortical_types.loc[economo_map, 'Cortical Type'].astype('category').reset_index(drop=True)
-    cortical_types_map = cortical_types_map.cat.reorder_categories(['ALO', 'AG', 'DG', 'EU1', 'EU2', 'EU3', 'KO'])
-    #> save the map
-    # TODO: maybe split hemispheres
-    np.save(
-        os.path.join(
-            DATA_DIR, 'parcellation',
-            f'tpl-bigbrain_desc-cortical_types_parcellation.npy'
-        ), cortical_types_map.cat.codes.values)
-    return cortical_types_map
-
-def load_laminar_properties(regress_out_cruvature):
-    """
-    Loads laminar properties including relative thickness of each layer in addition to
-    the sum of supragranular and infragranular layers and their ratios
-    
-    Parameters
-    ----------
-    regress_out_curvature: (bool) regress out curvature from relative laminar thickness
-
-    Returns
-    ------
-    laminar_properties (pd.DataFrame) n_vert * n_properties
-    """
-    out_path = os.path.join(DATA_DIR, 'surface', 'tpl-bigbrain_desc-laminarprops.csv')
-    if os.path.exists(out_path):
-        return pd.read_csv(out_path, sep=",", index_col=False)
-    laminar_properties = helpers.read_laminar_thickness(regress_out_curvature=regress_out_cruvature)
-    laminar_properties = pd.DataFrame(np.concatenate([laminar_properties['L'], laminar_properties['R']], axis=0))
-    laminar_properties.columns = [f'Layer {idx+1}' for idx in range(6)]
-    laminar_properties['L1-3 sum'] = laminar_properties.iloc[:, :3].sum(axis=1)
-    laminar_properties['L4-6 sum'] = laminar_properties.iloc[:, 3:6].sum(axis=1)
-    laminar_properties['L4-6 to L1-3 thickness ratio'] = laminar_properties.iloc[:, 3:6].sum(axis=1) / laminar_properties.iloc[:, :3].sum(axis=1)
-    laminar_properties['L5-6 to L1-3 thickness ratio'] = laminar_properties.iloc[:, 4:6].sum(axis=1) / laminar_properties.iloc[:, :3].sum(axis=1)
-    laminar_properties.to_csv(out_path, sep=',', index=False)
-    return laminar_properties
-
-def load_profile_moments():
-    """
-    Loads mean, std, skewness and kurtosis of vertical intensity profiles for all vertices
-
-    Returns
-    -------
-    profile_moments (pd.DataFrame) n_vert * 4
-    """
-    out_path = os.path.join(DATA_DIR, 'surface', 'tpl-bigbrain_desc-profilemoments.csv')
-    if os.path.exists(out_path):
-        return pd.read_csv(out_path, sep=",", index_col=False)
-    profiles = np.loadtxt(os.path.join(DATA_DIR, 'surface', 'tpl-bigbrain_desc-profiles.txt'))
-    profile_moments = pd.DataFrame()
-    profile_moments['Intensity mean'] = np.mean(profiles, axis=0)
-    profile_moments['Intensity std'] = np.std(profiles, axis=0)
-    profile_moments['Intensity skewness'] = scipy.stats.skew(profiles, axis=0)
-    profile_moments['Intensity kurtosis'] = scipy.stats.kurtosis(profiles, axis=0)
-    profile_moments.to_csv(out_path, sep=',', index=False)
-    return profile_moments
-
-def load_disorder_atrophy_maps():
-    out_path = os.path.join(DATA_DIR, 'surface', 'disorder_atrophy_maps.csv')
-    if os.path.exists(out_path):
-        return pd.read_csv(out_path, sep=",", index_col='Structure')
-    disorder_atrophy_maps = pd.DataFrame()
-    for disorder in ['adhd', 'bipolar', 'depression', 'ocd']:
-        disorder_atrophy_maps[disorder] = (
-            enigmatoolbox.datasets.load_summary_stats(disorder)
-            ['CortThick_case_vs_controls_adult']
-            .set_index('Structure')['d_icv'])
-    disorder_atrophy_maps['schizophrenia'] = (
-        enigmatoolbox.datasets.load_summary_stats('schizophrenia')
-        ['CortThick_case_vs_controls']
-        .set_index('Structure')['d_icv'])
-    disorder_atrophy_maps['epilepsy'] = (
-        enigmatoolbox.datasets.load_summary_stats('epilepsy')
-        ['CortThick_case_vs_controls_allepilepsy']
-        .set_index('Structure')['d_icv'])
-    disorder_atrophy_maps.to_csv(out_path, sep=",", index_label='Structure')
-    return disorder_atrophy_maps
-
 #### Associations ####
 def associate_cortical_types(gradient_file, n_gradients=3):
     """
@@ -353,7 +252,7 @@ def associate_cortical_types(gradient_file, n_gradients=3):
     #> load gradient maps
     gradient_maps = np.load(gradient_file)['surface']
     #> load cortical types map
-    cortical_types_map = load_cortical_types_map()
+    cortical_types_map = datasets.load_cortical_types_map()
     #> parcellate the gradient maps
     parcellated_gradients = helpers.parcellate(gradient_maps, parcellation_name)
     #> parcellate cortical types (using the most frequent type)
@@ -683,8 +582,8 @@ def correlate_laminar_properties_and_moments(gradient_file, n_laminar_gradients,
     parcellation_name = re.match(r".*parc-([a-z|-|0-9]+)_*", gradient_file).groups()[0]
     print(f"Investigating correlation with laminar properties and density moments: {gradient_file}")
     #> load laminar properties and density moments
-    laminar_properties = load_laminar_properties(regress_out_cruvature=('corr-curv' in gradient_file))
-    profile_moments = load_profile_moments()
+    laminar_properties = datasets.load_laminar_properties(regress_out_cruvature=('corr-curv' in gradient_file))
+    profile_moments = datasets.load_profile_moments()
     laminarprops_and_moments = pd.concat([laminar_properties, profile_moments], axis=1)
     #> load gradient maps
     gradient_maps = np.load(gradient_file)['surface']
@@ -769,7 +668,7 @@ def correlate_disorder_atrophy_maps(gradient_file, n_laminar_gradients, n_perm):
     #> load gradient maps
     gradient_maps = np.load(gradient_file)['surface']
     #> load disorder atrophy maps
-    parcellated_disorder_atrophy_maps = load_disorder_atrophy_maps()
+    parcellated_disorder_atrophy_maps = datasets.load_disorder_atrophy_maps()
     #> project it back to surface
     disorder_atrophy_maps = helpers.deparcellate(parcellated_disorder_atrophy_maps, 'aparc')
     #> create spin permtations of hist gradients
@@ -832,11 +731,12 @@ def correlate_disorder_atrophy_maps(gradient_file, n_laminar_gradients, n_perm):
 
 #> run all functions
 # gradient_files = glob.glob(os.path.join(DATA_DIR, 'result', '*parcor*', 'gradients_surface.npz'))
-gradient_files = [os.path.join(DATA_DIR, 'result', 'input-thickness_parc-sjh_approach-dm_metric-parcor_parcel', 'gradients_surface.npz')]
+# gradient_files = [os.path.join(DATA_DIR, 'result', 'input-thickness_parc-sjh_approach-dm_metric-parcor_parcel', 'gradients_surface.npz')]
+gradient_files = [os.path.join(DATA_DIR, 'result', 'input-thickness_parc-sjh_approach-dm_metric-parcor_parcel_excmask-adys', 'gradients_surface.npz')]
 for gradient_file in gradient_files:
     print("Gradient:", gradient_file)
     associate_cortical_types(gradient_file)
-    associate_yeo_networks(gradient_file)
-    correlate_hist_gradients(gradient_file, n_laminar_gradients=3, n_perm=1000)
-    correlate_laminar_properties_and_moments(gradient_file, n_laminar_gradients=3, n_perm=1000)
-    correlate_disorder_atrophy_maps(gradient_file, n_laminar_gradients=3, n_perm=1000)
+    # associate_yeo_networks(gradient_file)
+    # correlate_hist_gradients(gradient_file, n_laminar_gradients=3, n_perm=1000)
+    # correlate_laminar_properties_and_moments(gradient_file, n_laminar_gradients=3, n_perm=1000)
+    # correlate_disorder_atrophy_maps(gradient_file, n_laminar_gradients=3, n_perm=1000)

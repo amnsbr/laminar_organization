@@ -314,6 +314,17 @@ def correlate_laminar_similarity_matrix(matrix_file):
         )
         clfig.savefig(fig_outpath+'_clbar.png', dpi=192)
 
+def associate_w_cortical_types(matrix_file):
+    """
+    Calculates within and between type similarity and plots a collapsed
+    similarity matrix by cortical types. Excludes a-/dysgranular as indicated
+    by the matrix filename
+
+    Parameters
+    ---------
+    matrix_file: (str) path to matrix file    
+    """
+    pass
 
 matrix_files = glob.glob(os.path.join(DATA_DIR, 'result', '*', 'matrix*.csv'))
 for matrix_file in matrix_files:
@@ -323,4 +334,5 @@ for matrix_file in matrix_files:
         print("\tNot square")
         continue
     else:
+        associate_w_cortical_types(matrix_file)
         correlate_laminar_similarity_matrix(matrix_file)
