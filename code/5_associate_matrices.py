@@ -272,7 +272,7 @@ def correlate_laminar_similarity_matrix(matrix_file):
     prefix = matrix_file.replace('.csv', '')
     for X_matrix_name, X_matrix in X_matrices.items():
         #> select and order X matrix parcels based on Y matrix
-        X_matrix = X_matrix.loc[Y_matrix.index, Y_matrix.index]
+        X_matrix = X_matrix.loc[Y_matrix.index, Y_matrix.columns]
         #> edge-wise correlations
         correlate_matrices_edge_wise(
             X = X_matrix,
