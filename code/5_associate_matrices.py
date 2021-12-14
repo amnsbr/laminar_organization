@@ -16,12 +16,29 @@ import scipy.stats
 import matplotlib.pyplot as plt
 import seaborn as sns
 import enigmatoolbox.datasets
+import cmcrameri.cm
 
 
 #> specify the data dir
 abspath = os.path.abspath(__file__)
 cwd = os.path.dirname(abspath)
 DATA_DIR = os.path.join(cwd, '..', 'data')
+
+#> config
+DO_NODE_WISE = [
+    'Functional connectivity', 
+    'Structural connectivity', 
+    'Laminar thickness similarity'
+]
+CMAPS = {
+    'Geodesic distance': 'viridis',
+    'Curvature similarity': sns.color_palette("mako", as_cmap=True),
+    'Microstructural profile covariance': 'rocket',
+    'Functional connectivity': cmcrameri.cm.acton,
+    'Structural connectivity': cmcrameri.cm.davos,
+    'Laminar thickness similarity': 'RdBu_r'
+}
+
 
 def load_mpc_matrix(parcellation_name):
     out_path = os.path.join(
@@ -252,14 +269,11 @@ def correlate_laminar_similarity_matrix(matrix_file):
                 matrix_file.replace('matrix_input-density.csv', 'matrix_input-thickness.csv'),
                 index_col='parcel'
             )
-    do_node_wise = [
-        'Functional connectivity', 
-        'Structural connectivity', 
-        'Laminar thickness similarity'
-    ]
     prefix = matrix_file.replace('.csv', '')
     for X_matrix_name, X_matrix in X_matrices.items():
-        # edge-wise correlations
+        #> select and order X matrix parcels based on Y matrix
+        X_matrix = X_matrix.loc[Y_matrix.index, Y_matrix.index]
+        #> edge-wise correlations
         correlate_matrices_edge_wise(
             X = X_matrix,
             Y = Y_matrix,
@@ -267,8 +281,8 @@ def correlate_laminar_similarity_matrix(matrix_file):
             xlabel = X_matrix_name,
             ylabel = ylabel
             )
-        # node-wise correlations
-        if X_matrix_name in do_node_wise:
+        #> node-wise correlations
+        if X_matrix_name in DO_NODE_WISE:
             print(f"Node-wise correlation with {X_matrix_name}")
             correlate_matrices_node_wise(
                 X = X_matrix,
@@ -276,6 +290,30 @@ def correlate_laminar_similarity_matrix(matrix_file):
                 prefix = prefix + f'_correlation_{X_matrix_name.replace(" ","_").lower()}',
                 parcellation_name = parcellation_name
             )
+        #> plotting the x matrix
+        fig, ax = plt.subplots(figsize=(7,7))
+        sns.heatmap(
+            X_matrix,
+            vmin=np.nanquantile(X_matrix.values.flatten(),0.025),
+            vmax=np.nanquantile(X_matrix.values.flatten(),0.975),
+            cbar=False,
+            cmap=CMAPS[X_matrix_name],
+            ax=ax)
+        ax.axis('off')
+        fig_outpath = os.path.join(
+            os.path.dirname(prefix), 
+            "matrix_"+ X_matrix_name.replace(" ","_").lower()
+            )
+        print(fig_outpath)
+        fig.tight_layout()
+        fig.savefig(fig_outpath+'.png', dpi=192)
+        clfig = helpers.make_colorbar(
+            vmin=np.nanquantile(X_matrix.values.flatten(),0.025),
+            vmax=np.nanquantile(X_matrix.values.flatten(),0.975),
+            cmap=CMAPS[X_matrix_name]
+        )
+        clfig.savefig(fig_outpath+'_clbar.png', dpi=192)
+
 
 matrix_files = glob.glob(os.path.join(DATA_DIR, 'result', '*', 'matrix*.csv'))
 for matrix_file in matrix_files:
