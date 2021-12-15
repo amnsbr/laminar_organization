@@ -21,8 +21,10 @@ import nibabel
 import brainspace.null_models
 import brainspace.mesh
 import brainsmash.mapgen
-import ptitprince # for RainCloud plots
-import enigmatoolbox.datasets
+import ptitprince
+from statsmodels import formula # for RainCloud plots
+import statsmodels.api as sm
+import statsmodels.formula.api as smf
 
 import helpers
 import datasets
@@ -719,6 +721,85 @@ def correlate_disorder_atrophy_maps(gradient_file, n_laminar_gradients, n_perm):
                 dpi=192
                 )
 
+def compare_fit_disorder_atrophy_maps(gradient_file):
+    """
+    Compares fit of gradients 1, 2, 3 and cortical types to
+    the atrophy map of individual disorders
+    """
+    #> load and parcellate the gradients
+    gradients = np.load(gradient_file)['surface']
+    parcellated_gradients = helpers.parcellate(gradients, 'aparc').dropna()
+    #> load cortical types of DK parcels
+    parcellated_cortical_types = datasets.load_cortical_types('aparc')
+    #> load and deparcellate the disorders map
+    parcellated_disorder_atrophy_maps = datasets.load_disorder_atrophy_maps()
+    #> remove adys regions from gradients and disorder maps
+    if 'excmask-adys' in gradient_file:
+        parcellated_gradients = parcellated_gradients.loc[~parcellated_cortical_types.isin(['ALO','AG', 'DG']), :]
+        parcellated_disorder_atrophy_maps = parcellated_disorder_atrophy_maps.loc[~parcellated_cortical_types.isin(['ALO','AG', 'DG']), :]
+        n_types = 4
+    else:
+        n_types = 6
+    #> bin gradients to n_types bins, to make it comparable to cortical types
+    for g_idx in range(3):
+        parcellated_gradients[f'bin{g_idx}'] = pd.cut(parcellated_gradients.loc[:, g_idx], n_types)
+    #> calculate adjusted R2 of each disorder atrophy map to Gs or cortical types
+    AdjR2s = pd.DataFrame()
+    Xs = pd.DataFrame({
+        'G1': parcellated_gradients.loc[:, 0],
+        'G2': parcellated_gradients.loc[:, 1],
+        'G3': parcellated_gradients.loc[:, 2],
+        'G1_binned': parcellated_gradients.loc[:, 'bin0'],
+        'G2_binned': parcellated_gradients.loc[:, 'bin1'],
+        'G3_binned': parcellated_gradients.loc[:, 'bin2'],
+        'CorticalType': parcellated_cortical_types.cat.codes,
+    })
+    parcellated_disorder_atrophy_maps = parcellated_disorder_atrophy_maps.loc[Xs.index & parcellated_disorder_atrophy_maps.index]
+    Xs = Xs.loc[parcellated_disorder_atrophy_maps.index]
+    df = pd.concat([parcellated_disorder_atrophy_maps, Xs], axis=1)
+    X_names_dict = {
+        'G1': ['G1'],
+        'G2': ['G2'],
+        'G3': ['G3'],
+        'G1-3': ['G1', 'G2', 'G3'],
+        'G1 binned': ['C(G1_binned)'],
+        'G2 binned': ['C(G2_binned)'],
+        'G3 binned': ['C(G3_binned)'],
+        'Cortical type': ['C(CorticalType)']
+    }
+    include_in_plot = ['G1', 'G1-3', 'Cortical type']
+    res_str = ""
+    for disorder in parcellated_disorder_atrophy_maps.columns:
+        for list_name , X_names_list in X_names_dict.items():
+            formula = f'{disorder} ~ {" + ".join(X_names_list)}'
+            res = smf.ols(formula=formula, data=df).fit()
+            res_str += f"\n-----------\n{formula}\n{res.summary()}\n"
+            AdjR2s.loc[list_name, disorder] = res.rsquared_adj
+    res_str = f"Adj R2s:\n{AdjR2s}\n\nModels details:\n{res_str}"
+    with open(gradient_file.replace('gradients_surface.npz', 'compare_disorder_fit.txt'), 'w') as outfile:
+        outfile.write(res_str)
+    #> plot
+    AdjR2s_toplot = AdjR2s.loc[include_in_plot, :]
+    for disorder in AdjR2s_toplot.columns:
+        fig, ax = plt.subplots(1, figsize=(4, 1.5))
+        sns.barplot(
+            data=AdjR2s_toplot,
+            x=disorder,
+            y=AdjR2s_toplot.index,
+            color='C0',
+            alpha=0.25,
+            ax=ax
+        )
+        ax.set_xlim((AdjR2s.values.min(), AdjR2s.values.max()))
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        fig.tight_layout()
+        fig.savefig(
+            gradient_file.replace('gradients_surface.npz', f'compare_disorder_fit_{disorder}'),
+            dpi=192
+        )
+    
+
 #> run all functions
 # gradient_files = glob.glob(os.path.join(DATA_DIR, 'result', '*parcor*', 'gradients_surface.npz'))
 # gradient_files = [os.path.join(DATA_DIR, 'result', 'input-thickness_parc-sjh_approach-dm_metric-parcor_parcel', 'gradients_surface.npz')]
@@ -730,3 +811,4 @@ for gradient_file in gradient_files:
     correlate_hist_gradients(gradient_file, n_laminar_gradients=3, n_perm=1000)
     correlate_laminar_properties_and_moments(gradient_file, n_laminar_gradients=3, n_perm=1000)
     correlate_disorder_atrophy_maps(gradient_file, n_laminar_gradients=3, n_perm=1000)
+    compare_fit_disorder_atrophy_maps(gradient_file)

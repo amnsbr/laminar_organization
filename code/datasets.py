@@ -194,6 +194,9 @@ def load_cortical_types(parcellation_name=None):
             .groupby('Parcel')
             #>> find the cortical types with the highest count
             ['Cortical Type'].value_counts(sort=True).unstack().idxmax(axis=1)
+            #>> convert it back to category
+            .astype('category')
+            .cat.reorder_categories(['ALO', 'AG', 'DG', 'EU1', 'EU2', 'EU3', 'KO'])
         )
         return parcellated_cortical_types_map
     else:
