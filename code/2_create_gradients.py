@@ -25,15 +25,16 @@ class LaminarSimilarityMatrix:
                  similarity_method = 'euclidean', similarity_scale='parcel',
                  exc_masks=None,  parcellation_name='sjh', correct_thickness_by_curvature=True):
         """
-        Initializes laminar thickness/density similarity matrix object
+        Initializes laminar similarity matrix object
 
         Parameters
         ---------
         input_type: (str) Type of input laminar data
             - 'thickness' (default)
+            - 'volume'
             - 'density'
         out_dir: (str) path to the output directory
-        normalize_by_total_thickness: (bool) Normalize by total thickness. Default: True
+        normalize_by_total_thickness: (bool) Normalize by total thickness. Must be True for 'volume'. Default: True.
         similarity_method: (str) how is similarity of laminar structure between two parcels determined
             - 'parcor': partial correlation with mean thickness pattern as covariate
             - 'euclidean': euclidean distance [will normalize to 0-1]; very similar to pearson
@@ -43,18 +44,18 @@ class LaminarSimilarityMatrix:
             - 'vertex': similarity method is used between all pairs of vertices between two
                         parcels and then the similarity metric is averaged
         exc_masks: (dict of str) Path to the surface masks of vertices that should be excluded (L and R) (format: .npy)
-        correct_thickness_by_curvature: (bool) Regress out curvature. Default: True
+        correct_thickness_by_curvature: (bool) Regress out curvature. Must be False for 'volume'. Default: True
         parcellation_name: (str) Parcellation scheme
             - 'sjh'
         """
         #> save parameters as class fields
         self.input_type = input_type
-        self.normalize_by_total_thickness = normalize_by_total_thickness
+        self.normalize_by_total_thickness = (normalize_by_total_thickness or (self.input_type=='volume'))
         self.similarity_method = similarity_method
         self.similarity_scale = similarity_scale
         self.exc_masks = exc_masks
         self.parcellation_name = parcellation_name
-        self.correct_thickness_by_curvature = correct_thickness_by_curvature
+        self.correct_thickness_by_curvature = (correct_thickness_by_curvature and (self.input_type!='volume'))
         #> directory and filename (prefix which will be used for .npz and .jpg files)
         self.out_dir = out_dir
         self.filename = f'matrix_input-{self.input_type}'
@@ -63,7 +64,7 @@ class LaminarSimilarityMatrix:
 
     def create(self):
         """
-        Creates laminar thickness similarity matrix
+        Creates laminar similarity matrix
         """
         print(f"""
         Creating similarity matrix:
@@ -79,6 +80,10 @@ class LaminarSimilarityMatrix:
                 normalize_by_total_thickness=self.normalize_by_total_thickness, 
                 regress_out_curvature=self.correct_thickness_by_curvature
             )
+        elif self.input_type == 'volume':
+            self.laminar_data = datasets.load_laminar_volume(
+                exc_masks=self.exc_masks
+            )
         elif self.input_type == 'density':
             self.laminar_data = datasets.load_laminar_density(
                 exc_masks=self.exc_masks
@@ -91,8 +96,8 @@ class LaminarSimilarityMatrix:
 
     def create_at_parcels(self):
         """
-        Creates laminar thickness/density similarity matrix by taking Euclidean distance, Pearson's correlation
-        or partial correltation (with the average laminar thickness pattern as the covariate) between
+        Creates laminar similarity matrix by taking Euclidean distance, Pearson's correlation
+        or partial correltation (with the average laminar data pattern as the covariate) between
         average values of parcels
 
         Note: Partial correlation is based on "Using recursive formula" subsection in the wikipedia
@@ -103,7 +108,7 @@ class LaminarSimilarityMatrix:
         Returns
         -------
         matrix: (np.ndarray) n_parcels x n_parcels: how similar are each pair of parcels in their
-                laminar thickness pattern
+                laminar data pattern
         """
         print("Concatenating and parcellating the data")
         self.parcellated_laminar_data = helpers.parcellate(
@@ -146,7 +151,7 @@ class LaminarSimilarityMatrix:
 
     def create_at_vertices(self):
         """
-        Creates laminar thickness/density similarity matrix by taking Euclidean distance or Pearson's correlation
+        Creates laminar similarity matrix by taking Euclidean distance or Pearson's correlation
         between all pairs of vertices between two pairs of parcels and then taking the average value of
         the resulting n_vert_parcel_i x n_vert_parcel_j matrix for the cell i, j of the parcels similarity matrix
 
@@ -206,7 +211,7 @@ class LaminarSimilarityMatrix:
 
 #> laminar similarity gradients class
 class LaminarSimilarityGradients:
-    def __init__(self, gradient_input_type='thickness-density',
+    def __init__(self, gradient_input_type,
                  n_components=10, approach='dm',
                  kernel='normalized_angle', sparsity=0.9,
                   **matrix_kwargs):
@@ -216,6 +221,7 @@ class LaminarSimilarityGradients:
 
         Parameters
         ---------
+        gradient_input_type: (str) single or multiple matrix input types separated by '-'
         matrix_objs: (list) of LaminarSimilarityMatrix objects.
                      Usually len(matrix_objs) <= 2, but the code supports more matrices.
                      Matrices should have the same size and parcellation
@@ -417,7 +423,7 @@ class LaminarSimilarityGradients:
         Plot the concatenated matrix as heatmap
         """
         #> use different colors for different input types
-        if self.gradient_input_type == 'thickness':
+        if self.gradient_input_type in ['thickness', 'volume']:
             cmap = sns.color_palette("RdBu_r", as_cmap=True)
         elif self.gradient_input_type == 'density':
             cmap = sns.color_palette("viridis", as_cmap=True)
@@ -509,9 +515,11 @@ for parcellation_name in ['sjh', 'schaefer400']:
             f'tpl-bigbrain_hemi-R_desc-adysgranular_mask_parcellation-{parcellation_name}_thresh_0.1.npy'
         )
     }
-    for gradient_input_type in ['thickness']: #['thickness', 'thickness-density']:
-        for exc_masks in [None, adysgranular_masks]:
+    for gradient_input_type in ['volume', 'thickness']: #['thickness', 'thickness-density']:
+        for exc_masks in [adysgranular_masks, None]:
             for correct_thickness_by_curvature in [False, True]:
+                if (gradient_input_type == 'volume') and (correct_thickness_by_curvature):
+                    continue # do not regress out curvature from laminr volume
                 gradients = LaminarSimilarityGradients(
                     gradient_input_type=gradient_input_type,
                     parcellation_name=parcellation_name,

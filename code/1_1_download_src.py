@@ -13,8 +13,8 @@ import helpers
 abspath = os.path.abspath(__file__)
 cwd = os.path.dirname(abspath)
 SRC_DIR = os.path.abspath(os.path.join(cwd, '..', 'src'))
-os.chdir(SRC_DIR)
 os.makedirs(SRC_DIR, exist_ok=True)
+os.chdir(SRC_DIR)
 #> Create 'data' and its subfolders
 DATA_DIR = os.path.abspath(os.path.join(cwd, '..', 'data'))
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -95,4 +95,10 @@ for hem in ['left', 'right']:
         shutil.copyfile(
             os.path.join(SRC_DIR, f'density_profile_hemi-{hem}_layer-{layer_num}_nsurf-10.npz'),
             os.path.join(DATA_DIR,'surface', f'tpl-bigbrain_hemi-{hem[0].upper()}_desc-layer-{layer_num}_profiles_nsurf-10.npz')
+        )
+    # surface areas
+    for surf in ['pial', 'white']:
+        shutil.copyfile(
+            os.path.join(SRC_DIR, f'tpl-bigbrain_hemi-{hem[0].upper()}_desc-{surf}.area.npy'),
+            os.path.join(DATA_DIR, 'surface', f'tpl-bigbrain_hemi-{hem[0].upper()}_desc-{surf}.area.npy'),
         )

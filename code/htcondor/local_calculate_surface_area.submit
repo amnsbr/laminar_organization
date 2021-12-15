@@ -1,0 +1,16 @@
+# The environment
+universe              = vanilla
+getenv                = True
+request_cpus          = 1
+request_memory        = 6G
+
+# Execution
+initialdir            = $ENV(HOME)/laminar_gradients/code/local/
+executable            = /usr/bin/bash
+
+# Job
+arguments   = calculate_surface_area.sh
+log         = $ENV(HOME)/laminar_gradients/logs/calculate_surface_area_$(Cluster).$(Process).log
+output      = $ENV(HOME)/laminar_gradients/logs/calculate_surface_area_$(Cluster).$(Process).out
+error       = $ENV(HOME)/laminar_gradients/logs/calculate_surface_area_$(Cluster).$(Process).err
+Queue

@@ -66,6 +66,85 @@ def load_laminar_thickness(exc_masks=None, normalize_by_total_thickness=True, re
                 )
     return laminar_thickness
 
+def calculate_alphas(betas, aw, ap):
+    """
+    Compute volume fraction map, alphas, that will yield the desired
+    euclidean distance fraction map, betas, given vertex areas in the white matter surface, aw,
+    and on the pial surface, ap.
+    Based on Eq. 10 from https://doi.org/10.1016/j.neuroimage.2013.03.078 solved for alpha
+
+    Parameters
+    ----------
+    betas: (np.ndarray) n_vertices x 6, euclidean distance fraction map from wm surface
+    aw: (np.ndarray) n_vertices, white matter surface area map
+    ap: (np.ndarray) n_vertices, pial surface area map
+    """
+    return ((aw + ((ap-aw)*betas))**2 - aw**2) / (ap**2 - aw**2)
+
+def load_laminar_volume(exc_masks=None):
+    """
+    To correct for the effect of curvature on laminar thickness, this function 
+    calculates relative volume of each layer at each vertex considering the
+    relative thickness of that layer, and the curvature at that vertex.
+    The conversion from relative thickness (or distance fraction, beta) 
+    to volume fraction, alpha, is done by using Eq. 10 from 
+    https://doi.org/10.1016/j.neuroimage.2013.03.078.
+    This equation originally calculates beta given alpha, and was implemented in
+    https://github.com/kwagstyl/surface_tools. To calculate alpha given beta, I've
+    simply solved and rearranged Eq. 10 for alpha.
+
+    This involves three steps:
+    1. Convert relative laminar thickness arrays to betas, i.e., calculate cumulative relative thickness of layers from wm boundarty (i.e. beta6 would be thick6, beta5 would be thick6+thick5 and so on).
+    2. Calculate the vertex-wise map of alphas for each layer (using vertex-wise pial and wm surface area calculated with CIVET in the original code & the function alpha). This will for each layer n be the volume of cortex from wm surface towards the layer boundary.
+    3. Calculate the relative volume of each layer based on alphas.
+
+    Parameters
+    ----------
+    exc_masks: (dict of str) Path to the surface masks of vertices that should be excluded (L and R) (format: .npy)
+
+    Returns
+    --------
+    laminar_volume: (dict of np.ndarray) n_vertices x 6 for laminar volume of L and R hemispheres
+    """
+    # Load laminar thickness
+    laminar_thickness = load_laminar_thickness(
+        exc_masks=exc_masks, 
+        normalize_by_total_thickness=True,
+        regress_out_curvature=False
+        )
+    laminar_volume = {}
+    for hem in ['L','R']:
+        # Load wm and pial vertex areas
+        wm_vertexareas = np.load(
+            os.path.join(
+                DATA_DIR, 'surface',
+                f'tpl-bigbrain_hemi-{hem}_desc-white.area.npy'
+            )
+        )
+        pia_vertexareas = np.load(
+            os.path.join(
+                DATA_DIR, 'surface',
+                f'tpl-bigbrain_hemi-{hem}_desc-pial.area.npy'
+            )
+        )
+        # Step 1: Convert relative laminar thickness and convert it to betas
+        # (rho in Eq 10 or betas in the surface_tools)
+        laminar_boundary_distance_from_wm = laminar_thickness[hem][:, ::-1].cumsum(axis=1)
+        # Step 2: Convert relative distance from bottom (beta) to relative volume from bottom (alpha) based on curvature
+        alphas = np.zeros_like(laminar_boundary_distance_from_wm)
+        for lay_idx in range(6):
+            alphas[:, lay_idx] = calculate_alphas(
+                laminar_boundary_distance_from_wm[:, lay_idx], 
+                wm_vertexareas, 
+                pia_vertexareas
+            )
+        # Step 3: Convert cumulative fractional volume of stacked layers (alphas) to volume of individual layers
+        laminar_volume[hem] = np.concatenate([
+            alphas[:, 0][:, np.newaxis], # layer 6 is the first layer from bottom so its rel_vol = alpha
+            np.diff(alphas, axis=1) # un-cumsum layers 5 to 1
+            ], axis=1)[:,::-1] # reverse it from layer 6to1 to layer 1to6
+    return laminar_volume
+
 def load_laminar_density(exc_masks=None, method='mean'):
     """
     Loads laminar density data from 'src' folder, takes the average of sample densities
@@ -208,6 +287,35 @@ def load_cortical_types(parcellation_name=None):
         #         f'tpl-bigbrain_desc-cortical_types_parcellation.npy'
         #     ), cortical_types_map.cat.codes.values)
         return cortical_types_map      
+
+def load_hist_mpc_gradients():
+    """
+    Loads two main gradients of Paquola et al. based on BigBrain MPC
+
+    Returns
+    -------
+    hist_gradients: n_vertices x 2 (both hemispheres)
+    """
+    hist_gradients = {}
+    for hist_gradient_num in range(1, 3):
+        hist_gradients[hist_gradient_num] = {}
+        for hem in ['L', 'R']:
+            hist_gradients[hist_gradient_num][hem] = np.loadtxt(
+                os.path.join(
+                    DATA_DIR, 'surface',
+                    f'tpl-bigbrain_hemi-{hem}_desc-Hist_G{hist_gradient_num}.txt'
+                )
+            )
+        hist_gradients[hist_gradient_num] = np.concatenate([
+            hist_gradients[hist_gradient_num]['L'], 
+            hist_gradients[hist_gradient_num]['R']
+            ])
+    hist_gradients = np.vstack([
+        hist_gradients[1],
+        hist_gradients[2],
+    ]).T
+    return hist_gradients
+
 
 def load_laminar_properties(regress_out_cruvature):
     """
