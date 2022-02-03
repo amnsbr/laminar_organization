@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import enigmatoolbox.datasets
 import cmcrameri.cm
+import statsmodels.stats.multitest
 
 import helpers
 import datasets
@@ -88,7 +89,8 @@ def load_conn_matrices(matrix_file):
 
     Returns
     ---------
-    reordered_fc_ctx, reordered_sc_ctx: (np.ndarray) (400, 400) reordered FC and SC matrices
+    reordered_fc_ctx, reordered_sc_ctx: (np.ndarray) (n_parc, n_parc) 
+        reordered FC and SC matrices matching the original matrix
     """
     #> load laminar similarity matrix for its correctly ordered index
     laminar_sim_matrix = pd.read_csv(matrix_file, index_col='parcel')
@@ -101,11 +103,16 @@ def load_conn_matrices(matrix_file):
     sc_ctx_df = pd.DataFrame(sc_ctx, columns=sc_ctx_labels, index=sc_ctx_labels)
     reordered_sc_ctx = sc_ctx_df.loc[laminar_sim_matrix.index, laminar_sim_matrix.index]
     #> zero out SC contralateral
-    reordered_sc_ctx.iloc[:200, 200:] = 0
-    reordered_sc_ctx.iloc[200:, :200] = 0
+    if ('excmask-adys' in matrix_file):
+        parcels_adys = datasets.load_parcels_adys('schaefer400')
+        split_hem_idx = int(np.nansum(1-parcels_adys['L'].values)) # number of non-adys parcels in lh
+    else:
+        split_hem_idx = 200
+    reordered_sc_ctx.iloc[:split_hem_idx, split_hem_idx:] = 0
+    reordered_sc_ctx.iloc[split_hem_idx:, :split_hem_idx] = 0
     return reordered_fc_ctx, reordered_sc_ctx
 
-def correlate_matrices_edge_wise(X, Y, prefix, xlabel, ylabel, nonpar=False):
+def correlate_matrices_edge_wise(X, Y, prefix, xlabel, ylabel, split_hem_idx=None, nonpar=False):
     """
     Calculates and plots the correlation between the edges of two matrices
     `X` and `Y` which are assumed to be square and symmetric. The correlation
@@ -116,40 +123,56 @@ def correlate_matrices_edge_wise(X, Y, prefix, xlabel, ylabel, nonpar=False):
     X, Y: (pd.DataFrame) n_parc x n_parc
     prefix: (str) prefix for the output filename
     xlabel, ylabel: (str)
+    split_hem_idx: (None or int) the index at which the hemispheres should be split. 
+                    If not specified both hemispheres are analyzed at the same tiem. Default: None
     nonpar: (bool) do nonparameteric statistical significance testing as well
     """
     #> reorder and select valid parcels for X
     #  + convert them to np.ndarray
     X = X.loc[Y.index, Y.columns].values
     Y = Y.values
+    #> make NaNs zero so NaN can be assigned to L-R edges
+    X[np.isnan(X)] = 0 # make sure this is okay for all the matrices
+    Y[np.isnan(Y)] = 0
+    #> if L and R should be investigated separately
+    # make interhemispheric pairs of the lower triangle
+    # NaN so it could be then removed
+    if split_hem_idx:
+        X[split_hem_idx:, :split_hem_idx] = np.NaN
+        Y[split_hem_idx:, :split_hem_idx] = np.NaN
     #> get the index for lower triangle
     tril_index = np.tril_indices_from(X, -1)
     x = X[tril_index]
     y = Y[tril_index]
-    #> remove (often uninteresting) zeros from both matrices
-    #  e.g. zeroed out similarity values, or non-existing GD (R to L)
-    #  TODO: make sure we are not removing anything interesting!
+    #> drop NaN (which assuming that there was no NaNs already
+    #  in the matrix, corresponds to the interhemispheric pairs
+    #  for the case of split hem correlations)
+    x = x[~np.isnan(x)]
+    y = y[~np.isnan(y)]
+    #> remove 0s as the Y matrix is often zeroed out and 0
+    #  has lost its meaning and there's a lot of zeros which
+    #  have been actually the negative values
     mask = np.logical_and(x!=0, y!=0) 
     x = x[mask]
     y = y[mask]
     #> spearman correlation with 1000 permutation
-    np.random.seed(921)
     test_rho = scipy.stats.spearmanr(x, y).correlation
     p_val_par = scipy.stats.spearmanr(x, y).pvalue
     res_str = f"Correlation with {xlabel}\nRho: {test_rho}; Parametric p-value: {p_val_par}"
-    if nonpar:
-        null_rhos = np.array([])
-        for _ in range(1000):
-            surrogate = np.random.permutation(X) #> shuffles along the first dim and returns a copy
-            surrogate = surrogate[tril_index]
-            curr_perm_y = Y[tril_index]
-            curr_perm_mask = np.logical_and(surrogate!=0, curr_perm_y!=0) # remove (often uninteresting) zeros from both matrices
-            surrogate = surrogate[curr_perm_mask]
-            curr_perm_y = curr_perm_y[curr_perm_mask]
-            perm_rho = scipy.stats.spearmanr(surrogate, curr_perm_y).correlation
-            null_rhos = np.append(null_rhos, perm_rho)
-        p_val_nonpar = (np.abs(null_rhos) > np.abs(test_rho)).mean()
-        res_str += f"Nonparametric p-value: {p_val_nonpar}"
+    # if nonpar:
+    #     np.random.seed(921)
+    #     null_rhos = np.array([])
+    #     for _ in range(1000):
+    #         surrogate = np.random.permutation(X) #> shuffles along the first dim and returns a copy
+    #         surrogate = surrogate[tril_index]
+    #         curr_perm_y = Y[tril_index]
+    #         curr_perm_mask = np.logical_and(surrogate!=0, curr_perm_y!=0) # remove (often uninteresting) zeros from both matrices
+    #         surrogate = surrogate[curr_perm_mask]
+    #         curr_perm_y = curr_perm_y[curr_perm_mask]
+    #         perm_rho = scipy.stats.spearmanr(surrogate, curr_perm_y).correlation
+    #         null_rhos = np.append(null_rhos, perm_rho)
+    #     p_val_nonpar = (np.abs(null_rhos) > np.abs(test_rho)).mean()
+    #     res_str += f"Nonparametric p-value: {p_val_nonpar}"
     print(res_str)
     with open(prefix+'.txt', 'w') as res_file:
         res_file.write(res_str)
@@ -161,8 +184,8 @@ def correlate_matrices_edge_wise(X, Y, prefix, xlabel, ylabel, nonpar=False):
         kind = "hex", 
         color = "grey", 
         height = 4,
-        marginal_kws = {'bins':50}, 
-        joint_kws = {'gridsize':50},
+        marginal_kws = {'bins':35}, 
+        joint_kws = {'gridsize':35},
         # xlim = (np.quantile(X[tril_index], 0.025), np.quantile(X[tril_index], 0.975)),
         # ylim = (np.quantile(Y[tril_index], 0.025), np.quantile(Y[tril_index], 0.975)),
     )
@@ -198,7 +221,7 @@ def correlate_matrices_edge_wise(X, Y, prefix, xlabel, ylabel, nonpar=False):
     # ax.axis('off')
 
 
-def correlate_matrices_node_wise(X, Y, prefix, parcellation_name):
+def correlate_matrices_node_wise(X, Y, prefix, parcellation_name, split_hem_idx=None):
     """
     Calculates the correlation between matrices `X` and `Y` at each row (node),
     projects the node-wise Spearman's rho values to the surface and saves and plots it. 
@@ -208,6 +231,8 @@ def correlate_matrices_node_wise(X, Y, prefix, parcellation_name):
     ---------
     X, Y: (np.ndarray) n_parc x n_parc
     prefix: (str) prefix for the output filenames
+    split_hem_idx: (None or int) the index at which the hemispheres should be split. 
+                If not specified both hemispheres are analyzed at the same tiem. Default: None
     """
     #> reorder and select valid parcels for X
     #  + convert them to np.ndarray
@@ -216,22 +241,40 @@ def correlate_matrices_node_wise(X, Y, prefix, parcellation_name):
     Y = Y.values
     #> 
     node_rhos = np.empty(X.shape[0])
+    node_pvals = np.empty(X.shape[0])
     for row_idx in range(X.shape[0]):
-        #> remove zero values (TODO make sure this is valid with all matrices)
         row_x = X[row_idx, :]
         row_y = Y[row_idx, :]
-        mask = np.logical_and(row_x!=0, row_y!=0)
-        row_x = row_x[mask]
-        row_y = row_y[mask]
+        if split_hem_idx:
+            if row_idx < split_hem_idx:
+                row_x = row_x[:split_hem_idx]
+                row_y = row_y[:split_hem_idx]
+            else:
+                row_x = row_x[split_hem_idx:]
+                row_y = row_y[split_hem_idx:]
         #> calculate spearman correlation
-        node_rhos[row_idx] = scipy.stats.spearmanr(row_x, row_y).correlation
-    node_rhos = pd.Series(node_rhos, index=parcels)
+        spearman_res = scipy.stats.spearmanr(row_x, row_y)
+        node_rhos[row_idx] = spearman_res.correlation
+        node_pvals[row_idx] = spearman_res.pvalue
+    node_rhos = pd.Series(node_rhos, index=parcels).fillna(0) # replace NaN correlations with 0
     node_rhos_surface = helpers.deparcellate(node_rhos, parcellation_name)
     np.savez_compressed(prefix + '_nodewise_surface.npz', surface=node_rhos_surface)
-    helpers.plot_on_bigbrain_nl(
-        node_rhos_surface,
-        filename=prefix + '_nodewise_surface.png'
-    )
+    # helpers.plot_on_bigbrain_nl(
+    #     node_rhos_surface,
+    #     filename=prefix + '_nodewise_surface.png'
+    # )
+    _, node_pvals_fdr = statsmodels.stats.multitest.fdrcorrection(node_pvals)
+    node_pvals_fdr = pd.Series(
+        node_pvals_fdr,
+        index=parcels)
+    node_rhos_sig = node_rhos.copy()
+    node_rhos_sig[node_pvals_fdr >= 0.05] = 0
+    node_rhos_sig_surface = helpers.deparcellate(node_rhos_sig, parcellation_name)
+    np.savez_compressed(prefix + '_nodewise_surface_sig.npz', surface=node_rhos_sig_surface)
+    # helpers.plot_on_bigbrain_nl(
+    #     node_rhos_sig_surface,
+    #     filename=prefix + '_nodewise_surface_sig.png'
+    # )
 
 def correlate_laminar_similarity_matrix(matrix_file):
     #> get parcellation name based on matrix_file
@@ -275,13 +318,26 @@ def correlate_laminar_similarity_matrix(matrix_file):
     for X_matrix_name, X_matrix in X_matrices.items():
         #> select and order X matrix parcels based on Y matrix
         X_matrix = X_matrix.loc[Y_matrix.index, Y_matrix.columns]
+        #> determine the index of row/column where L hemisphere ends
+        if X_matrix_name in ['Structural connectivity', 'Geodesic distance']:
+            if ('excmask-adys' in matrix_file):
+                parcels_adys = datasets.load_parcels_adys(parcellation_name)
+                split_hem_idx = int(np.nansum(1-parcels_adys['L'].values)) # number of non-adys parcels in lh
+            else:
+                if parcellation_name == 'schaefer400':
+                    split_hem_idx = 200 # TODO: this is specific for Schaefer parcellation
+                elif parcellation_name == 'sjh':
+                    split_hem_idx = 505
+        else:
+            split_hem_idx = None
         #> edge-wise correlations
         correlate_matrices_edge_wise(
             X = X_matrix,
             Y = Y_matrix,
             prefix = prefix + f'_correlation_{X_matrix_name.replace(" ","_").lower()}',
             xlabel = X_matrix_name,
-            ylabel = ylabel
+            ylabel = ylabel,
+            split_hem_idx = split_hem_idx
             )
         #> node-wise correlations
         if X_matrix_name in DO_NODE_WISE:
@@ -290,9 +346,12 @@ def correlate_laminar_similarity_matrix(matrix_file):
                 X = X_matrix,
                 Y = Y_matrix,
                 prefix = prefix + f'_correlation_{X_matrix_name.replace(" ","_").lower()}',
-                parcellation_name = parcellation_name
+                parcellation_name = parcellation_name,
+                split_hem_idx = split_hem_idx
             )
         #> plotting the x matrix
+        if X_matrix_name=='Geodesic distance':
+            X_matrix[X_matrix==0] = np.NaN # so that interhemispheric pairs are transparent
         fig, ax = plt.subplots(figsize=(7,7))
         sns.heatmap(
             X_matrix,
@@ -327,11 +386,12 @@ def associate_cortical_types(matrix_file):
     matrix_file: (str) path to matrix file    
     """
     matrix = pd.read_csv(matrix_file, index_col='parcel')
-    matrix.columns = matrix.index
+    matrix.columns = matrix.index # for sjh parcellation index is loaded as int but columns as str
     #> get parcellation name based on matrix_file
     parcellation_name = re.match(r".*parc-([a-z|-|0-9]+)_*", matrix_file).groups()[0]
-    #> load cortical types
+    #> load cortical types and make it match matrix index
     parcellated_cortical_types = datasets.load_cortical_types(parcellation_name)
+    parcellated_cortical_types = parcellated_cortical_types.loc[matrix.index]
     #> list the excluded types based on matrix path 
     if ('excmask' in matrix_file):
         included_types = ['EU1', 'EU2', 'EU3', 'KO']
@@ -345,6 +405,9 @@ def associate_cortical_types(matrix_file):
         ~parcellated_cortical_types.isin(excluded_types), 
         ~parcellated_cortical_types.isin(excluded_types)
     ]
+    parcellated_cortical_types = (parcellated_cortical_types
+        .loc[~parcellated_cortical_types.isin(excluded_types)]
+        .cat.remove_unused_categories())
     #> collapse matrix to mean values per cortical type
     mean_matrix_by_cortical_type = pd.DataFrame(np.zeros((n_types, n_types)),
                                                 columns=included_types,
@@ -356,7 +419,7 @@ def associate_cortical_types(matrix_file):
             .mean() # take average of cortical types for each row (parcel)
             .mean(axis=1)) # take the average of average of rows in each cortical type
     #> plot it
-    if 'thickness' in matrix_file:
+    if ('thickness' in matrix_file) or ('volume' in matrix_file):
         cmap = sns.color_palette("RdBu_r", as_cmap=True)
     elif 'density' in matrix_file:
         cmap = sns.color_palette("viridis", as_cmap=True)
@@ -424,7 +487,7 @@ def associate_cortical_types(matrix_file):
         outfile.write(str(intra_intertype))
 
 
-matrix_files = glob.glob(os.path.join(DATA_DIR, 'result', '*', 'matrix*.csv'))
+matrix_files = glob.glob(os.path.join(DATA_DIR, 'result', '*volume*', 'matrix*.csv'))
 for matrix_file in matrix_files:
     print("Matrix:", matrix_file)
     matrix = pd.read_csv(matrix_file, index_col='parcel')
