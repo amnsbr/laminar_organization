@@ -37,10 +37,14 @@ helpers.download('https://github.com/caseypaquola/BigBrainWarp/raw/master/spaces
                 copy_to=os.path.join(DATA_DIR, 'surface', f'tpl-bigbrain_desc-profiles.txt'))
 
 for hem in ['L', 'R']:
-    # Bigbrain space (copy in data/)
+    # Bigbrain surface
     helpers.download(
         f'https://github.com/caseypaquola/BigBrainWarp/raw/master/spaces/tpl-bigbrain/tpl-bigbrain_hemi-{hem}_desc-mid.surf.gii',
         copy_to=os.path.join(DATA_DIR, 'surface', f'tpl-bigbrain_hemi-{hem}_desc-mid.surf.gii'))
+    # Bigbrain sphere
+    helpers.download(
+        f'https://github.com/caseypaquola/BigBrainWarp/raw/master/xfms/tpl-bigbrain_hemi-{hem}_desc-sphere_rot_fsaverage.surf.gii',
+        copy_to=os.path.join(DATA_DIR, 'surface', f'tpl-bigbrain_hemi-{hem}_desc-sphere_rot_fsaverage.surf.gii'))
     # Yeo networks in bigbrain space
     helpers.download(
         f'https://github.com/caseypaquola/BigBrainWarp/raw/master/spaces/tpl-bigbrain/tpl-bigbrain_hemi-{hem}_desc-Yeo2011_7Networks_N1000.label.gii',

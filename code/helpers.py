@@ -2,6 +2,8 @@ import urllib.request
 import shutil
 from urllib.parse import urlparse
 import os
+import glob
+import gc
 from ftplib import FTP
 import numpy as np
 import pandas as pd
@@ -17,6 +19,10 @@ import datasets
 abspath = os.path.abspath(__file__)
 cwd = os.path.dirname(abspath)
 DATA_DIR = os.path.join(cwd, '..', 'data')
+SRC_DIR = os.path.join(cwd, '..', 'src')
+SPIN_BATCHES_DIR = os.path.join(SRC_DIR, 'spin_batches')
+os.makedirs(SPIN_BATCHES_DIR, exist_ok=True)
+
 
 MIDLINE_PARCELS = {
     'schaefer400': ['Background+FreeSurfer_Defined_Medial_Wall'],
@@ -406,3 +412,105 @@ def plot_on_bigbrain_nl(surface_data, filename, inflate=False, layout='horizonta
     figure.subplots_adjust(wspace=0, hspace=0)
     figure.tight_layout()
     figure.savefig(filename, dpi=192)
+
+#### Spin permutation functions ####
+def create_bigbrain_spin_permutations(n_perm=1000, batch_size=20):
+    """
+    Creates spin permutations of the bigbrain surface sphere and stores the
+    vertex indices of spins in batches on 'src' folder
+
+    n_perm: (int) total number of permutations
+    batch_size: (int) number of permutations per batch
+    """
+    print(f"Creating {n_perm} spin permutations")
+    if os.path.exists(os.path.join(SPIN_BATCHES_DIR, 'tpl-bigbrain_desc-spin_indices_batch0.npz')):
+        print("Spin permutation batches already exist")
+        return
+    #> read the bigbrain surface sphere files as a mesh that can be used by spin_permutations function
+    lh_sphere = brainspace.mesh.mesh_io.read_surface(os.path.join(DATA_DIR, 'surface', f'tpl-bigbrain_hemi-L_desc-sphere_rot_fsaverage.surf.gii'))
+    rh_sphere = brainspace.mesh.mesh_io.read_surface(os.path.join(DATA_DIR, 'surface', f'tpl-bigbrain_hemi-R_desc-sphere_rot_fsaverage.surf.gii'))
+    #> create permutations of surface_data with preserved spatial-autocorrelation using spin_permutations
+    #  doing it in batches to reduce memory requirements
+    n_batch = n_perm // batch_size
+    for batch in range(n_batch):
+        print('\t\tBatch', batch)
+        spin_idx = brainspace.null_models.spin._generate_spins(
+            lh_sphere, rh_sphere, 
+            n_rep = batch_size,
+            random_state = 9*batch, # it's important for random states to be different across batches
+            )
+        np.savez_compressed(os.path.join(SPIN_BATCHES_DIR, f'tpl-bigbrain_desc-spin_indices_batch{batch}.npz'), lh=spin_idx['lh'], rh=spin_idx['rh'])
+
+def spin_test(surface_data_to_spin, surface_data_target):
+    """
+    Performs spin test on the correlation between `surface_data_to_spin` and 
+    `surface_data_target` after parcellation, where `surface_data_to_spin` is spun
+
+    Parameters
+    ----------
+    surface_data_to_spin: (np.ndarray | dict of np.ndarray) n_vert * n_features in bigbrain surface space of L and R hemispheres
+    surface_data_target: (np.ndarray | dict of np.ndarray) n_vert * n_features in bigbrain surface space of L and R hemispheres
+    n_perm: (int) number of spin permutations
+    batch_prefix: (str) batches filename prefix
+    """
+    #> create spin permutation batches
+    create_bigbrain_spin_permutations()
+    #> split hemispheres
+    if isinstance(surface_data_to_spin, np.ndarray):
+        surface_data_to_spin = {
+            'L': surface_data_to_spin[:surface_data_to_spin.shape[0]//2],
+            'R': surface_data_to_spin[surface_data_to_spin.shape[0]//2:]
+        }
+    if isinstance(surface_data_target, np.ndarray):
+        surface_data_target = {
+            'L': surface_data_target[:surface_data_target.shape[0]//2],
+            'R': surface_data_target[surface_data_target.shape[0]//2:]
+        }
+    #> calculate test correlation coefficient between all gradients and all other surface maps
+    concat_surface_data_to_spin = pd.DataFrame(
+        np.concatenate([
+            surface_data_to_spin['L'], 
+            surface_data_to_spin['R']
+            ], axis=0)
+        )
+    concat_surface_data_target = pd.DataFrame(
+        np.concatenate([
+            surface_data_target['L'], 
+            surface_data_target['R']
+            ], axis=0)
+        )
+    test_r = (
+        pd.concat([concat_surface_data_to_spin, concat_surface_data_target], axis=1)
+        .corr() # this will calculate the correlation coefficient between all the gradients and other surface maps
+        .iloc[:concat_surface_data_to_spin.shape[1], -concat_surface_data_target.shape[1]:] # select only the correlations we are interested in
+        .T.values[np.newaxis, :] # convert it to shape (1, n_features_surface_data_target, n_features_surface_data_to_spin)
+    )
+    null_distribution = test_r.copy() # will have the shape (n_perms, n_features_surface_data_target, n_features_surface_data_to_spin)
+    for batch_file in sorted(glob.glob(os.path.join(SPIN_BATCHES_DIR, f'tpl-bigbrain_desc-spin_indices_batch*.npz'))):
+        print("\t\tBatch", batch_file)
+        #> load the 20-spin batch of spin permutated maps and concatenate left and right hemispheres
+        batch_idx = np.load(batch_file) # n_perm * n_vert arrays for 'lh' and 'rh'
+        batch_lh_surrogates = surface_data_to_spin['L'][batch_idx['lh']] # n_perm * n_vert * n_features
+        batch_rh_surrogates = surface_data_to_spin['R'][batch_idx['rh']]
+        concat_batch_surrogates = np.concatenate([batch_lh_surrogates, batch_rh_surrogates], axis=1)
+        for perm_idx in range(batch_rh_surrogates.shape[0]):
+            surrogate = pd.DataFrame(concat_batch_surrogates[perm_idx, :, :])
+            #> calculate null correlation coefficient between all gradients and all other surface maps
+            null_r = (
+                pd.concat([surrogate, concat_surface_data_target], axis=1)
+                .corr() # this will calculate the correlation coefficient between all the gradients and other surface maps
+                .iloc[:surrogate.shape[1], -concat_surface_data_target.shape[1]:] # select only the correlations we are interested in
+                .T.values[np.newaxis, :] # convert it to shape (1, n_features_surface_data_target, n_features_surface_data_to_spin)
+            )
+            #> add this to the null distribution
+            null_distribution = np.concatenate([null_distribution, null_r], axis=0)
+            #> free up memory
+            del surrogate
+            gc.collect()
+    #> remove the test_r from null_distribution
+    null_distribution = null_distribution[1:, :, :]
+    #> calculate p value
+    p_val = (np.abs(null_distribution) >= np.abs(test_r)).mean(axis=0)
+    #> reduce unnecessary dimension of test_r
+    test_r = test_r[0, :, :]
+    return test_r, p_val, null_distribution
