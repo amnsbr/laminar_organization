@@ -348,7 +348,7 @@ def plot_on_bigbrain_brainspace(surface_data_files, outfile=None):
         color_bar=True, interactive=False, embed_nb=False, size=(1600, 400), zoom=1.2,
         screenshot=True, filename=outfile, transparent_bg=True, offscreen=True)
 
-def plot_on_bigbrain_nl(surface_data, filename, layout='grid', cmap='viridis'):
+def plot_on_bigbrain_nl(surface_data, filename, inflate=False, layout='horizontal', cmap='viridis'):
     """
     Plots the `surface_data_files` on the bigbrain space and saves it in `outfile`
     using nilearn
@@ -357,9 +357,11 @@ def plot_on_bigbrain_nl(surface_data, filename, layout='grid', cmap='viridis'):
     ----------
     surface_data: (np.ndarray or dict of np.ndarray) (n_vert,) surface data: concatenated or 'L' and 'R' hemispheres
     filename: (str) path to output; default would be the same as surface file
+    inflate: (bool) whether to plot the inflated surface
     layout:
         - horizontal: left-lateral, left-medial, right-medial, right-lateral
         - grid: lateral views on the top and medial views on the bottom
+    cmap: (str)
     """
     #> split surface if it has been concatenated (e.g. gradients)
     #  and make sure the shape is correct
@@ -391,6 +393,8 @@ def plot_on_bigbrain_nl(surface_data, filename, layout='grid', cmap='viridis'):
         else:
             views_order = ['medial', 'lateral']
             mesh_path = os.path.join(DATA_DIR, 'surface', 'tpl-bigbrain_hemi-R_desc-mid.surf.gii')
+        if inflate:
+            mesh_path = mesh_path.replace('.surf', '.surf.inflate')
         for view in views_order:
             nilearn.plotting.plot_surf(
                 mesh_path,
