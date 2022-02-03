@@ -476,24 +476,7 @@ def correlate_hist_gradients(gradient_file, n_laminar_gradients, n_perm):
     parcellation_name = re.match(r".*parc-([a-z|-|0-9]+)_*", gradient_file).groups()[0]
     print(f"Investigating correlation with Hist MPC gradients: {gradient_file}")
     #> load hist mpc gradients in n_vert * n_gradients shape
-    hist_gradients = {}
-    for hist_gradient_num in range(1, 3):
-        hist_gradients[hist_gradient_num] = {}
-        for hem in ['L', 'R']:
-            hist_gradients[hist_gradient_num][hem] = np.loadtxt(
-                os.path.join(
-                    DATA_DIR, 'surface',
-                    f'tpl-bigbrain_hemi-{hem}_desc-Hist_G{hist_gradient_num}.txt'
-                )
-            )
-        hist_gradients[hist_gradient_num] = np.concatenate([
-            hist_gradients[hist_gradient_num]['L'], 
-            hist_gradients[hist_gradient_num]['R']
-            ])
-    hist_gradients = np.vstack([
-        hist_gradients[1],
-        hist_gradients[2],
-    ]).T
+    hist_gradients = datasets.load_hist_mpc_gradients()
     #> load gradient maps
     gradient_maps = np.load(gradient_file)['surface']
     #> spin test
@@ -731,6 +714,9 @@ def compare_fit_disorder_atrophy_maps(gradient_file):
     parcellated_gradients = helpers.parcellate(gradients, 'aparc').dropna()
     #> load cortical types of DK parcels
     parcellated_cortical_types = datasets.load_cortical_types('aparc')
+    #> load MPC gradients
+    hist_gradients = datasets.load_hist_mpc_gradients()
+    parcellated_hist_gradients = helpers.parcellate(hist_gradients, 'aparc')
     #> load and deparcellate the disorders map
     parcellated_disorder_atrophy_maps = datasets.load_disorder_atrophy_maps()
     #> remove adys regions from gradients and disorder maps
@@ -752,6 +738,8 @@ def compare_fit_disorder_atrophy_maps(gradient_file):
         'G1_binned': parcellated_gradients.loc[:, 'bin0'],
         'G2_binned': parcellated_gradients.loc[:, 'bin1'],
         'G3_binned': parcellated_gradients.loc[:, 'bin2'],
+        'HistG1': parcellated_hist_gradients.loc[:, 0],
+        'HistG2': parcellated_hist_gradients.loc[:, 1],
         'CorticalType': parcellated_cortical_types.cat.codes,
     })
     parcellated_disorder_atrophy_maps = parcellated_disorder_atrophy_maps.loc[Xs.index & parcellated_disorder_atrophy_maps.index]
@@ -765,9 +753,13 @@ def compare_fit_disorder_atrophy_maps(gradient_file):
         'G1 binned': ['C(G1_binned)'],
         'G2 binned': ['C(G2_binned)'],
         'G3 binned': ['C(G3_binned)'],
-        'Cortical type': ['C(CorticalType)']
+        'Hist G1': ['HistG1'],
+        'Hist G2': ['HistG2'],
+        'Hist G1-2': ['HistG1', 'HistG2'],
+        'Cortical types': ['CorticalType'],
+        'Cortical types (cat)': ['C(CorticalType)']
     }
-    include_in_plot = ['G1', 'G1-3', 'Cortical type']
+    include_in_plot = ['G1', 'Cortical types', 'Cortical types (cat)']
     res_str = ""
     for disorder in parcellated_disorder_atrophy_maps.columns:
         for list_name , X_names_list in X_names_dict.items():
@@ -781,7 +773,7 @@ def compare_fit_disorder_atrophy_maps(gradient_file):
     #> plot
     AdjR2s_toplot = AdjR2s.loc[include_in_plot, :]
     for disorder in AdjR2s_toplot.columns:
-        fig, ax = plt.subplots(1, figsize=(4, 1.5))
+        fig, ax = plt.subplots(1, figsize=(3, 1.5))
         sns.barplot(
             data=AdjR2s_toplot,
             x=disorder,
@@ -793,6 +785,8 @@ def compare_fit_disorder_atrophy_maps(gradient_file):
         ax.set_xlim((AdjR2s.values.min(), AdjR2s.values.max()))
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
+        ax.set_yticks([]);
+        ax.set_xlabel('');
         fig.tight_layout()
         fig.savefig(
             gradient_file.replace('gradients_surface.npz', f'compare_disorder_fit_{disorder}'),
@@ -801,9 +795,9 @@ def compare_fit_disorder_atrophy_maps(gradient_file):
     
 
 #> run all functions
-# gradient_files = glob.glob(os.path.join(DATA_DIR, 'result', '*parcor*', 'gradients_surface.npz'))
+gradient_files = glob.glob(os.path.join(DATA_DIR, 'result', '*parcor*', 'gradients_surface.npz'))
 # gradient_files = [os.path.join(DATA_DIR, 'result', 'input-thickness_parc-sjh_approach-dm_metric-parcor_parcel', 'gradients_surface.npz')]
-gradient_files = [os.path.join(DATA_DIR, 'result', 'input-thickness_parc-sjh_approach-dm_metric-parcor_parcel_excmask-adys', 'gradients_surface.npz')]
+# gradient_files = [os.path.join(DATA_DIR, 'result', 'input-thickness_parc-sjh_approach-dm_metric-parcor_parcel_excmask-adys', 'gradients_surface.npz')]
 for gradient_file in gradient_files:
     print("Gradient:", gradient_file)
     associate_cortical_types(gradient_file)

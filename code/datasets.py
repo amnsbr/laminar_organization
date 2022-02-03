@@ -75,9 +75,13 @@ def calculate_alphas(betas, aw, ap):
 
     Parameters
     ----------
-    betas: (np.ndarray) n_vertices x 6, euclidean distance fraction map from wm surface
+    betas: (np.ndarray) n_vertices x n_features (6 for layers), euclidean distance fraction map from wm surface
     aw: (np.ndarray) n_vertices, white matter surface area map
     ap: (np.ndarray) n_vertices, pial surface area map
+
+    Returns
+    ---------
+    alphas: (np.ndarray) n_vertices x n_features (6 for layers), volume fraction map from wm surface
     """
     return ((aw + ((ap-aw)*betas))**2 - aw**2) / (ap**2 - aw**2)
 
@@ -383,3 +387,29 @@ def load_disorder_atrophy_maps():
         .set_index('Structure')['d_icv'])
     disorder_atrophy_maps.to_csv(out_path, sep=",", index_label='Structure')
     return disorder_atrophy_maps
+
+def load_parcels_adys(parcellation_name):
+    """
+    Determines which parcels are in the adysgranular mask
+
+    Parameter
+    --------
+    parcellation_name: (str) parcellation name (must exists in data/parcellation)
+
+    Returns
+    -------
+    parcellated_mask: (dict of pd.Series) with n_parcels elements showing which parcels
+        are in the adysgranular mask
+    """
+    adysgranular_masks = {
+        'L': np.load(os.path.join(
+            DATA_DIR, 'surface',
+            f'tpl-bigbrain_hemi-L_desc-adysgranular_mask_parcellation-{parcellation_name}_thresh_0.1.npy'
+        )),
+        'R': np.load(os.path.join(
+            DATA_DIR, 'surface',
+            f'tpl-bigbrain_hemi-R_desc-adysgranular_mask_parcellation-{parcellation_name}_thresh_0.1.npy'
+        ))
+    }
+    parcellated_mask = helpers.parcellate(adysgranular_masks, parcellation_name)
+    return parcellated_mask

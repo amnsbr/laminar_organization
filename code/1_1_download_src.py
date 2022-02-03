@@ -21,6 +21,9 @@ os.makedirs(DATA_DIR, exist_ok=True)
 for subfolder in ['parcellation', 'parcellated_surface', 'surface', 'result', 'matrix']:
     os.makedirs(os.path.join(DATA_DIR, subfolder), exist_ok=True)
 
+#TODO: 'spaces' directory is no longer in the BigBrainWarp repository. Instead it 
+# downloads the files from https://fz-juelich.sciebo.de/s/pFu9XfNonT65HpS using
+# 'scripts/downloads.sh' ==> do not use links from github
 #TODO: Make all file names BIDS-like
 
 #> Download external sources
@@ -102,3 +105,8 @@ for hem in ['left', 'right']:
             os.path.join(SRC_DIR, f'tpl-bigbrain_hemi-{hem[0].upper()}_desc-{surf}.area.npy'),
             os.path.join(DATA_DIR, 'surface', f'tpl-bigbrain_hemi-{hem[0].upper()}_desc-{surf}.area.npy'),
         )
+    # inflated mid surfaces
+    shutil.copyfile(
+        os.path.join(SRC_DIR, f'tpl-bigbrain_hemi-{hem[0].upper()}_desc-mid.surf.inflate.gii'),
+        os.path.join(DATA_DIR, 'surface', f'tpl-bigbrain_hemi-{hem[0].upper()}_desc-mid.surf.inflate.gii'),
+    )

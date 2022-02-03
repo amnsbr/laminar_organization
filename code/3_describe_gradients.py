@@ -5,13 +5,15 @@ Descriptive analyses on the gradients, including:
 
 TODO: consider combining these with 2_create_gradients
 """
-import helpers
 import os
 import glob
 import re
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+
+import helpers
+import datasets
 
 #> specify the data dir and create gradients and matrices subfolders
 abspath = os.path.abspath(__file__)
@@ -46,7 +48,7 @@ def plot_binned_laminar_profile(gradient_file, n_gradients=3):
     #> loading gradient map
     gradient_maps = np.load(gradient_file)['surface']
     #> loading thickness and density data and parcellating them
-    laminar_thickness = helpers.read_laminar_thickness(regress_out_curvature=regress_out_curvature)
+    laminar_thickness = datasets.load_laminar_thickness(regress_out_curvature=regress_out_curvature)
     # laminar_density = helpers.read_laminar_density()
     #> parcellate the data
     parcellated_gradients = helpers.parcellate(gradient_maps, parcellation_name)
