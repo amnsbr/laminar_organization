@@ -1,15 +1,9 @@
-# Laminar Structure Similarity Gradients
+# Gradients of Microstructural Covariance in the BigBrain
 
 ## Dataset structure
-
-- External tools (incl. BigBrainWarp and HCP Workbench) will be downloaded to `tools/` by the script `coce/0_setup.sh`
-- External inputs (i.e. building blocks from other sources) will be downloaded to `src/` by the script `code/1_1_download_src.py`.
-- Local inputs are located in `src_local/` and will be copied to `src/` by the script `code/1_1_download_src.py`
-- All code is located in `code/`.
-  - HTCondor .submit files corresponding to bash scripts are located in `code/htcondor/`
-- Important / processed input files in addition to the output files are located in `data/`
-
-Space needed by all the data and tools: `3.5 GB`
-
-## Requirements
-Singularity is the only requirement that is not installed by `0_setup.sh`.
+- Source files are located in `src/`
+- All code is located in `code/`
+    - `setup.sh` creates the virtual environment and installs python dependencies
+    - `run.sh` is a wrapper for `run.py` which runs all the analyses on `src/` files and stores them in `output/`
+    - `code/local/` includes codes that cannot easily be included in the automated pipeline (`run.py`) because of their dependencies (e.g. FreeSurfer or docker/singularity containers)
+    - `code/htcondor/` includes HTCondor `.submit` files corresponding to each bash script

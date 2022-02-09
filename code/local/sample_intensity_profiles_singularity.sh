@@ -69,7 +69,6 @@ fi
 
 # specify the pathways
 LOCAL_CODE_PATH=$(realpath $(dirname "$0"))
-SRC_PATH=$(realpath ../../src)
 TOOLS_PATH=$(realpath ../tools)
 CIVET_PATH="$TOOLS_PATH"/civet-2.1.1.simg
 

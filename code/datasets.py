@@ -6,12 +6,121 @@ import nilearn.surface
 import nibabel
 import helpers
 import enigmatoolbox.datasets
+from cortex.polyutils import Surface
+import scipy.spatial.distance
+
+import helpers
+
 
 #> specify the data dir
 abspath = os.path.abspath(__file__)
 cwd = os.path.dirname(abspath)
-DATA_DIR = os.path.join(cwd, '..', 'data')
+OUTPUT_DIR = os.path.join(cwd, '..', 'output')
+SRC_DIR = os.path.join(cwd, '..', 'src')
 
+#> constants / configs
+N_VERTICES_HEM_BB = 163842
+
+def load_curvature_maps():
+    """
+    Creates the map of curvature for the bigbrain surface
+    using pycortex or loads it if it already exist
+
+    Returns
+    -------
+    curvature_maps: (dict of np.ndarray) n_vertices, for L and R hemispheres
+    """
+    curvature_maps = {}
+    for hem in ['L', 'R']:
+        curvature_filepath = os.path.join(
+            OUTPUT_DIR, 'curvature', 
+            f'tpl-bigbrain_hemi-{hem}_desc-mean_curvature.npy'
+            )
+        if os.path.exists(curvature_filepath):
+            curvature_maps[hem] = np.load(curvature_filepath)
+            continue
+        #> load surface
+        vertices, faces = nilearn.surface.load_surf_mesh(
+            os.path.join(
+                SRC_DIR,
+                f'tpl-bigbrain_hemi-{hem}_desc-mid.surf.gii'
+                )
+        )
+        surface = Surface(vertices, faces)
+        #> calculate mean curvature
+        curvature = surface.mean_curvature()
+        #> save it
+        os.makedirs(os.path.join(OUTPUT_DIR, 'curvature'), exist_ok=True)
+        np.save(curvature_filepath, curvature)
+        curvature_maps[hem] = curvature
+    return curvature_maps
+
+
+def load_adysgranular_masks(parcellation_name=None, tolerable_adys_in_parcels=0.1):
+    """
+    Create masks of bigbrain space including agranular and dysgranular region.
+    When the data is processed parcellated, these masks also take the parcellation
+    into account and include parcels that have e.g. > 10% overlap with the
+    a-/dysgranular regions
+    If it already exists, just returns the path.
+
+    Parameters
+    ---------
+    parcellation_name: (None or str) the parcellation should be saved in src folder
+                        with the name 'tpl-bigbrain_hemi-L_desc-{parcellation_name}_parcellation.label.gii'
+    tolerable_adys_in_parcels: (float) % overlap of parcels with a-/dysgranular allowed
+    """
+    #> get the indices of parcels that are agranular, dysgranular, allocortex or NaN (corpus callosum and unknown)
+    cortical_types = pd.read_csv(
+        os.path.join(SRC_DIR, 'economo_cortical_types.csv')
+        )
+    adysgranular_regions = (cortical_types[
+        cortical_types['CorticalType']
+        .isin(['AG', 'DG', 'ALO', np.NaN])
+        ].index.tolist())
+    masks = {}
+    for hem in ['L', 'R']:
+        #> don't recreate it if it already exist
+        mask_filepath = os.path.join(
+            OUTPUT_DIR, 'masks' 
+            f'tpl-bigbrain_hemi-{hem}_desc-adysgranular_mask_parc-{parcellation_name}_thresh-{tolerable_adys_in_parcels}.npy'
+            )
+        if os.path.exists(mask_filepath):
+            masks[hem] = np.load(mask_filepath)
+            continue
+        #> load the economo parcellation
+        economo_map = nilearn.surface.load_surf_data(
+            os.path.join(SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-economo_parcellation.label.gii')
+            )        
+        #> create a mask of a-/dysgranular vertices
+        adysgranular_mask = np.in1d(economo_map, adysgranular_regions)
+
+        if parcellation_name:
+            #> load parcellation maps
+            parcellation_map = nilearn.surface.load_surf_data(
+                os.path.join(SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-{parcellation_name}_parcellation.label.gii')
+                )
+            #> calculate the proportion of adysgranular vertices in each parcel
+            parcels_adys_proportion = pd.DataFrame(
+                {'parcel': parcellation_map, 'adys': adysgranular_mask}
+                ).groupby('parcel')['adys'].mean()
+
+            #> determine the parcels that pass the threshold and need to be masked
+            adys_parcels = (parcels_adys_proportion[
+                parcels_adys_proportion > tolerable_adys_in_parcels
+                ].index.to_numpy())
+
+            #> create an extended mask of adysgranular regions
+            adysgranular_mask = np.in1d(parcellation_map, adys_parcels)
+
+        masks[hem] = adysgranular_mask
+        #> save the mask
+        os.makedirs(os.path.join(OUTPUT_DIR, 'masks'), exist_ok=True)
+        np.save(
+            mask_filepath,
+            adysgranular_mask
+        )
+    return masks
 
 def load_laminar_thickness(exc_masks=None, normalize_by_total_thickness=True, regress_out_curvature=False):
     """
@@ -21,7 +130,7 @@ def load_laminar_thickness(exc_masks=None, normalize_by_total_thickness=True, re
 
     Parameters
     --------
-    exc_masks: (dict of str) Path to the surface masks of vertices that should be excluded (L and R) (format: .npy)
+    exc_masks: (dict of np.ndarray) The surface masks of vertices that should be excluded (L and R)
     normalize_by_total_thickness: (bool) Normalize by total thickness. Default: True
     regress_out_curvature: (bool) Regress out curvature. Default: False
 
@@ -29,37 +138,25 @@ def load_laminar_thickness(exc_masks=None, normalize_by_total_thickness=True, re
     --------
     laminar_thickness: (dict of np.ndarray) n_vertices x 6 for laminar thickness of L and R hemispheres
     """
-    #> get the number of vertices
-    n_hem_vertices = np.loadtxt(
-        os.path.join(
-            DATA_DIR, 'surface',
-            'tpl-bigbrain_hemi-L_desc-layer1_thickness.txt'
-            )
-        ).size
     laminar_thickness = {}
     for hem in ['L', 'R']:
         #> read the laminar thickness data from bigbrainwrap .txt files
-        laminar_thickness[hem] = np.empty((n_hem_vertices, 6))
+        laminar_thickness[hem] = np.empty((N_VERTICES_HEM_BB, 6))
         for layer_num in range(1, 7):
             laminar_thickness[hem][:, layer_num-1] = np.loadtxt(
                 os.path.join(
-                    DATA_DIR, 'surface',
+                    SRC_DIR,
                     f'tpl-bigbrain_hemi-{hem}_desc-layer{layer_num}_thickness.txt'
                     ))
         #> remove the exc_mask
         if exc_masks:
-            exc_mask_map = np.load(exc_masks[hem])
-            laminar_thickness[hem][exc_mask_map, :] = np.NaN
+            laminar_thickness[hem][exc_masks[hem], :] = np.NaN
         #> normalize by total thickness
         if normalize_by_total_thickness:
             laminar_thickness[hem] /= laminar_thickness[hem].sum(axis=1, keepdims=True)
         #> regress out curvature
         if regress_out_curvature:
-            cov_surf_data = np.load(
-                os.path.join(
-                    DATA_DIR, 'surface', 
-                    f'tpl-bigbrain_hemi-{hem}_desc-mean_curvature.npy'
-                    ))
+            cov_surf_data = load_curvature_maps()[hem]
             laminar_thickness[hem] = helpers.regress_out_surf_covariates(
                 laminar_thickness[hem], cov_surf_data,
                 sig_only=False, renormalize=True
@@ -104,7 +201,7 @@ def load_laminar_volume(exc_masks=None):
 
     Parameters
     ----------
-    exc_masks: (dict of str) Path to the surface masks of vertices that should be excluded (L and R) (format: .npy)
+    exc_masks: (dict of np.ndarray) The surface masks of vertices that should be excluded (L and R)
 
     Returns
     --------
@@ -121,13 +218,13 @@ def load_laminar_volume(exc_masks=None):
         # Load wm and pial vertex areas
         wm_vertexareas = np.load(
             os.path.join(
-                DATA_DIR, 'surface',
+                SRC_DIR,
                 f'tpl-bigbrain_hemi-{hem}_desc-white.area.npy'
             )
         )
         pia_vertexareas = np.load(
             os.path.join(
-                DATA_DIR, 'surface',
+                SRC_DIR,
                 f'tpl-bigbrain_hemi-{hem}_desc-pial.area.npy'
             )
         )
@@ -149,6 +246,29 @@ def load_laminar_volume(exc_masks=None):
             ], axis=1)[:,::-1] # reverse it from layer 6to1 to layer 1to6
     return laminar_volume
 
+def load_total_depth_density(exc_masks=None):
+    """
+    Loads laminar density of total cortical depth sampled at 50 points and after masking out
+    `exc_masks` returns separate arrays for L and R hemispheres
+
+    Parameters
+    ---------
+    exc_masks: (dict of np.ndarray) The surface masks of vertices that should be excluded (L and R)
+ 
+
+    Returns
+    -------
+    density_profiles (dict of np.ndarray) n_vert x 50 for L and R hemispheres
+    """
+    density_profiles = np.loadtxt(os.path.join(SRC_DIR, 'tpl-bigbrain_desc-profiles.txt'))
+    density_profiles = density_profiles.T
+    density_profiles = {
+        'L': density_profiles[:density_profiles.shape[0]//2, :],
+        'R': density_profiles[density_profiles.shape[0]//2:, :],
+    }
+    return density_profiles
+
+
 def load_laminar_density(exc_masks=None, method='mean'):
     """
     Loads laminar density data from 'src' folder, takes the average of sample densities
@@ -157,7 +277,7 @@ def load_laminar_density(exc_masks=None, method='mean'):
 
     Parameters
     ----------
-    exc_masks: (dict of str) Path to the surface masks of vertices that should be excluded (L and R) (format: .npy)
+    exc_masks: (dict of np.ndarray) The surface masks of vertices that should be excluded (L and R)
     method: (str) method of finding central tendency of samples in each layer in each vertex
         - mean
         - median
@@ -166,21 +286,14 @@ def load_laminar_density(exc_masks=None, method='mean'):
     --------
     laminar_density: (dict of np.ndarray) n_vertices x 6 for laminar density of L and R hemispheres
     """
-    #> get the number of vertices
-    n_hem_vertices = np.loadtxt(
-        os.path.join(
-            DATA_DIR, 'surface',
-            'tpl-bigbrain_hemi-L_desc-layer1_thickness.txt'
-            )
-        ).size
     laminar_density = {}
     for hem in ['L', 'R']:
         #> read the laminar thickness data from bigbrainwrap .txt files
-        laminar_density[hem] = np.empty((n_hem_vertices, 6))
+        laminar_density[hem] = np.empty((N_VERTICES_HEM_BB, 6))
         for layer_num in range(1, 7):
             profiles = np.load(
                 os.path.join(
-                    DATA_DIR, 'surface',
+                    SRC_DIR,
                     f'tpl-bigbrain_hemi-{hem[0].upper()}_desc-layer-{layer_num}_profiles_nsurf-10.npz'
                     ))['profiles']
             if method == 'mean':
@@ -189,8 +302,7 @@ def load_laminar_density(exc_masks=None, method='mean'):
                 laminar_density[hem][:, layer_num-1] = np.median(profiles, axis=0)
         #> remove the exc_mask
         if exc_masks:
-            exc_mask_map = np.load(exc_masks[hem])
-            laminar_density[hem][exc_mask_map, :] = np.NaN
+            laminar_density[hem][exc_masks[hem], :] = np.NaN
         # TODO: also normalize density?
     return laminar_density
 
@@ -213,13 +325,13 @@ def load_parcellation_map(parcellation_name, concatenate):
         #> load parcellation map
         parcellation_map = nilearn.surface.load_surf_data(
             os.path.join(
-                DATA_DIR, 'parcellation', 
+                SRC_DIR, 
                 f'tpl-bigbrain_hemi-{hem}_desc-{parcellation_name}_parcellation.label.gii')
             )
         #> label parcellation map
         _, _, sorted_labels = nibabel.freesurfer.io.read_annot(
             os.path.join(
-                DATA_DIR, 'parcellation', 
+                SRC_DIR, 
                 f'{hem.lower()}h_{parcellation_name}.annot')
         )
         #> labels post-processing for each specific parcellation
@@ -251,7 +363,7 @@ def load_cortical_types(parcellation_name=None):
     for hem in ['L', 'R']:
         economo_maps[hem] = nilearn.surface.load_surf_data(
             os.path.join(
-                DATA_DIR, 'parcellation',
+                SRC_DIR,
                 f'tpl-bigbrain_hemi-{hem}_desc-economo_parcellation.label.gii'
                 )
             )
@@ -259,7 +371,7 @@ def load_cortical_types(parcellation_name=None):
     #> load the cortical types for each economo parcel
     economo_cortical_types = pd.read_csv(
         os.path.join(
-            DATA_DIR, 'parcellated_surface',
+            SRC_DIR,
             'economo_cortical_types.csv'
             )
         )
@@ -287,7 +399,7 @@ def load_cortical_types(parcellation_name=None):
         # # TODO: maybe split hemispheres
         # np.save(
         #     os.path.join(
-        #         DATA_DIR, 'parcellation',
+        #         SRC_DIR,
         #         f'tpl-bigbrain_desc-cortical_types_parcellation.npy'
         #     ), cortical_types_map.cat.codes.values)
         return cortical_types_map      
@@ -306,7 +418,7 @@ def load_hist_mpc_gradients():
         for hem in ['L', 'R']:
             hist_gradients[hist_gradient_num][hem] = np.loadtxt(
                 os.path.join(
-                    DATA_DIR, 'surface',
+                    SRC_DIR,
                     f'tpl-bigbrain_hemi-{hem}_desc-Hist_G{hist_gradient_num}.txt'
                 )
             )
@@ -334,9 +446,6 @@ def load_laminar_properties(regress_out_cruvature):
     ------
     laminar_properties (pd.DataFrame) n_vert * n_properties
     """
-    out_path = os.path.join(DATA_DIR, 'surface', 'tpl-bigbrain_desc-laminarprops.csv')
-    if os.path.exists(out_path):
-        return pd.read_csv(out_path, sep=",", index_col=False)
     laminar_properties = helpers.read_laminar_thickness(regress_out_curvature=regress_out_cruvature)
     laminar_properties = pd.DataFrame(np.concatenate([laminar_properties['L'], laminar_properties['R']], axis=0))
     laminar_properties.columns = [f'Layer {idx+1}' for idx in range(6)]
@@ -344,7 +453,6 @@ def load_laminar_properties(regress_out_cruvature):
     laminar_properties['L4-6 sum'] = laminar_properties.iloc[:, 3:6].sum(axis=1)
     laminar_properties['L4-6 to L1-3 thickness ratio'] = laminar_properties.iloc[:, 3:6].sum(axis=1) / laminar_properties.iloc[:, :3].sum(axis=1)
     laminar_properties['L5-6 to L1-3 thickness ratio'] = laminar_properties.iloc[:, 4:6].sum(axis=1) / laminar_properties.iloc[:, :3].sum(axis=1)
-    laminar_properties.to_csv(out_path, sep=',', index=False)
     return laminar_properties
 
 def load_profile_moments():
@@ -355,22 +463,15 @@ def load_profile_moments():
     -------
     profile_moments (pd.DataFrame) n_vert * 4
     """
-    out_path = os.path.join(DATA_DIR, 'surface', 'tpl-bigbrain_desc-profilemoments.csv')
-    if os.path.exists(out_path):
-        return pd.read_csv(out_path, sep=",", index_col=False)
-    profiles = np.loadtxt(os.path.join(DATA_DIR, 'surface', 'tpl-bigbrain_desc-profiles.txt'))
+    profiles = np.loadtxt(os.path.join(SRC_DIR, 'tpl-bigbrain_desc-profiles.txt'))
     profile_moments = pd.DataFrame()
     profile_moments['Intensity mean'] = np.mean(profiles, axis=0)
     profile_moments['Intensity std'] = np.std(profiles, axis=0)
     profile_moments['Intensity skewness'] = scipy.stats.skew(profiles, axis=0)
     profile_moments['Intensity kurtosis'] = scipy.stats.kurtosis(profiles, axis=0)
-    profile_moments.to_csv(out_path, sep=',', index=False)
     return profile_moments
 
 def load_disorder_atrophy_maps():
-    out_path = os.path.join(DATA_DIR, 'surface', 'disorder_atrophy_maps.csv')
-    if os.path.exists(out_path):
-        return pd.read_csv(out_path, sep=",", index_col='Structure')
     disorder_atrophy_maps = pd.DataFrame()
     for disorder in ['adhd', 'bipolar', 'depression', 'ocd']:
         disorder_atrophy_maps[disorder] = (
@@ -385,7 +486,6 @@ def load_disorder_atrophy_maps():
         enigmatoolbox.datasets.load_summary_stats('epilepsy')
         ['CortThick_case_vs_controls_allepilepsy']
         .set_index('Structure')['d_icv'])
-    disorder_atrophy_maps.to_csv(out_path, sep=",", index_label='Structure')
     return disorder_atrophy_maps
 
 def load_parcels_adys(parcellation_name):
@@ -401,15 +501,6 @@ def load_parcels_adys(parcellation_name):
     parcellated_mask: (dict of pd.Series) with n_parcels elements showing which parcels
         are in the adysgranular mask
     """
-    adysgranular_masks = {
-        'L': np.load(os.path.join(
-            DATA_DIR, 'surface',
-            f'tpl-bigbrain_hemi-L_desc-adysgranular_mask_parcellation-{parcellation_name}_thresh_0.1.npy'
-        )),
-        'R': np.load(os.path.join(
-            DATA_DIR, 'surface',
-            f'tpl-bigbrain_hemi-R_desc-adysgranular_mask_parcellation-{parcellation_name}_thresh_0.1.npy'
-        ))
-    }
+    adysgranular_masks = load_adysgranular_masks(parcellation_name)
     parcellated_mask = helpers.parcellate(adysgranular_masks, parcellation_name)
     return parcellated_mask

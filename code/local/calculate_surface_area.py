@@ -50,27 +50,27 @@ def calculate_area(surfname,fwhm, civet_singularity=None):
 
 for hem in ['L', 'R']:
     #> download the requirements
-    os.chdir(SRC_DIR)
+    os.chdir(SRC_LOCAL_DIR)
     for surf in ['white', 'pial']:
         helpers.download(
         f'https://github.com/caseypaquola/BigBrainWarp/raw/master/spaces/tpl-bigbrain/tpl-bigbrain_hemi-{hem}_desc-{surf}.obj')
 
-    gray = os.path.join(SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-pial.obj')
-    white = os.path.join(SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-white.obj')
+    gray = os.path.join(SRC_LOCAL_DIR, f'tpl-bigbrain_hemi-{hem}_desc-pial.obj')
+    white = os.path.join(SRC_LOCAL_DIR, f'tpl-bigbrain_hemi-{hem}_desc-white.obj')
 
     wm_vertexareas = calculate_area(white, fwhm, civet_singularity=civet_singularity)
     pia_vertexareas = calculate_area(gray, fwhm, civet_singularity=civet_singularity)
 
     np.save(
         os.path.join(
-            SRC_LOCAL_DIR,
+            SRC_DIR,
             f'tpl-bigbrain_hemi-{hem}_desc-white.area.npy'
         ), 
         wm_vertexareas
     )
     np.save(
         os.path.join(
-            SRC_LOCAL_DIR,
+            SRC_DIR,
             f'tpl-bigbrain_hemi-{hem}_desc-pial.area.npy'
         ),
         pia_vertexareas

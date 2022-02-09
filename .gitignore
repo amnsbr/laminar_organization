@@ -144,8 +144,11 @@ logs/
 # src will include files downloaded from the web or copied from src_local
 # since these files are sometimes very large (e.g. BigBrain files) I will
 # not add them to the git repo
-src/
+src_local/
+_src_archive/
+src/tpl-fsaverage*
 code/Laminar Gradients Playground.ipynb
 code/Plotting_gradients.ipynb
-# also ignoring data for now; will un-ignore it in final release
+# also ignoring data and output for now; will un-ignore it in final release
 data/
+output/

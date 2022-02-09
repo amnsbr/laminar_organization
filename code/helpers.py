@@ -8,6 +8,7 @@ from ftplib import FTP
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import seaborn as sns
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import brainspace.mesh, brainspace.plotting
 import nilearn.surface
@@ -18,7 +19,7 @@ import datasets
 #> specify the data dir
 abspath = os.path.abspath(__file__)
 cwd = os.path.dirname(abspath)
-DATA_DIR = os.path.join(cwd, '..', 'data')
+OUTPUT_DIR = os.path.join(cwd, '..', 'output')
 SRC_DIR = os.path.join(cwd, '..', 'src')
 SPIN_BATCHES_DIR = os.path.join(SRC_DIR, 'spin_batches')
 os.makedirs(SPIN_BATCHES_DIR, exist_ok=True)
@@ -151,7 +152,7 @@ def concat_hemispheres(parcellated_data, dropna=False):
     Parameters
     ----------
     parcellated_data: (dict of pd.DataFrame) n_parcels x 6 for laminar data of L and R hemispheres
-    dropna: (bool) remove parcels with no data. Default: False
+    dropna: (bool) remove parcels with no data. Default: False TODO: why removing NaNs here?!
 
     Returns
     ----------
@@ -262,14 +263,12 @@ def regress_out_surf_covariates(input_surface_data, cov_surface_data, sig_only=F
 
 def deparcellate(parcellated_data, parcellation_name):
     """
-    Project the parcellated data to surface vertices.
-    Note: only use this with parcellated data that has lost
-    its parcel labels (e.g. surrogate maps)
-    TODO: Ideally there should be no need for this to exist
+    Project the parcellated data to surface vertices while handling empty parcels
+    (parcels that are not in the parcellated data but are in the parcellation map)
 
     Parameters
     ----------
-    parcellated_data: (pd.DataFrame | pd.Series) n_parcels x n_features | 1
+    parcellated_data: (pd.DataFrame | pd.Series) n_parcels x n_features
     parcellation_name: (str)
 
     Returns
@@ -278,30 +277,22 @@ def deparcellate(parcellated_data, parcellation_name):
     """
     #> load concatenated parcellation map
     concat_parcellation_map = datasets.load_parcellation_map(parcellation_name, concatenate=True)
-    #> load parcellated laminar data (we only need the index)
-    dummy_surf_data = np.loadtxt(os.path.join(
-            DATA_DIR, 'surface',
-            'tpl-bigbrain_hemi-L_desc-layer1_thickness.txt'
-            )
-        )
-    dummy_surf_data = np.zeros_like(dummy_surf_data)
+    #> load dummy parcellated data covering the whole brain
+    dummy_surf_data = np.zeros(datasets.N_VERTICES_HEM_BB)
     parcellated_dummy = parcellate(
         {'L': dummy_surf_data,
          'R': dummy_surf_data,},
          parcellation_name)
     concat_parcellated_dummy = concat_hemispheres(parcellated_dummy, dropna=False)
     all_parcels = concat_parcellated_dummy.index.to_series().rename('parcel')
-    #> create a gradients dataframe including all parcels, where invalid parcels are NaN
+    #> create a dataframe including all parcels, where invalid parcels are NaN
     #   (this is necessary to be able to project it to the parcellation)
     labeled_parcellated_data = pd.concat(
         [
             parcellated_data,
             all_parcels
         ], axis=1).set_index('parcel')
-
-    #>> label parcellated_data with index from the dummy parcellated data
-    labeled_parcellated_data = pd.DataFrame(parcellated_data, index=concat_parcellated_dummy.index)
-    #> get the map of gradients by indexing at parcellation labels
+    #> get the surface map by indexing the parcellated map at parcellation labels
     surface_map = labeled_parcellated_data.loc[concat_parcellation_map].values # shape: vertex X gradient
     return surface_map
 
@@ -321,6 +312,36 @@ def make_colorbar(vmin, vmax, cmap=None, bins=None, orientation='vertical', figs
     cax.xaxis.tick_bottom()
     return fig
 
+def plot_matrix(matrix, outpath, cmap="rocket", vrange=(0.025, 0.975), **kwargs):
+    """
+    Plot the matrix as heatmap
+
+    Parameters
+    ----------
+    matrix: (np.ndarray) n x k*n square matrix or horizontally concatenated
+        square matrices
+    cmap: (str or colormap objects) colormap recognizable by seaborn
+    vrange: (tuple of size 2) vmin and vmax as percentiles (for whole range put (0, 1))
+    """
+    n_square_matrices = matrix.shape[1] // matrix.shape[0]
+    vmin = np.quantile(matrix.flatten(),vrange[0])
+    vmax = np.quantile(matrix.flatten(),vrange[1])
+    fig, ax = plt.subplots(figsize=(7 * n_square_matrices,7))
+    sns.heatmap(
+        matrix,
+        vmin=vmin, vmax=vmax,
+        cmap=cmap, cbar=False,
+        ax=ax)
+    ax.axis('off')
+    fig.tight_layout()
+    fig.savefig(outpath, dpi=192)
+    clbar_fig = make_colorbar(
+        vmin=vmin, vmax=vmax,
+        cmap=cmap, orientation='vertical'
+        )
+    clbar_fig.savefig(outpath+'_clbar', dpi=192)
+
+
 def plot_on_bigbrain_brainspace(surface_data_files, outfile=None):
     """
     Plots the `surface_data_files` on the bigbrain space and saves it in `outfile`
@@ -335,10 +356,10 @@ def plot_on_bigbrain_brainspace(surface_data_files, outfile=None):
     """
     #> load bigbrain surfaces
     lh_surf = brainspace.mesh.mesh_io.read_surface(
-        os.path.join(DATA_DIR, 'surface', 'tpl-bigbrain_hemi-L_desc-mid.surf.gii')
+        os.path.join(SRC_DIR, 'tpl-bigbrain_hemi-L_desc-mid.surf.gii')
         )
     rh_surf = brainspace.mesh.mesh_io.read_surface(
-        os.path.join(DATA_DIR, 'surface', 'tpl-bigbrain_hemi-R_desc-mid.surf.gii')
+        os.path.join(SRC_DIR, 'tpl-bigbrain_hemi-R_desc-mid.surf.gii')
         )
     #> read surface data files and concatenate L and R
     if surface_data_files[0].endswith('.npy'):
@@ -371,19 +392,13 @@ def plot_on_bigbrain_nl(surface_data, filename, inflate=False, layout='horizonta
     """
     #> split surface if it has been concatenated (e.g. gradients)
     #  and make sure the shape is correct
-    n_hem_vertices = np.loadtxt(
-        os.path.join(
-            DATA_DIR, 'surface',
-            'tpl-bigbrain_hemi-L_desc-layer1_thickness.txt'
-            )
-        ).size
     if isinstance(surface_data, np.ndarray):
-        assert surface_data.shape[0] == n_hem_vertices * 2
-        lh_surface_data = surface_data[:n_hem_vertices]
-        rh_surface_data = surface_data[n_hem_vertices:]
+        assert surface_data.shape[0] == datasets.N_VERTICES_HEM_BB * 2
+        lh_surface_data = surface_data[:datasets.N_VERTICES_HEM_BB]
+        rh_surface_data = surface_data[datasets.N_VERTICES_HEM_BB:]
         surface_data = {'L': lh_surface_data, 'R': rh_surface_data}
     else:
-        assert surface_data['L'].shape[0] == n_hem_vertices
+        assert surface_data['L'].shape[0] == datasets.N_VERTICES_HEM_BB
     #> initialize the figures
     if layout == 'horizontal':
         figure, axes = plt.subplots(1, 4, figsize=(24, 5), subplot_kw={'projection': '3d'})
@@ -395,10 +410,10 @@ def plot_on_bigbrain_nl(surface_data, filename, inflate=False, layout='horizonta
         #> plot the medial and lateral views
         if hemi == 'left':
             views_order = ['lateral', 'medial']
-            mesh_path = os.path.join(DATA_DIR, 'surface', 'tpl-bigbrain_hemi-L_desc-mid.surf.gii')
+            mesh_path = os.path.join(SRC_DIR, 'tpl-bigbrain_hemi-L_desc-mid.surf.gii')
         else:
             views_order = ['medial', 'lateral']
-            mesh_path = os.path.join(DATA_DIR, 'surface', 'tpl-bigbrain_hemi-R_desc-mid.surf.gii')
+            mesh_path = os.path.join(SRC_DIR, 'tpl-bigbrain_hemi-R_desc-mid.surf.gii')
         if inflate:
             mesh_path = mesh_path.replace('.surf', '.surf.inflate')
         for view in views_order:
@@ -427,8 +442,8 @@ def create_bigbrain_spin_permutations(n_perm=1000, batch_size=20):
         print("Spin permutation batches already exist")
         return
     #> read the bigbrain surface sphere files as a mesh that can be used by spin_permutations function
-    lh_sphere = brainspace.mesh.mesh_io.read_surface(os.path.join(DATA_DIR, 'surface', f'tpl-bigbrain_hemi-L_desc-sphere_rot_fsaverage.surf.gii'))
-    rh_sphere = brainspace.mesh.mesh_io.read_surface(os.path.join(DATA_DIR, 'surface', f'tpl-bigbrain_hemi-R_desc-sphere_rot_fsaverage.surf.gii'))
+    lh_sphere = brainspace.mesh.mesh_io.read_surface(os.path.join(SRC_DIR, 'tpl-bigbrain_hemi-L_desc-sphere_rot_fsaverage.surf.gii'))
+    rh_sphere = brainspace.mesh.mesh_io.read_surface(os.path.join(SRC_DIR, 'tpl-bigbrain_hemi-R_desc-sphere_rot_fsaverage.surf.gii'))
     #> create permutations of surface_data with preserved spatial-autocorrelation using spin_permutations
     #  doing it in batches to reduce memory requirements
     n_batch = n_perm // batch_size
@@ -455,7 +470,7 @@ def spin_test(surface_data_to_spin, surface_data_target):
     """
     #> create spin permutation batches
     create_bigbrain_spin_permutations()
-    #> split hemispheres
+    #> split hemispheres if the input is concatenated
     if isinstance(surface_data_to_spin, np.ndarray):
         surface_data_to_spin = {
             'L': surface_data_to_spin[:surface_data_to_spin.shape[0]//2],
