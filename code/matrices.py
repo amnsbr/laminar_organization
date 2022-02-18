@@ -3,14 +3,13 @@ import numpy as np
 import nilearn.surface
 import sklearn as sk
 import scipy.stats
-from cortex.polyutils import Surface
 import subprocess
 import nibabel
 import scipy.spatial.distance
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-import cmcrameri.cm # color maps
+import statsmodels.stats.multitest
 
 import helpers
 import datasets
@@ -23,311 +22,18 @@ SRC_DIR = os.path.join(cwd, '..', 'src')
 MICAPIPE_BASE = os.path.join(cwd, '..', 'tools', 'micapipe')
 wbPath = os.path.join(cwd, '..', 'tools', 'workbench', 'bin_linux64', 'wb_command')
 
-class MicrostructuralCovarianceMatrix:
+class Matrix:
     """
-    Matrix showing microstructural similarity of parcels in their relative laminar
-    thickness, relative laminar volume, density profiles (MPC), or their combination
+    Generic class for matrices
     """
-    def __init__(self, input_type, correct_curvature='volume',
-                 similarity_metric = 'parcor', similarity_scale='parcel',
-                 exc_masks=None,  parcellation_name='sjh'):
-        """
-        Initializes laminar similarity matrix object
-
-        Parameters
-        ---------
-        input_type: (str) Type of input data
-            - 'thickness' [default]: laminar thickness
-            - 'density': profile density
-            - 'thickness-density': fused laminar thickness and profile density
-        correct_curvature: (str or None) ignored for 'density'
-            - 'volume' [default]: normalize relative thickness by curvature according to the 
-            equivolumetric principle i.e., use relative laminar volume instead of relative laminar 
-            thickness. Laminar volume is expected to be less affected by curvature.
-            - 'regress': regresses map of curvature out from the map of relative thickness
-            of each layer (separately) using a linear regression. This is a more lenient approach of 
-            controlling for curvature.
-            - None
-        similarity_metric: (str) how is similarity of laminar structure between two parcels determined
-            - 'parcor': partial correlation with mean thickness pattern as covariate
-            - 'euclidean': euclidean distance inverted and normalize to 0-1
-            - 'pearson': Pearson's correlation coefficient
-        similarity_scale: (str) granularity of similarity measurement
-            - 'parcel' [default]: similarity method is used between average laminar profile of parcels
-            - 'vertex': similarity method is used between all pairs of vertices between two
-                        parcels and then the similarity metric is averaged
-        exc_masks: (dict of np.ndarray) The surface masks of vertices that should be excluded (L and R)
-        parcellation_name: (str) Parcellation scheme
-            - 'sjh'
-        """
-        #> save parameters as class fields
-        self.input_type = input_type
-        self.correct_curvature = correct_curvature
-        self.similarity_metric = similarity_metric
-        self.similarity_scale = similarity_scale
-        self.exc_masks = exc_masks
-        self.parcellation_name = parcellation_name
-        #> directory and filename (prefix which will be used for .npz and .jpg files)
-        self.dir_path = self._get_dir_path()
-        os.makedirs(self.dir_path, exist_ok=True)
-        if os.path.exists(os.path.join(self.dir_path, 'matrix.csv')):
-            self._load()
-        else:
-            self._create()
-            self._save()
-            self.plot()
-
-    def _create(self):
-        """
-        Creates microstructural covariance matrix
-        """
-        print(f"""
-        Creating microstructural covariance matrix:
-            - input_type: {self.input_type},
-            - correct_curvature: {self.correct_curvature}
-            - parcellation_name: {self.parcellation_name},
-            - exc_mask: {True if self.exc_masks else False}
-        """)
-        if self.input_type == 'thickness-density':
-            matrices = []
-            for input_type in ['thickness', 'density']:
-                #> create matrix_obj for each input_type
-                #  by calling the same class
-                matrix_obj = MicrostructuralCovarianceMatrix(
-                    input_type = input_type,
-                    correct_curvature=self.correct_curvature,
-                    similarity_metric=self.similarity_metric,
-                    similarity_scale=self.similarity_scale,
-                    exc_masks=self.exc_masks,
-                    parcellation_name=self.parcellation_name
-                )
-                matrices.append(matrix_obj.matrix)
-                #TODO: it is unlikely but maybe valid parcels are different for each modality
-                # in that case this code won't work properly
-                self.valid_parcels = matrix_obj.valid_parcels
-            self.matrix = self._fuse_matrices(matrices)
-        else:
-            #> Load laminar thickness or density profiles
-            print("Reading input")
-            self._input_data = self._load_input_data()
-            #> create the similarity matrix
-            if self.similarity_scale == 'parcel':
-                self.matrix, self.valid_parcels = self._create_at_parcels()
-            else:
-                self.matrix, self.valid_parcels = self._create_at_vertices()
-            #> convert it to pd.DataFrame
-            self.matrix = pd.DataFrame(
-                self.matrix, 
-                index=self.valid_parcels,
-                columns=self.valid_parcels)
-
-    def _load_input_data(self):
-        """
-        Load input data
-        """
-        if self.input_type == 'thickness':
-            if self.correct_curvature == 'volume':
-                input_data = datasets.load_laminar_volume(
-                    exc_masks=self.exc_masks,
-                )
-            elif self.correct_curvature == 'regress':
-                input_data = datasets.load_laminar_thickness(
-                    exc_masks=self.exc_masks,
-                    regress_out_curvature=True,
-                    normalize_by_total_thickness=True,
-                )
-            else:
-                input_data = datasets.load_laminar_thickness(
-                    exc_masks=self.exc_masks,
-                    regress_out_curvature=False,
-                    normalize_by_total_thickness=True,
-                )
-        elif self.input_type == 'density':
-            input_data = datasets.load_total_depth_density(
-                exc_masks=self.exc_masks
-            )
-        return input_data
-
-
-    def _create_at_parcels(self):
-        """
-        Creates laminar similarity matrix by taking Euclidean distance, Pearson's correlation
-        or partial correltation (with the average laminar data pattern as the covariate) between
-        average values of parcels
-
-        Note: Partial correlation is based on "Using recursive formula" subsection in the wikipedia
-        entry for "Partial correlation", which is also the same as Formula 2 in Paquola et al. PBio 2019
-        (https://doi.org/10.1371/journal.pbio.3000284)
-        Note 2: Euclidean distance is reversed (* -1) and rescaled to 0-1 (with 1 showing max similarity)
-
-        Returns
-        -------
-        matrix: (np.ndarray) n_parcels x n_parcels: how similar are each pair of parcels in their
-                microstructure (laminar thickness or density profiles)
-        """
-        print("Concatenating and parcellating the data")
-        self._parcellated_input_data = helpers.parcellate(
-            self._input_data,
-            self.parcellation_name,
-            averaging_method='median'
-            )
-        #> concatenate left and right hemispheres
-        self._concat_parcellated_input_data = helpers.concat_hemispheres(self._parcellated_input_data, dropna=True)
-        print(f"Creating similarity matrix by {self.similarity_metric} at parcel scale")
-        #> Calculate parcel-wise similarity matrix
-        if self.similarity_metric in ['parcor', 'pearson']:
-            if self.similarity_metric == 'parcor':
-                #> calculate partial correlation
-                r_ij = np.corrcoef(self._concat_parcellated_input_data)
-                mean_input_data = self._concat_parcellated_input_data.mean()
-                r_ic = self._concat_parcellated_input_data\
-                            .corrwith(mean_input_data, 
-                            axis=1) # r_ic and r_jc are the same
-                r_icjc = np.outer(r_ic, r_ic) # the second r_ic is actually r_jc
-                matrix = (r_ij - r_icjc) / np.sqrt(np.outer((1-r_ic**2),(1-r_ic**2)))
-            else:
-                np.corrcoef(self._concat_parcellated_input_data.values)
-            #> zero out negative correlations
-            matrix[matrix<0] = 0
-            #> zero out correlations of 1 (to avoid division by 0)
-            matrix[matrix==1] = 0
-            #> Fisher's z-transformation
-            matrix = 0.5 * np.log((1 + matrix) /  (1 - matrix))
-            #> zero out NaNs and inf
-            matrix[np.isnan(matrix) | np.isinf(matrix)] = 0
-        elif self.similarity_metric == 'euclidean':
-            #> calculate pair-wise euclidean distance
-            matrix = sk.metrics.pairwise.euclidean_distances(self._concat_parcellated_input_data.values)
-            #> make it negative (so higher = more similar) and rescale to range (0, 1)
-            matrix = sk.preprocessing.minmax_scale(-matrix, (0, 1))
-        #> determine valid parcels
-        valid_parcels = self._concat_parcellated_input_data.index.tolist()
-        return matrix, valid_parcels
-
-    def _create_at_vertices(self):
-        """
-        Creates laminar similarity matrix by taking Euclidean distance or Pearson's correlation
-        between all pairs of vertices between two pairs of parcels and then taking the average value of
-        the resulting n_vert_parcel_i x n_vert_parcel_j matrix for the cell i, j of the parcels similarity matrix
-
-        Note: Average euclidean distance is reversed (* -1) and rescaled to 0-1 (with 1 showing max similarity)
-
-        Returns
-        -------
-        matrix: (np.ndarray) n_parcels x n_parcels: how similar are each pair of parcels in their
-                laminar data pattern
-        """
-        if self.similarity_metric != 'euclidean':
-            raise NotImplementedError("Correlation at vertex level is not implemented")
-        #> Concatenate and parcellate the data
-        print("Concatenating and parcellating the data")
-        concat_input_data = np.concatenate([self._input_data['L'], self._input_data['R']], axis=0)
-        self._concat_parcellated_input_data = helpers.parcellate(
-            concat_input_data,
-            self.parcellation_name,
-            averaging_method=None
-            ) # a groupby object
-        n_parcels = len(self._concat_parcellated_input_data)
-        #> Calculating similarity matrix
-        print(f"Creating similarity matrix by {self.similarity_metric} at vertex scale")
-        matrix = pd.DataFrame(
-            np.zeros((n_parcels, n_parcels)),
-            columns = self._concat_parcellated_input_data.groups.keys(),
-            index = self._concat_parcellated_input_data.groups.keys()
-        )
-        invalid_parcs = []
-        for parc_i, vertices_i in self._concat_parcellated_input_data.groups.items():
-            print("\tParcel", parc_i) # printing parcel_i name since it'll take a long time per parcel
-            input_data_i = concat_input_data[vertices_i,:]
-            input_data_i = input_data_i[~np.isnan(input_data_i).any(axis=1)]
-            if input_data_i.shape[0] == 0: # sometimes all values may be NaN
-                matrix.loc[parc_i, :] = np.NaN
-                invalid_parcs.append(parc_i)
-                continue
-            for parc_j, vertices_j in self._concat_parcellated_input_data.groups.items():
-                input_data_j = concat_input_data[vertices_j,:]
-                input_data_j = input_data_j[~np.isnan(input_data_j).any(axis=1)]
-                if input_data_i.shape[0] == 0:
-                    matrix.loc[parc_i, :] = np.NaN
-                else:
-                    matrix.loc[parc_i, parc_j] = sk.metrics.pairwise.euclidean_distances(input_data_i, input_data_j).mean()
-        #> make ED values negative (so higher = more similar) and rescale to range (0, 1)
-        matrix = sk.preprocessing.minmax_scale(-matrix, (0, 1))
-        #> store the valid parcels
-        valid_parcels = sorted(list(set(self._concat_parcellated_input_data.groups.keys())-set(invalid_parcs)))
-        return matrix, valid_parcels
-
-    def _fuse_matrices(self, matrices):
-        """
-        Fuses two input matrices by rank normalizing each and rescaling
-        the second matrix based on the first one (which shouldn't make much
-        difference if the matrices are rank normalized; TODO: think about this)
-
-        Parameters
-        ----------
-        matrices: (list of pd.DataFrame) matrices with the same shape. The code
-            can handle more than two matrices but that doesn't occur normally!
-
-        Note: This function doesn't need to be in this class but is included here
-        anyway because it's not used anywhere else!
-
-        Based on Paquola 2020 PBio
-        https://github.com/MICA-MNI/micaopen/tree/master/structural_manifold
-        Note: This function does not zero out negative or NaNs and assumes
-        all processes are completed on the input matrices
-        """
-        rank_normalized_matrices = []
-        #> rank normalize the first matrix
-        rank_normalized_matrices.append(
-            pd.DataFrame(
-                scipy.stats.rankdata(matrices[0].values)
-                .reshape(matrices[0].shape)
-            )
-        )
-        #> rank normalize and rescale next matrices
-        for matrix in matrices[1:]:
-            #> rank normalize (and flatten) the matrix
-            rank_normalized_matrix_flat = scipy.stats.rankdata(matrix.values)
-            #> rescale it by the first matrix
-            rank_normalized_rescaled_matrix_flat = np.interp(
-                rank_normalized_matrix_flat,
-                (rank_normalized_matrix_flat.min(), rank_normalized_matrix_flat.max()),
-                (rank_normalized_matrices[0].values.min(), rank_normalized_matrices[0].values.max())
-            )
-            rank_normalized_matrices.append(
-                pd.DataFrame(
-                    rank_normalized_rescaled_matrix_flat.reshape(matrix.shape)
-                )
-            )
-        #> fuse the matrices horizontally as a pd.DataFrame and label it
-        fused_matrix = pd.concat(rank_normalized_matrices, axis=1)
-        fused_matrix.index = matrices[0].index
-        fused_matrix.columns = matrices[0].index.tolist() * len(matrices)
-        return fused_matrix
-
-    def _get_dir_path(self):
-        """
-        Get path for the matrix directory
-        """
-        MAIN_DIRS = {
-            'thickness-density': 'fused',
-            'thickness': 'ltc',
-            'density': 'mpc'
-        }
-        main_dir = MAIN_DIRS[self.input_type]
-        sub_dir = f'parc-{self.parcellation_name}' \
-            + f'_curv-{str(self.correct_curvature).lower()}'\
-            + ('_exc-adys' if self.exc_masks else '')\
-            + f'_metric-{self.similarity_metric}'\
-            + f'_scale-{self.similarity_scale}'
-        return os.path.join(OUTPUT_DIR, main_dir, sub_dir)
-        
+    split_hem = False # set to False by default and only change for GD and SC
+    
     def _save(self):
         """
         Save the matrix to a .csv file
         """
         self.matrix.to_csv(
-            os.path.join(self.dir_path, 'matrix.csv'), 
+            self.file_path, 
             index_label='parcel'
         )
 
@@ -336,59 +42,245 @@ class MicrostructuralCovarianceMatrix:
         Loads a matrix created before
         """
         self.matrix = pd.read_csv(
-            os.path.join(self.dir_path, 'matrix.csv'),
+            self.file_path,
             index_col='parcel'
         )
-        self.valid_parcels = self.matrix.index.tolist()
         # for sjh parcellation index is read as 'int' but columns
         # are read as str. Fix this by making columns similar to
         # index * number of matrices
         n_sq_matrix = self.matrix.shape[1] // self.matrix.shape[0]
-        self.matrix.columns = self.valid_parcels * n_sq_matrix
+        self.matrix.columns = self.matrix.index.tolist() * n_sq_matrix
 
-    def plot(self):
+    def _remove_parcels(self, exc_mask_type):
         """
-        Plot the matrix as heatmap
+        Removes the allocortex +/- adysgranular parcels from the matrix (after the matrix is created)
+        
+        Note: This should be used for the matrices other than MicrostructuralCovarianceMatrix
+        as in that case the adysgranular regions are removed from the input data (this 
+        is important when using partial correlation)
+
+        exc_mask_type: (str)
+            - allocortex: excludes allocortex
+            - adysgranular: excludes allocortex + adysgranular regions
         """
-        #> use different colors for different input types
-        if self.input_type == 'thickness':
-            cmap = sns.color_palette("RdBu_r", as_cmap=True)
-        elif self.input_type == 'density':
-            cmap = sns.color_palette("rocket", as_cmap=True)
+        exc_masks = datasets.load_exc_masks(exc_mask_type, self.parcellation_name)
+        parcels_to_exclude = helpers.parcellate(exc_masks, self.parcellation_name)
+        parcels_to_exclude = helpers.concat_hemispheres(parcels_to_exclude, dropna=True)
+        parcels_to_include = (1 - parcels_to_exclude).astype('bool')
+        parcels_to_include_idx = parcels_to_include[parcels_to_include.values].index
+        return self.matrix.loc[parcels_to_include_idx, parcels_to_include_idx]
+
+    def correlate_edge_wise(self, other, test='pearson'):
+        """
+        Calculates and plots the correlation between the edges of two matrices
+        self and other which are assumed to be square and symmetric. The correlation
+        is calculated for lower triangle (excluding the diagonal)
+
+        Paremeters
+        ---------
+        self, other: (Matrix) with the field .matrix which is a pd.DataFrame (n_parc x n_parc)
+        test: (str)
+            - pearson
+            - spearman
+        """
+        # TODO: maybe move this to MicrostructuralCovarianceMatrix
+        #> make sure they have the same parcellation and mask
+        assert self.parcellation_name == other.parcellation_name
+        assert self.exc_adys == other.exc_adys
+        #> match the matrices in the order and selection of parcels
+        #  + convert them to np.ndarray
+        shared_parcels = self.matrix.index & other.matrix.index # union of the two indices
+        X = self.matrix.loc[shared_parcels, shared_parcels].values
+        Y = other.matrix.loc[shared_parcels, shared_parcels].values
+        # #> make NaNs zero so NaN can be assigned to L-R edges
+        # X[np.isnan(X)] = 0 # TODO: make sure this is okay for all the matrices
+        # Y[np.isnan(Y)] = 0
+        #> if L and R should be investigated separately
+        # make interhemispheric pairs of the lower triangle
+        # NaN so it could be then removed
+        if self.split_hem or other.split_hem:
+            split_hem_idx = helpers.get_split_hem_idx(
+                self.parcellation_name, 
+                self.exc_adys
+                )
+            X[split_hem_idx:, :split_hem_idx] = np.NaN
+            Y[split_hem_idx:, :split_hem_idx] = np.NaN
+        #> get the index for lower triangle
+        tril_index = np.tril_indices_from(X, -1)
+        x = X[tril_index]
+        y = Y[tril_index]
+        #> remove NaNs (e.g. interhemispheric pairs) and 0s
+        #  as the Y matrix is often zeroed out and 0
+        #  has lost its meaning and there's a lot of zeros which
+        #  have been actually the negative values
+        mask = ~(x==0 | np.isnan(x) | (y==0) | np.isnan(y)) 
+        x = x[mask]
+        y = y[mask]
+        #> correlation
+        if test == 'pearson':
+            coef, p_val = scipy.stats.pearsonr(x, y)
         else:
-            # TODO: use different colors for each input type in the plot
-            cmap = sns.color_palette("RdBu_r", as_cmap=True)
-        #> plot the matrix
-        helpers.plot_matrix(
-            self.matrix.values,
-            os.path.join(self.dir_path,'matrix'),
-            cmap=cmap,
-            vrange=(0.025, 0.975)
+            coef, p_val = scipy.stats.spearmanr(x, y)
+        res_str = f"{test.title()} correlation with {other.label}\nCoef: {coef}; Parametric p-value: {p_val}"
+        # TODO: calculate p-value non-parametrically?
+        # TODO: regress out GD in some cases
+        out_path = os.path.join(self.dir_path, f'correlation_{other.label.lower().replace(" ", "_")}')
+        with open(out_path+'.txt', 'w') as res_file:
+            res_file.write(res_str)
+        #> plotting
+        jp = sns.jointplot(
+            x = x, y = y, kind = "hex", 
+            color = "grey", height = 4,
+            marginal_kws = {'bins':35}, 
+            joint_kws = {'gridsize':35},
+            # xlim = (np.quantile(X[tril_index], 0.025), np.quantile(X[tril_index], 0.975)),
+            # ylim = (np.quantile(Y[tril_index], 0.025), np.quantile(Y[tril_index], 0.975)),
+        )
+        ax = jp.ax_joint
+        sns.regplot(
+            X[tril_index], Y[tril_index], 
+            ax=ax, ci=None, scatter=False, 
+            color='C0', line_kws=dict(alpha=0.2)
+            )
+        #> add rho on the figure
+        text_x = ax.get_xlim()[0]+(ax.get_xlim()[1]-ax.get_xlim()[0])*0.05
+        text_y = ax.get_ylim()[0]+(ax.get_ylim()[1]-ax.get_ylim()[0])*0.95
+        if test == 'pearson':
+            text = f'r = {coef:.2f}'
+        else:
+            text = f'rho = {coef:.2f}'
+        ax.text(text_x, text_y, text,
+                color='black', size=16,
+                multialignment='left')
+        ax.set_xlabel(self.label)
+        ax.set_ylabel(other.label)
+        jp.fig.tight_layout()
+        jp.fig.savefig(out_path+'.png', dpi=192)
+        # #> plotting half-half matrix
+        # uhalf_X = X.copy()
+        # uhalf_X[np.tril_indices_from(X, 0)] = np.NaN
+        # lhalf_Y = Y.copy()
+        # lhalf_Y[np.triu_indices_from(Y, 0)] = np.NaN
+        # fig, ax = plt.subplots(figsize=(7,7))
+        # sns.heatmap(
+        #     uhalf_X,
+        #     vmin=np.quantile(uhalf_X.flatten(),0.05),
+        #     vmax=np.quantile(uhalf_X.flatten(),0.95),
+        #     cbar=False,
+        #     ax=ax)
+        # ax.axis('off')
+
+    def correlate_node_wise(self, other, test='pearson', plot=False):
+        """
+        Calculates the correlation between matrices `X` and `Y` at each row (node),
+        projects the node-wise Spearman's rho values to the surface and saves and plots it. 
+        Matrices are assumed to be square and symmetric.
+
+        Paremeters
+        ---------
+        self, other: (Matrix) with the field .matrix which is a pd.DataFrame (n_parc x n_parc)
+        test: (str)
+            - pearson
+            - spearman
+        plot: (bool) plot the surface map of FDR-corrected correlation coefficients
+        """
+        #> make sure they have the same parcellation and mask
+        assert self.parcellation_name == other.parcellation_name
+        assert self.exc_adys == other.exc_adys
+        #> match the matrices in the order and selection of parcels
+        #  + convert them to np.ndarray
+        shared_parcels = self.matrix.index & other.matrix.index # union of the two indices
+        X = self.matrix.loc[shared_parcels, shared_parcels].values
+        Y = other.matrix.loc[shared_parcels, shared_parcels].values
+        #> if L and R should be investigated separately
+        # make interhemispheric pairs of the lower triangle
+        # NaN so it could be then removed
+        if self.split_hem or other.split_hem:
+            split_hem_idx = helpers.get_split_hem_idx(
+                self.parcellation_name, 
+                self.exc_adys
+                )
+            X[split_hem_idx:, :split_hem_idx] = np.NaN
+            Y[split_hem_idx:, :split_hem_idx] = np.NaN
+        #> calculate the correlation at each row (node)
+        node_coefs = pd.Series(np.empty(X.shape[0]), index=shared_parcels)
+        node_pvals = pd.Series(np.empty(X.shape[0]), index=shared_parcels)
+        for row_idx in range(X.shape[0]):
+            row_x = X[row_idx, :]
+            row_y = Y[row_idx, :]
+            #> remove NaNs and 0s
+            row_mask = ~((row_x==0) | np.isnan(row_x) | (row_y==0) | np.isnan(row_y)) 
+            row_x = row_x[row_mask]
+            row_y = row_y[row_mask]
+            #> calculate correlation
+            if test == 'pearson':
+                node_coefs.iloc[row_idx], node_pvals.iloc[row_idx] = scipy.stats.pearsonr(row_x, row_y)
+            else:
+                node_coefs.iloc[row_idx], node_pvals.iloc[row_idx] = scipy.stats.spearmanr(row_x, row_y)
+        #> FDR correction
+        _, node_pvals_fdr = statsmodels.stats.multitest.fdrcorrection(node_pvals)
+        node_pvals_fdr = pd.Series(node_pvals_fdr, index=shared_parcels)
+        node_coefs_sig = node_coefs.copy()
+        node_coefs_sig.loc[node_pvals_fdr >= 0.05] = 0
+        #> project to surface
+        node_coefs_surface = helpers.deparcellate(node_coefs, self.parcellation_name)
+        node_coefs_sig_surface = helpers.deparcellate(node_coefs_sig, self.parcellation_name)
+        #> save (and plot) surface maps
+        out_path = os.path.join(self.dir_path, f'correlation_{other.label.lower().replace(" ", "_")}_{test}')
+        np.savez_compressed(
+            out_path + '_nodewise_surface.npz', 
+            coefs=node_coefs_surface, 
+            coefs_sig = node_coefs_sig_surface,
+            )
+        pd.DataFrame({
+            'coefs': node_coefs,
+            'pvals': node_pvals,
+            'pvals_fdr': node_pvals_fdr
+        }).to_csv(
+            out_path + '_nodewise_parcels.csv',
+            index_label='parcel',
+        )
+        if plot:
+            helpers.plot_on_bigbrain_nl(
+                node_coefs_sig_surface,
+                filename= out_path + '_nodewise_surface_sig.png'
             )
 
-class CurvatureSimilarityMatrix:
+
+class CurvatureSimilarityMatrix(Matrix):
     """
     Matrix showing similarity of curvature distribution
     between each pair of parcels
     """
-    def __init__(self, parcellation_name):
+    label = "Curvature similarity"
+    dir_path = os.path.join(OUTPUT_DIR, 'curvature')
+    def __init__(self, parcellation_name, exc_adys=True):
         """
         Creates curvature similarity matrix or loads it if it already exist
 
         Parameters
         ----------
         parcellation_name: (str)
+        exc_adys: (bool)
         """
         self.parcellation_name = parcellation_name
-        self.path = os.path.join(OUTPUT_DIR, 'curvature', f'curvature_similarity_matrix_parc-{parcellation_name}.csv')
-        if os.path.exists(self.path):
-            self.matrix = pd.read_csv(
-                self.path,
-                index_col='parcel'
-            )
+        self.exc_adys = exc_adys
+        file_name =  f'curvature_similarity_matrix_parc-{parcellation_name}.csv'
+        self.file_path = os.path.join(self.dir_path, file_name)
+        if os.path.exists(self.file_path):
+            self._load()
         else:
-            os.makedirs(os.path.join(OUTPUT_DIR, 'curvature'), exist_ok=True)
+            os.makedirs(self.dir_path, exist_ok=True)
             self.matrix = self._create()
+            self._save()
+        #> remove the adysgranular parcels after the matrix is created
+        #  to avoid unncessary waste of computational resources
+        #  note this is not saved
+        if self.exc_adys:
+            self.matrix = self._remove_parcels('adysgranular')
+        else:
+            self.matrix = self._remove_parcels('allocortex')
+        # TODO plot
         
     def _create(self):
         """
@@ -453,15 +345,16 @@ class CurvatureSimilarityMatrix:
         #> copy the lower triangle to the upper triangle
         i_upper = np.triu_indices(curv_similarity_matrix.shape[0], 1)
         curv_similarity_matrix.values[i_upper] = curv_similarity_matrix.T.values[i_upper]
-        #> save it
-        curv_similarity_matrix.to_csv(self.path, index_label='parcel')
         return curv_similarity_matrix
 
-class GeodesicDistanceMatrix:
+class GeodesicDistanceMatrix(Matrix):
     """
     Matrix of geodesic distance between centroids of parcels
     """
-    def __init__(self, parcellation_name, approach='center-to-center'):
+    label = "Geodesic distance"
+    dir_path = os.path.join(OUTPUT_DIR, 'geodesic_distance')
+    split_hem = True
+    def __init__(self, parcellation_name, approach='center-to-center', exc_adys=True):
         """
         Creates parcel-to-parcel geodesic distance matrix based on the
         parcellation ("parcellation_name") or loads it if it already exists
@@ -474,7 +367,7 @@ class GeodesicDistanceMatrix:
             - center-to-parcel: calculates distance between centroid of one parcel to all vertices
                                 in the other parcel, taking the mean distance. Can result in asymmetric matrix.
                                 (this is "geoDistMapper.py" behavior)
-
+        exc_adys: (bool) Exclude adysgranular parcels from the matrix
         Based on "geoDistMapper.py" from micapipe/functions
         Original Credit:
         # Translated from matlab:
@@ -483,17 +376,25 @@ class GeodesicDistanceMatrix:
         """
         self.parcellation_name = parcellation_name
         self.approach = approach
-        self.path = os.path.join(
-            OUTPUT_DIR, 'geodesic_distance',
-            f'geodesic_distance_matrix_parc-{parcellation_name}_approach-{approach}.csv')
-        if os.path.exists(self.path):
-            self.matrix = pd.read_csv(
-                self.path,
-                index_col='parcel'
+        self.exc_adys = exc_adys
+        self.file_path = os.path.join(
+            self.dir_path,
+            f'geodesic_distance_matrix_parc-{parcellation_name}_approach-{approach}.csv'
             )
+        if os.path.exists(self.file_path):
+            self._load()
         else:
-            os.makedirs(os.path.join(OUTPUT_DIR, 'geodesic_distance'), exist_ok=True)
+            os.makedirs(self.dir_path, exist_ok=True)
             self.matrix = self._create()
+            self._save()
+        #> remove the adysgranular parcels after the matrix is created
+        #  to avoid unncessary waste of computational resources
+        #  note this is not saved
+        if self.exc_adys:
+            self.matrix = self._remove_parcels('adysgranular')
+        else:
+            self.matrix = self._remove_parcels('allocortex') 
+        # TODO plot
 
     def _create(self):
         """
@@ -550,9 +451,9 @@ class GeodesicDistanceMatrix:
             for i in range(len(uparcel)):
                 print("Parcel: ", uparcel[i])
                 center_vertex = int(voi[0,i])
-                cmdStr = f"{wbPath} -surface-geodesic-distance {surf_path} {center_vertex} {self.path}_this_voi.func.gii"
+                cmdStr = f"{wbPath} -surface-geodesic-distance {surf_path} {center_vertex} {self.file_path}_this_voi.func.gii"
                 subprocess.run(cmdStr.split())
-                tmpname = self.path + '_this_voi.func.gii'
+                tmpname = self.file_path + '_this_voi.func.gii'
                 tmp = nibabel.load(tmpname).agg_data()
                 os.remove(tmpname)
                 parcGD = np.empty((1, len(uparcel)))
@@ -565,11 +466,11 @@ class GeodesicDistanceMatrix:
                         pairGD = tmp[other_center_vertex]
                     parcGD[0, n] = pairGD
                 GDs[hem][i,:] = parcGD
-            #> save the GD for the current hemisphere
-            np.savetxt(
-                self.path.replace('_parc', f'_hemi-{hem}_parc'),
-                GDs[hem],
-                fmt='%.12f')
+            # #> save the GD for the current hemisphere
+            # np.savetxt(
+            #     self.file_path.replace('_parc', f'_hemi-{hem}_parc'),
+            #     GDs[hem],
+            #     fmt='%.12f')
             #> convert it to dataframe so that joining hemispheres would be easier
             GDs[hem] = pd.DataFrame(GDs[hem], index=uparcel, columns=uparcel)
         #> join the GD matrices from left and right hemispheres
@@ -578,6 +479,393 @@ class GeodesicDistanceMatrix:
                 .drop_duplicates('index')
                 .set_index('index')
                 .fillna(0))
-        GD_full.to_csv(self.path, index_label='parcel')
         return GD_full
 
+class ConnectivityMatrix(Matrix):
+    """
+    Structural or functional connectivity matrix
+    """
+    dir_path = os.path.join(OUTPUT_DIR, 'connectivity')
+    def __init__(self, kind, exc_adys=True, sc_zero_contra=True, parcellation_name='schaefer400'):
+        """
+        Initializes structural/functional connectivity matrix
+
+        Parameters
+        ---------
+        kind: (str)
+            - structural
+            - functional
+        exc_adys: (bool) exclude adysgranular parcels
+        sc_zero_contra: (bool) zero out contralateral edges for the SC matrix
+        parcellation_name: (str)
+            - schaefer400 (currently only this is supported)
+        """
+        self.kind = kind
+        self.exc_adys = exc_adys
+        self.sc_zero_contra = sc_zero_contra
+        if (self.kind == 'structural') & self.sc_zero_contra:
+            self.split_hem = True
+        self.parcellation_name = parcellation_name
+        self.label = f'{self.kind.title()} connectivity'
+        self.filename = f'matrix-{self.kind}_connectivity'\
+            + f'_parc-{self.parcellation_name}' \
+            + ('_split_hem' if self.split_hem else '') \
+            + '.csv'
+        self.file_path = os.path.join(self.dir_path, self.filename)
+        if os.path.exists(self.file_path):
+            self._load()
+        else:
+            os.makedirs(self.dir_path, exist_ok=True)
+            self.matrix = datasets.load_conn_matrices(self.kind, self.parcellation_name)
+            if self.sc_zero_contra:
+                split_hem_idx = helpers.get_split_hem_idx(self.parcellation_name, self.exc_adys)
+                self.matrix.iloc[:split_hem_idx, split_hem_idx:] = 0
+                self.matrix.iloc[split_hem_idx:, :split_hem_idx] = 0
+            self._save()
+        #> remove the adysgranular parcels after the matrix is created
+        #  to avoid unncessary waste of computational resources
+        #  note this is not saved
+        if self.exc_adys:
+            self.matrix = self._remove_parcels('adysgranular')
+        else:
+            self.matrix = self._remove_parcels('allocortex') 
+        # TODO plot
+
+
+class MicrostructuralCovarianceMatrix(Matrix):
+    """
+    Matrix showing microstructural similarity of parcels in their relative laminar
+    thickness, relative laminar volume, density profiles (MPC), or their combination
+    """
+    def __init__(self, input_type, parcellation_name='sjh', 
+                 exc_adys=True, correct_curvature='volume', 
+                 similarity_metric = 'parcor', similarity_scale='parcel'):
+        """
+        Initializes laminar similarity matrix object
+
+        Parameters
+        ---------
+        input_type: (str) Type of input data
+            - 'thickness' [default]: laminar thickness
+            - 'density': profile density
+            - 'thickness-density': fused laminar thickness and profile density
+        correct_curvature: (str or None) ignored for 'density'
+            - 'volume' [default]: normalize relative thickness by curvature according to the 
+            equivolumetric principle i.e., use relative laminar volume instead of relative laminar 
+            thickness. Laminar volume is expected to be less affected by curvature.
+            - 'regress': regresses map of curvature out from the map of relative thickness
+            of each layer (separately) using a linear regression. This is a more lenient approach of 
+            controlling for curvature.
+            - None
+        similarity_metric: (str) how is similarity of laminar structure between two parcels determined
+            - 'parcor': partial correlation with mean thickness pattern as covariate
+            - 'euclidean': euclidean distance inverted and normalize to 0-1
+            - 'pearson': Pearson's correlation coefficient
+        similarity_scale: (str) granularity of similarity measurement
+            - 'parcel' [default]: similarity method is used between average laminar profile of parcels
+            - 'vertex': similarity method is used between all pairs of vertices between two
+                        parcels and then the similarity metric is averaged
+        exc_adys: (bool) Exclude a-/dysgranular regions
+        parcellation_name: (str) Parcellation scheme
+            - 'sjh'
+            - 'schaefer400'
+        """
+        #> save parameters as class fields
+        self.input_type = input_type
+        self.correct_curvature = correct_curvature
+        self.similarity_metric = similarity_metric
+        self.similarity_scale = similarity_scale
+        self.parcellation_name = parcellation_name
+        self.exc_adys = exc_adys
+        #> set the label based on input type
+        LABELS = {
+            'thickness': 'Laminar thickness covariance',
+            'density': 'Microstructural covariance',
+            'thickness-density': 'Laminar thickness and microstructural covariance'
+        }
+        self.label = LABELS[self.input_type]
+        #> directory and filename (prefix which will be used for .npz and .jpg files)
+        self.dir_path = self._get_dir_path()
+        os.makedirs(self.dir_path, exist_ok=True)
+        self.file_path = os.path.join(self.dir_path, 'matrix.csv')
+        if os.path.exists(self.file_path):
+            self._load()
+        else:
+            self._create()
+            self._save()
+            self.plot()
+
+    def _create(self):
+        """
+        Creates microstructural covariance matrix
+        """
+        print(f"""
+        Creating microstructural covariance matrix:
+            - input_type: {self.input_type},
+            - correct_curvature: {self.correct_curvature}
+            - parcellation_name: {self.parcellation_name},
+            - exc_adys: {self.exc_adys}
+        """)
+        if self.input_type == 'thickness-density':
+            matrices = []
+            for input_type in ['thickness', 'density']:
+                #> create matrix_obj for each input_type
+                #  by calling the same class
+                matrix_obj = MicrostructuralCovarianceMatrix(
+                    input_type = input_type,
+                    correct_curvature=self.correct_curvature,
+                    similarity_metric=self.similarity_metric,
+                    similarity_scale=self.similarity_scale,
+                    exc_adys=self.exc_adys,
+                    parcellation_name=self.parcellation_name
+                )
+                matrices.append(matrix_obj.matrix)
+                #TODO: it is unlikely but maybe valid parcels are different for each modality
+                # in that case this code won't work properly
+            self.matrix = self._fuse_matrices(matrices)
+        else:
+            #> Load laminar thickness or density profiles
+            print("Reading input")
+            self._input_data = self._load_input_data()
+            #> create the similarity matrix
+            if self.similarity_scale == 'parcel':
+                self.matrix = self._create_at_parcels()
+            else:
+                self.matrix = self._create_at_vertices()
+
+    def _load_input_data(self):
+        """
+        Load input data
+        """
+        #> load exclusion masks for a-/dysgranular regions if needed
+        if self.exc_adys:
+            exc_masks = datasets.load_exc_masks('adysgranular', self.parcellation_name)
+        else:
+            exc_masks = datasets.load_exc_masks('allocortex', self.parcellation_name)
+        #> load the data
+        if self.input_type == 'thickness':
+            if self.correct_curvature == 'volume':
+                input_data = datasets.load_laminar_volume(
+                    exc_masks=exc_masks,
+                )
+            elif self.correct_curvature == 'regress':
+                input_data = datasets.load_laminar_thickness(
+                    exc_masks=exc_masks,
+                    regress_out_curvature=True,
+                    normalize_by_total_thickness=True,
+                )
+            else:
+                input_data = datasets.load_laminar_thickness(
+                    exc_masks=exc_masks,
+                    regress_out_curvature=False,
+                    normalize_by_total_thickness=True,
+                )
+        elif self.input_type == 'density':
+            input_data = datasets.load_total_depth_density(
+                exc_masks=exc_masks
+            )
+        return input_data
+
+
+    def _create_at_parcels(self):
+        """
+        Creates laminar similarity matrix by taking Euclidean distance, Pearson's correlation
+        or partial correltation (with the average laminar data pattern as the covariate) between
+        average values of parcels
+
+        Note: Partial correlation is based on "Using recursive formula" subsection in the wikipedia
+        entry for "Partial correlation", which is also the same as Formula 2 in Paquola et al. PBio 2019
+        (https://doi.org/10.1371/journal.pbio.3000284)
+        Note 2: Euclidean distance is reversed (* -1) and rescaled to 0-1 (with 1 showing max similarity)
+
+        Returns
+        -------
+        matrix: (np.ndarray) n_parcels x n_parcels: how similar are each pair of parcels in their
+                microstructure (laminar thickness or density profiles)
+        """
+        print("Concatenating and parcellating the data")
+        self._parcellated_input_data = helpers.parcellate(
+            self._input_data,
+            self.parcellation_name,
+            averaging_method='median'
+            )
+        #> concatenate left and right hemispheres
+        self._concat_parcellated_input_data = helpers.concat_hemispheres(self._parcellated_input_data, dropna=True)
+        print(f"Creating similarity matrix by {self.similarity_metric} at parcel scale")
+        #> Calculate parcel-wise similarity matrix
+        if self.similarity_metric in ['parcor', 'pearson']:
+            if self.similarity_metric == 'parcor':
+                #> calculate partial correlation
+                r_ij = np.corrcoef(self._concat_parcellated_input_data)
+                mean_input_data = self._concat_parcellated_input_data.mean()
+                r_ic = self._concat_parcellated_input_data\
+                            .corrwith(mean_input_data, 
+                            axis=1) # r_ic and r_jc are the same
+                r_icjc = np.outer(r_ic, r_ic) # the second r_ic is actually r_jc
+                matrix = (r_ij - r_icjc) / np.sqrt(np.outer((1-r_ic**2),(1-r_ic**2)))
+            else:
+                np.corrcoef(self._concat_parcellated_input_data.values)
+            #> zero out negative correlations
+            matrix[matrix<0] = 0
+            #> zero out correlations of 1 (to avoid division by 0)
+            matrix[matrix==1] = 0
+            #> Fisher's z-transformation
+            matrix = 0.5 * np.log((1 + matrix) /  (1 - matrix))
+            #> zero out NaNs and inf
+            matrix[np.isnan(matrix) | np.isinf(matrix)] = 0
+        elif self.similarity_metric == 'euclidean':
+            #> calculate pair-wise euclidean distance
+            matrix = sk.metrics.pairwise.euclidean_distances(self._concat_parcellated_input_data.values)
+            #> make it negative (so higher = more similar) and rescale to range (0, 1)
+            matrix = sk.preprocessing.minmax_scale(-matrix, (0, 1))
+        #> determine valid parcels
+        valid_parcels = self._concat_parcellated_input_data.index.tolist()
+        matrix = pd.DataFrame(
+            matrix, 
+            index=valid_parcels,
+            columns=valid_parcels)
+        return matrix
+
+    def _create_at_vertices(self):
+        """
+        Creates laminar similarity matrix by taking Euclidean distance or Pearson's correlation
+        between all pairs of vertices between two pairs of parcels and then taking the average value of
+        the resulting n_vert_parcel_i x n_vert_parcel_j matrix for the cell i, j of the parcels similarity matrix
+
+        Note: Average euclidean distance is reversed (* -1) and rescaled to 0-1 (with 1 showing max similarity)
+
+        Returns
+        -------
+        matrix: (np.ndarray) n_parcels x n_parcels: how similar are each pair of parcels in their
+                laminar data pattern
+        """
+        if self.similarity_metric != 'euclidean':
+            raise NotImplementedError("Correlation at vertex level is not implemented")
+        #> Concatenate and parcellate the data
+        print("Concatenating and parcellating the data")
+        concat_input_data = np.concatenate([self._input_data['L'], self._input_data['R']], axis=0)
+        self._concat_parcellated_input_data = helpers.parcellate(
+            concat_input_data,
+            self.parcellation_name,
+            averaging_method=None
+            ) # a groupby object
+        n_parcels = len(self._concat_parcellated_input_data)
+        #> Calculating similarity matrix
+        print(f"Creating similarity matrix by {self.similarity_metric} at vertex scale")
+        matrix = pd.DataFrame(
+            np.zeros((n_parcels, n_parcels)),
+            columns = self._concat_parcellated_input_data.groups.keys(),
+            index = self._concat_parcellated_input_data.groups.keys()
+        )
+        invalid_parcs = []
+        for parc_i, vertices_i in self._concat_parcellated_input_data.groups.items():
+            print("\tParcel", parc_i) # printing parcel_i name since it'll take a long time per parcel
+            input_data_i = concat_input_data[vertices_i,:]
+            input_data_i = input_data_i[~np.isnan(input_data_i).any(axis=1)]
+            if input_data_i.shape[0] == 0: # sometimes all values may be NaN
+                matrix.loc[parc_i, :] = np.NaN
+                invalid_parcs.append(parc_i)
+                continue
+            for parc_j, vertices_j in self._concat_parcellated_input_data.groups.items():
+                input_data_j = concat_input_data[vertices_j,:]
+                input_data_j = input_data_j[~np.isnan(input_data_j).any(axis=1)]
+                if input_data_i.shape[0] == 0:
+                    matrix.loc[parc_i, :] = np.NaN
+                else:
+                    matrix.loc[parc_i, parc_j] = sk.metrics.pairwise.euclidean_distances(input_data_i, input_data_j).mean()
+        #> make ED values negative (so higher = more similar) and rescale to range (0, 1)
+        matrix = sk.preprocessing.minmax_scale(-matrix, (0, 1))
+        #> store the valid parcels
+        valid_parcels = sorted(list(set(self._concat_parcellated_input_data.groups.keys())-set(invalid_parcs)))
+        matrix = pd.DataFrame(
+            matrix, 
+            index=valid_parcels,
+            columns=valid_parcels)
+        return matrix
+
+    def _fuse_matrices(self, matrices):
+        """
+        Fuses two input matrices by rank normalizing each and rescaling
+        the second matrix based on the first one (which shouldn't make much
+        difference if the matrices are rank normalized; TODO: think about this)
+
+        Parameters
+        ----------
+        matrices: (list of pd.DataFrame) matrices with the same shape. The code
+            can handle more than two matrices but that doesn't occur normally!
+
+        Note: This function doesn't need to be in this class but is included here
+        anyway because it's not used anywhere else!
+
+        Based on Paquola 2020 PBio
+        https://github.com/MICA-MNI/micaopen/tree/master/structural_manifold
+        Note: This function does not zero out negative or NaNs and assumes
+        all processes are completed on the input matrices
+        """
+        rank_normalized_matrices = []
+        #> rank normalize the first matrix
+        rank_normalized_matrices.append(
+            pd.DataFrame(
+                scipy.stats.rankdata(matrices[0].values)
+                .reshape(matrices[0].shape)
+            )
+        )
+        #> rank normalize and rescale next matrices
+        for matrix in matrices[1:]:
+            #> rank normalize (and flatten) the matrix
+            rank_normalized_matrix_flat = scipy.stats.rankdata(matrix.values)
+            #> rescale it by the first matrix
+            rank_normalized_rescaled_matrix_flat = np.interp(
+                rank_normalized_matrix_flat,
+                (rank_normalized_matrix_flat.min(), rank_normalized_matrix_flat.max()),
+                (rank_normalized_matrices[0].values.min(), rank_normalized_matrices[0].values.max())
+            )
+            rank_normalized_matrices.append(
+                pd.DataFrame(
+                    rank_normalized_rescaled_matrix_flat.reshape(matrix.shape)
+                )
+            )
+        #> fuse the matrices horizontally as a pd.DataFrame and label it
+        fused_matrix = pd.concat(rank_normalized_matrices, axis=1)
+        fused_matrix.index = matrices[0].index
+        fused_matrix.columns = matrices[0].index.tolist() * len(matrices)
+        return fused_matrix
+
+    def _get_dir_path(self):
+        """
+        Get path for the matrix directory
+        """
+        MAIN_DIRS = {
+            'thickness-density': 'fused',
+            'thickness': 'ltc',
+            'density': 'mpc'
+        }
+        main_dir = MAIN_DIRS[self.input_type]
+        sub_dir = f'parc-{self.parcellation_name}'
+        if self.input_type != 'density':
+            sub_dir += f'_curv-{str(self.correct_curvature).lower()}'
+        if self.exc_adys:
+            sub_dir += '_exc-adys'
+        sub_dir += f'_metric-{self.similarity_metric}'\
+            + f'_scale-{self.similarity_scale}'
+        return os.path.join(OUTPUT_DIR, main_dir, sub_dir)
+        
+    def plot(self):
+        """
+        Plot the matrix as heatmap
+        """
+        #> use different colors for different input types
+        if self.input_type == 'thickness':
+            cmap = sns.color_palette("RdBu_r", as_cmap=True)
+        elif self.input_type == 'density':
+            cmap = sns.color_palette("rocket", as_cmap=True)
+        else:
+            # TODO: use different colors for each input type in the plot
+            cmap = sns.color_palette("RdBu_r", as_cmap=True)
+        #> plot the matrix
+        helpers.plot_matrix(
+            self.matrix.values,
+            os.path.join(self.dir_path,'matrix'),
+            cmap=cmap,
+            vrange=(0.025, 0.975)
+            )

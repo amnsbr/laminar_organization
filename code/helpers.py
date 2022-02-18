@@ -273,7 +273,7 @@ def deparcellate(parcellated_data, parcellation_name):
 
     Returns
     -------
-    surface_map: (np.ndarray) n_vertices [both hemispheres] x n_gradients
+    surface_map: (np.ndarray) n_vertices [both hemispheres] x n_features
     """
     #> load concatenated parcellation map
     concat_parcellation_map = datasets.load_parcellation_map(parcellation_name, concatenate=True)
@@ -295,6 +295,32 @@ def deparcellate(parcellated_data, parcellation_name):
     #> get the surface map by indexing the parcellated map at parcellation labels
     surface_map = labeled_parcellated_data.loc[concat_parcellation_map].values # shape: vertex X gradient
     return surface_map
+
+def get_split_hem_idx(parcellation_name, exc_adys):
+    """
+    Get the index of the first RH parcel to split hemispheres
+
+    Parameters
+    ----------
+    parcellation_name: (str)
+    exc_adys: (bool)
+    """
+    if exc_adys:
+        exc_mask_type = 'adysgranular'
+    else:
+        exc_mask_type = 'allocortex'
+    exc_masks = datasets.load_exc_masks(exc_mask_type, parcellation_name)
+    parcels_to_exclude = parcellate(exc_masks, parcellation_name)
+    split_hem_idx = int(np.nansum(1-parcels_to_exclude['L'].values)) # number of non-exc-mask parcels in lh
+    # if exc_adys:
+    #     parcels_adys = datasets.load_parcels_adys(parcellation_name, concat=False)
+    #     split_hem_idx = int(np.nansum(1-parcels_adys['L'].values)) # number of non-adys parcels in lh
+    # else:
+    #     if parcellation_name == 'schaefer400':
+    #         split_hem_idx = 200 # TODO: this is specific for Schaefer parcellation
+    #     elif parcellation_name == 'sjh':
+    #         split_hem_idx = 505
+    return split_hem_idx
 
 
 ###### Plotting ######
@@ -404,7 +430,9 @@ def plot_on_bigbrain_nl(surface_data, filename, inflate=False, layout='horizonta
         figure, axes = plt.subplots(1, 4, figsize=(24, 5), subplot_kw={'projection': '3d'})
     elif layout == 'grid':
         figure, axes = plt.subplots(2, 2, figsize=(12, 10), subplot_kw={'projection': '3d'})
-        axes = axes.flatten(order='F')
+        #> reorder axes so that lateral views are on top, matching the order of axes
+        #  in the horizontal layout
+        axes = np.array([axes[0, 0], axes[1, 0], axes[1, 1], axes[0, 1]])
     curr_ax_idx = 0
     for hemi in ['left', 'right']:
         #> plot the medial and lateral views

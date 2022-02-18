@@ -7,11 +7,8 @@ the relative surface area of wm vs pia at each vertex)
 The code is adapted from https://github.com/kwagstyl/surface_tools
 """
 import numpy as np
-import nilearn.surface
 import subprocess
-import argparse
 import os
-import copy
 import sys
 sys.path.append(os.getcwd() + '/..')
 import helpers

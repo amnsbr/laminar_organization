@@ -1,12 +1,6 @@
 
 import os
 import numpy as np
-import nilearn.surface
-import sklearn as sk
-import scipy.stats
-from cortex.polyutils import Surface
-import subprocess
-import nibabel
 import scipy.spatial.distance
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -79,7 +73,7 @@ class MicrostructuralCovarianceGradients:
         #> add parcel labels
         self.labeled_gradients = pd.DataFrame(
             self.gm.gradients_,
-            index=self.matrix_obj.valid_parcels
+            index=self.matrix_obj.matrix.index
             )
         #> project to surface
         self.gradients_surface = helpers.deparcellate(
@@ -128,7 +122,7 @@ class MicrostructuralCovarianceGradients:
         self.gradients_surface = np.load(os.path.join(self.dir_path, 'gradients_surface.npz'))['surface']
         self.lambdas = np.loadtxt(os.path.join(self.dir_path, 'lambdas.txt'))
 
-    def plot_surface(self, layout='grid'):
+    def plot_surface(self, layout='grid', inflate=False):
         """
         Plots the first `n_gradients` of `gradient_file`
         Note: It is computationally intensive (too many vertices)
@@ -137,7 +131,8 @@ class MicrostructuralCovarianceGradients:
             helpers.plot_on_bigbrain_nl(
                 self.gradients_surface[:, gradient_num-1],
                 filename=os.path.join(self.dir_path, f'surface_{layout}_G{gradient_num}.png'),
-                layout=layout
+                layout=layout,
+                inflate=inflate,
             )
 
     def plot_scatter(self, remove_ticks=True):
@@ -261,9 +256,9 @@ class MicrostructuralCovarianceGradients:
         #> loading and parcellating the laminar thickness
         laminar_thickness = self.matrix_obj._load_input_data()
         parcellated_laminar_thickness = helpers.parcellate(laminar_thickness, self.matrix_obj.parcellation_name)
-        parcellated_laminar_thickness = helpers.concat_hemispheres(parcellated_laminar_thickness, dropna=False)
+        parcellated_laminar_thickness = helpers.concat_hemispheres(parcellated_laminar_thickness, dropna=True)
         # re-normalize small deviations from sum=1 because of parcellation
-        parcellated_laminar_thickness /= parcellated_laminar_thickness.sum(axis=1)
+        parcellated_laminar_thickness = parcellated_laminar_thickness.divide(parcellated_laminar_thickness.sum(axis=1), axis=0)
         for gradient_num in range(1, self._n_components_report+1):
             binned_parcels_laminar_thickness = parcellated_laminar_thickness.copy()
             binned_parcels_laminar_thickness['bin'] = pd.cut(self.labeled_gradients[gradient_num-1], 10)

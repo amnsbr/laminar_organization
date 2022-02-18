@@ -1,5 +1,16 @@
 #!/usr/bin/bash
-# Wrapper for code/2_create_gradients.py to make it compatible with htcondor
-# (otherwise the virtual environment is not activated properly)
+# Wrapper for calculate_surface_area.py to make it compatible with htcondor
+
+# Specify directories
+cd "$(dirname "$0")/../../src"
+SRC_PATH=$(realpath .)
+TOOLS_PATH=$(realpath ../tools)
+
+# Pull CIVET's singularity if it doesn't exist
+if ! [ -f "${TOOLS_PATH}/civet-2.1.1.simg" ]; then
+    cd $TOOLS_PATH
+    singularity pull docker://mcin/civet:2.1.1
+    cd $SRC_PATH
+
 source ${HOME}/laminar_gradients/laminar_gradients_env/bin/activate & \
 ${HOME}/laminar_gradients/laminar_gradients_env/bin/python ${HOME}/laminar_gradients/code/local/calculate_surface_area.py

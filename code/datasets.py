@@ -55,72 +55,117 @@ def load_curvature_maps():
         curvature_maps[hem] = curvature
     return curvature_maps
 
-
-def load_adysgranular_masks(parcellation_name=None, tolerable_adys_in_parcels=0.1):
+def load_cortical_types(parcellation_name=None):
     """
-    Create masks of bigbrain space including agranular and dysgranular region.
-    When the data is processed parcellated, these masks also take the parcellation
-    into account and include parcels that have e.g. > 10% overlap with the
-    a-/dysgranular regions
-    If it already exists, just returns the path.
+    Loads the surface map of cortical types parcellated or unparcellated
 
     Parameters
     ---------
+    parcellation_name: (str or None)
+        - None: vertex-wise
+        - str: parcellation name (must exists in data/parcellation)
+    """
+    #> load the economo map and concatenate left and right hemispheres
+    economo_maps = {}
+    for hem in ['L', 'R']:
+        economo_maps[hem] = nilearn.surface.load_surf_data(
+            os.path.join(
+                SRC_DIR,
+                f'tpl-bigbrain_hemi-{hem}_desc-economo_parcellation.label.gii'
+                )
+            )
+    economo_map = np.concatenate([economo_maps['L'], economo_maps['R']])
+    #> load the cortical types for each economo parcel
+    economo_cortical_types = pd.read_csv(
+        os.path.join(
+            SRC_DIR,
+            'economo_cortical_types.csv'
+            )
+        )
+    economo_cortical_types.columns=['Label', 'Cortical Type']
+    #> create the cortical types surface map
+    cortical_types_map = economo_cortical_types.loc[economo_map, 'Cortical Type'].astype('category').reset_index(drop=True)
+    cortical_types_map = cortical_types_map.cat.reorder_categories(['ALO', 'AG', 'DG', 'EU1', 'EU2', 'EU3', 'KO'])
+    if parcellation_name:
+        #> load parcellation map
+        parcellation_map = load_parcellation_map(parcellation_name, concatenate=True)
+        parcellated_cortical_types_map = (
+            #>> create a dataframe of surface map including both cortical type and parcel index
+            pd.DataFrame({'Cortical Type': cortical_types_map, 'Parcel': pd.Series(parcellation_map)})
+            #>> group by parcel
+            .groupby('Parcel')
+            #>> find the cortical types with the highest count (may also be non-cortex)
+            ['Cortical Type'].value_counts(sort=True).unstack().idxmax(axis=1)
+            #>> convert it back to category
+            .astype('category')
+            .cat.reorder_categories(['ALO', 'AG', 'DG', 'EU1', 'EU2', 'EU3', 'KO'])
+        )
+        #> assign cortical types of midline parcels to NaN
+        parcellated_cortical_types_map.loc[helpers.MIDLINE_PARCELS[parcellation_name]] = np.NaN
+        return parcellated_cortical_types_map
+    else:
+        # #> save the map
+        # # TODO: maybe split hemispheres
+        # np.save(
+        #     os.path.join(
+        #         SRC_DIR,
+        #         f'tpl-bigbrain_desc-cortical_types_parcellation.npy'
+        #     ), cortical_types_map.cat.codes.values)
+        return cortical_types_map      
+
+def load_exc_masks(exc_mask_type, parcellation_name=None):
+    """
+    Create masks of bigbrain space including agranular and dysgranular region.
+    When the data is processed parcellated, these masks also take the parcellation
+    into account and include parcels in which the most common cortical type is 
+    non-cortical, allocortex, +/- a-/dysgranular regions
+
+    Parameters
+    ---------
+    exc_mask_type: (str)
+        - allocortex: excludes allocortex
+        - adysgranular: excludes allocortex + adysgranular regions
     parcellation_name: (None or str) the parcellation should be saved in src folder
                         with the name 'tpl-bigbrain_hemi-L_desc-{parcellation_name}_parcellation.label.gii'
-    tolerable_adys_in_parcels: (float) % overlap of parcels with a-/dysgranular allowed
+
+    Returns
+    -------
+    hem_exc_masks: (dict) boolean surface maps of exclusion masks for L and R hemispheres
     """
-    #> get the indices of parcels that are agranular, dysgranular, allocortex or NaN (corpus callosum and unknown)
-    cortical_types = pd.read_csv(
-        os.path.join(SRC_DIR, 'economo_cortical_types.csv')
-        )
-    adysgranular_regions = (cortical_types[
-        cortical_types['CorticalType']
-        .isin(['AG', 'DG', 'ALO', np.NaN])
-        ].index.tolist())
-    masks = {}
-    for hem in ['L', 'R']:
-        #> don't recreate it if it already exist
-        mask_filepath = os.path.join(
-            OUTPUT_DIR, 'masks' 
-            f'tpl-bigbrain_hemi-{hem}_desc-adysgranular_mask_parc-{parcellation_name}_thresh-{tolerable_adys_in_parcels}.npy'
-            )
-        if os.path.exists(mask_filepath):
-            masks[hem] = np.load(mask_filepath)
-            continue
-        #> load the economo parcellation
-        economo_map = nilearn.surface.load_surf_data(
-            os.path.join(SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-economo_parcellation.label.gii')
-            )        
-        #> create a mask of a-/dysgranular vertices
-        adysgranular_mask = np.in1d(economo_map, adysgranular_regions)
-
-        if parcellation_name:
-            #> load parcellation maps
-            parcellation_map = nilearn.surface.load_surf_data(
-                os.path.join(SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-{parcellation_name}_parcellation.label.gii')
-                )
-            #> calculate the proportion of adysgranular vertices in each parcel
-            parcels_adys_proportion = pd.DataFrame(
-                {'parcel': parcellation_map, 'adys': adysgranular_mask}
-                ).groupby('parcel')['adys'].mean()
-
-            #> determine the parcels that pass the threshold and need to be masked
-            adys_parcels = (parcels_adys_proportion[
-                parcels_adys_proportion > tolerable_adys_in_parcels
-                ].index.to_numpy())
-
-            #> create an extended mask of adysgranular regions
-            adysgranular_mask = np.in1d(parcellation_map, adys_parcels)
-
-        masks[hem] = adysgranular_mask
-        #> save the mask
+    mask_filepath = os.path.join(
+        OUTPUT_DIR, 'masks',
+        f'tpl-bigbrain_desc-{exc_mask_type}_mask_parc-{parcellation_name}.npy'
+    )
+    if os.path.exists(mask_filepath):
+        exc_mask = np.load(mask_filepath)
+    else:
+        #> load cortical types surface map after/without parcellation
+        cortical_types = load_cortical_types(parcellation_name)
+        #> if it's parcellated project back to surface
+        #  Why? because parcellation_map and economo parcellation do
+        #  not fully overlap and we need a mask that is aligned with the parcellation_map
+        if parcellation_name: 
+            cortical_types = pd.Series(helpers.deparcellate(cortical_types, parcellation_name).flatten())
+        #> match midlines of the `parcellation_name` and economo parcellation (sometimes e.g. in sjh
+        #  they do not match) by makign their overlap NaN. The midline of `parcellation_name` is already
+        #  NaN (from load_cortical_types). Therefore only load midline of economo and make it NaN
+        economo_map = load_parcellation_map('economo', concatenate=True)
+        economo_midline_mask = np.in1d(economo_map, ['unknown', 'corpuscallosum'])
+        cortical_types[economo_midline_mask] = np.NaN
+        #> create a mask of excluded cortical types
+        if exc_mask_type == 'allocortex':
+            exc_cortical_types = [np.NaN, 'ALO']
+        elif exc_mask_type == 'adysgranular':
+            exc_cortical_types = [np.NaN, 'ALO', 'DG', 'AG']
+        exc_mask = cortical_types.isin(exc_cortical_types).values
         os.makedirs(os.path.join(OUTPUT_DIR, 'masks'), exist_ok=True)
-        np.save(
-            mask_filepath,
-            adysgranular_mask
-        )
-    return masks
+        np.save(mask_filepath, exc_mask)
+    #> for historical reasons split this into two hemispheres and return it
+    hem_exc_masks = {
+        'L': exc_mask[:N_VERTICES_HEM_BB],
+        'R': exc_mask[N_VERTICES_HEM_BB:]
+    }
+    return hem_exc_masks
 
 def load_laminar_thickness(exc_masks=None, normalize_by_total_thickness=True, regress_out_curvature=False):
     """
@@ -260,12 +305,19 @@ def load_total_depth_density(exc_masks=None):
     -------
     density_profiles (dict of np.ndarray) n_vert x 50 for L and R hemispheres
     """
+    #> load profiles and reshape to n_vert x 50
     density_profiles = np.loadtxt(os.path.join(SRC_DIR, 'tpl-bigbrain_desc-profiles.txt'))
     density_profiles = density_profiles.T
+    #> split hemispheres
     density_profiles = {
         'L': density_profiles[:density_profiles.shape[0]//2, :],
         'R': density_profiles[density_profiles.shape[0]//2:, :],
     }
+    #> remove the exc_mask
+    if exc_masks:
+        for hem in ['L', 'R']:
+            density_profiles[hem][exc_masks[hem], :] = np.NaN
+
     return density_profiles
 
 
@@ -310,6 +362,7 @@ def load_parcellation_map(parcellation_name, concatenate):
     """
     Loads parcellation maps of L and R hemispheres, correctly relabels them
     and concatenates them if `concatenate` is True
+    TODO: maybe add the option for loading only the parcel indices
 
     Parameters
     ----------
@@ -348,61 +401,6 @@ def load_parcellation_map(parcellation_name, concatenate):
     else:
         return labeled_parcellation_map
 
-def load_cortical_types(parcellation_name=None):
-    """
-    Loads the surface map of cortical types parcellated or unparcellated
-
-    Parameters
-    ---------
-    parcellation_name: (str or None)
-        - None: vertex-wise
-        - str: parcellation name (must exists in data/parcellation)
-    """
-    #> load the economo map and concatenate left and right hemispheres
-    economo_maps = {}
-    for hem in ['L', 'R']:
-        economo_maps[hem] = nilearn.surface.load_surf_data(
-            os.path.join(
-                SRC_DIR,
-                f'tpl-bigbrain_hemi-{hem}_desc-economo_parcellation.label.gii'
-                )
-            )
-    economo_map = np.concatenate([economo_maps['L'], economo_maps['R']])
-    #> load the cortical types for each economo parcel
-    economo_cortical_types = pd.read_csv(
-        os.path.join(
-            SRC_DIR,
-            'economo_cortical_types.csv'
-            )
-        )
-    economo_cortical_types.columns=['Label', 'Cortical Type']
-    #> create the cortical types surface map
-    cortical_types_map = economo_cortical_types.loc[economo_map, 'Cortical Type'].astype('category').reset_index(drop=True)
-    cortical_types_map = cortical_types_map.cat.reorder_categories(['ALO', 'AG', 'DG', 'EU1', 'EU2', 'EU3', 'KO'])
-    if parcellation_name:
-        #> load parcellation map
-        parcellation_map = load_parcellation_map(parcellation_name, concatenate=True)
-        parcellated_cortical_types_map = (
-            #>> create a dataframe of surface map including both cortical type and parcel index
-            pd.DataFrame({'Cortical Type': cortical_types_map, 'Parcel': pd.Series(parcellation_map)})
-            #>> group by parcel
-            .groupby('Parcel')
-            #>> find the cortical types with the highest count
-            ['Cortical Type'].value_counts(sort=True).unstack().idxmax(axis=1)
-            #>> convert it back to category
-            .astype('category')
-            .cat.reorder_categories(['ALO', 'AG', 'DG', 'EU1', 'EU2', 'EU3', 'KO'])
-        )
-        return parcellated_cortical_types_map
-    else:
-        # #> save the map
-        # # TODO: maybe split hemispheres
-        # np.save(
-        #     os.path.join(
-        #         SRC_DIR,
-        #         f'tpl-bigbrain_desc-cortical_types_parcellation.npy'
-        #     ), cortical_types_map.cat.codes.values)
-        return cortical_types_map      
 
 def load_hist_mpc_gradients():
     """
@@ -488,19 +486,62 @@ def load_disorder_atrophy_maps():
         .set_index('Structure')['d_icv'])
     return disorder_atrophy_maps
 
-def load_parcels_adys(parcellation_name):
+def load_parcels_adys(parcellation_name, concat=True):
     """
     Determines which parcels are in the adysgranular mask
 
     Parameter
     --------
     parcellation_name: (str) parcellation name (must exists in data/parcellation)
+    concat: (bool) concatenate hemispheres
 
     Returns
     -------
-    parcellated_mask: (dict of pd.Series) with n_parcels elements showing which parcels
+    parcels_adys: (pd.Series | dict of pd.Series) with n_parcels elements showing which parcels
         are in the adysgranular mask
     """
-    adysgranular_masks = load_adysgranular_masks(parcellation_name)
-    parcellated_mask = helpers.parcellate(adysgranular_masks, parcellation_name)
-    return parcellated_mask
+    adysgranular_masks = load_exc_masks('adysgranular', parcellation_name)
+    parcels_adys = helpers.parcellate(adysgranular_masks, parcellation_name)
+    if concat:
+        parcels_adys = helpers.concat_hemispheres(parcels_adys, dropna=True)
+    return parcels_adys
+
+def load_conn_matrices(kind, parcellation_name='schaefer400'):
+    """
+    Loads FC or SC matrices in Schaefer parcellation (400) from ENIGMA toolbox
+    and reorders it according to `matrix_file`. For SC matrix also makes contralateral
+    values 0 (so that they are not included in correlations)
+
+    Parameters
+    ----------
+    kind: (str)
+        - structural
+        - functional
+    
+    parcellation_name: (str)
+        - schaefer400 (currently only this is supported)
+
+    Returns
+    ---------
+    reordered_conn_matrix, (np.ndarray) (n_parc, n_parc) 
+        reordered FC or SC matrices matching the original matrix
+    """
+    #> match parcellation name with the enigmatoolbox
+    ENIGMATOOLBOX_PARC_NAMES = {
+        'schaefer400': 'schaefer_400'
+    }
+    enigma_parcellation_name = ENIGMATOOLBOX_PARC_NAMES.get(parcellation_name, None)
+    if enigma_parcellation_name == None:
+        raise Exception(f"ENIGMA Toolbox does not have connectivity data for the parcellation {parcellation_name}")
+    #> load data from enigma toolbox
+    if kind == 'structural':
+        conn_matrix, conn_matrix_labels, _, _ = enigmatoolbox.datasets.load_sc(enigma_parcellation_name)
+    else:
+        conn_matrix, conn_matrix_labels, _, _ = enigmatoolbox.datasets.load_fc(enigma_parcellation_name)
+    conn_matrix = pd.DataFrame(conn_matrix, columns=conn_matrix_labels, index=conn_matrix_labels)
+    #> parcellate dummy data to get the order of parcels in other matrices created locally
+    dummy_surf_data = np.zeros(N_VERTICES_HEM_BB * 2)
+    parcellated_dummy = helpers.parcellate(dummy_surf_data, parcellation_name).dropna()
+    #> reorder matrices downloaded from enigmaltoolbox
+    reordered_conn_matrix = conn_matrix.loc[parcellated_dummy.index, parcellated_dummy.index]
+    return reordered_conn_matrix
