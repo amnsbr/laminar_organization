@@ -969,3 +969,55 @@ class MicrostructuralCovarianceMatrix(Matrix):
         sub_dir += f'_metric-{self.similarity_metric}'\
             + f'_scale-{self.similarity_scale}'
         return os.path.join(OUTPUT_DIR, main_dir, sub_dir)
+
+class CorticalTypeSimilarityMatrix(Matrix):
+    label = "Cortical type similarity"
+    cmap = 'YlOrRd'
+    def __init__(self, parcellation_name, exc_adys):
+        """
+        Initializes cortical type similarity matrix object for the given `parcellation_name`
+
+        Parameters
+        ---------
+        parcellation_name: (str)
+        exc_adys: (bool) exclude adysgranular+allocortical regions or only allocortex
+        """
+        self.parcellation_name = parcellation_name
+        self.exc_adys = exc_adys
+        self.dir_path = os.path.join(
+            OUTPUT_DIR, 'ctypes', 
+            f'similarity_parc-{self.parcellation_name}'\
+            + ('_exc-adys' if self.exc_adys else '')
+            )
+        self.file_path = os.path.join(self.dir_path, 'matrix.csv')
+        if os.path.exists(self.file_path):
+            self._load()
+        else:
+            os.makedirs(self.dir_path, exist_ok=True)
+            self._create()
+            if self.exc_adys:
+                self.matrix = self._remove_parcels('adysgranular')
+            else:
+                self.matrix = self._remove_parcels('allocortex') 
+            self._save()
+            self.plot()            
+
+    def _create(self):
+        """
+        Create cortical type similarity matrix
+        """
+        #> load cortical types per parcel
+        parcellated_cortical_types = datasets.load_cortical_types(self.parcellation_name)
+        parcellated_cortical_types = parcellated_cortical_types.dropna()
+        #> get the magnitude of difference between the cortical types
+        ctype_diff = np.abs(
+            parcellated_cortical_types.cat.codes.values[:, np.newaxis] \
+            - parcellated_cortical_types.cat.codes.values[np.newaxis, :]
+            )
+        #> reverse it to make it a similarity matrix in the range of (1, 7)
+        ctype_similarity = 7 - ctype_diff
+        self.matrix = pd.DataFrame(
+            ctype_similarity,
+            index=parcellated_cortical_types.index,
+            columns=parcellated_cortical_types.index,
+        )
