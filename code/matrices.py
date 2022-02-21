@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import nilearn.surface
+from pyrsistent import v
 import sklearn as sk
 import scipy.stats
 import subprocess
@@ -10,6 +11,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import statsmodels.stats.multitest
+import cmcrameri.cm # color maps
 
 import helpers
 import datasets
@@ -69,6 +71,18 @@ class Matrix:
         parcels_to_include = (1 - parcels_to_exclude).astype('bool')
         parcels_to_include_idx = parcels_to_include[parcels_to_include.values].index
         return self.matrix.loc[parcels_to_include_idx, parcels_to_include_idx]
+
+    def plot(self):
+        """
+        Plot the matrix as heatmap
+        """
+        #> plot the matrix
+        helpers.plot_matrix(
+            self.matrix.values,
+            os.path.join(self.file_path.replace('.csv','')),
+            cmap=self.cmap,
+            vrange=(0.025, 0.975)
+            )
 
     def correlate_edge_wise(self, other, test='pearson'):
         """
@@ -172,7 +186,7 @@ class Matrix:
 
     def correlate_node_wise(self, other, test='pearson', plot=False):
         """
-        Calculates the correlation between matrices `X` and `Y` at each row (node),
+        Calculates the correlation of matrix with another matrix at each row (node),
         projects the node-wise Spearman's rho values to the surface and saves and plots it. 
         Matrices are assumed to be square and symmetric.
 
@@ -246,6 +260,100 @@ class Matrix:
                 filename= out_path + '_nodewise_surface_sig.png'
             )
 
+    def associate_cortical_types(self):
+        """
+        Calculates within and between cortical type average of matrix 
+        values and plots a collapsed matrix by cortical types. 
+        Excludes a-/dysgranular as indicated by the matrix
+
+        Returns
+        ---------
+        matrix_file: (str) path to matrix file    
+        """
+        #> load cortical types and make it match matrix index
+        parcellated_cortical_types = datasets.load_cortical_types(self.parcellation_name)
+        parcellated_cortical_types = parcellated_cortical_types.loc[self.matrix.index]
+        #> list the excluded types based on matrix path 
+        if self.exc_adys:
+            included_types = ['EU1', 'EU2', 'EU3', 'KO']
+            excluded_types = [np.NaN, 'ALO', 'AG', 'DG']
+        else:
+            included_types = ['AG', 'DG', 'EU1', 'EU2', 'EU3', 'KO']
+            excluded_types = [np.NaN, 'ALO']
+        n_types = len(included_types)
+        matrix = self.matrix.loc[
+            ~parcellated_cortical_types.isin(excluded_types), 
+            ~parcellated_cortical_types.isin(excluded_types)
+            ] # this is probably not needed since excluded types are already excluded!
+        parcellated_cortical_types = (
+            parcellated_cortical_types
+            .loc[~parcellated_cortical_types.isin(excluded_types)]
+            .cat.remove_unused_categories()
+            )
+        #> collapse matrix to mean values per cortical type
+        mean_matrix_by_cortical_type = pd.DataFrame(np.zeros((n_types, n_types)),
+                                                    columns=included_types,
+                                                    index=included_types)
+        for group_idx, group_df in matrix.groupby(parcellated_cortical_types):
+            mean_matrix_by_cortical_type.loc[group_idx, :] = \
+                (group_df
+                .T.groupby(parcellated_cortical_types) # group columns by cortical type
+                .mean() # take average of cortical types for each row (parcel)
+                .mean(axis=1)) # take the average of average of rows in each cortical type
+        #> plot it
+        helpers.plot_matrix(
+            mean_matrix_by_cortical_type.values,
+            self.file_path.replace('.csv', '_averaged-ctypes'),
+            vrange=(0, 1), cmap=self.cmap
+            )
+        #> quantify intra and intertype similarity
+        intra_intertype = pd.DataFrame(
+            np.zeros((n_types, 2)),
+            columns=['intra', 'inter'],
+            index=included_types
+            )
+        for group_idx, group_df in matrix.groupby(parcellated_cortical_types):
+            intra_intertype.loc[group_idx, 'intra'] = \
+                (group_df
+                .T.groupby(parcellated_cortical_types) # group columns by cortical type
+                .mean() # take average of cortical types for each row (parcel)
+                .loc[group_idx].mean()) # take the average of average of rows in each cortical type
+            intra_intertype.loc[group_idx, 'inter'] = \
+                (group_df
+                .T.groupby(parcellated_cortical_types) # group columns by cortical type
+                .mean() # take average of cortical types for each row (parcel)
+                .drop(index=group_idx) # remove the same type
+                .values.mean()) # take the average of average of rows in each cortical type
+        #> test significance using permutation
+        null_dist_intra_intertype = np.zeros((1000, n_types, 2))
+        for perm_idx in range(1000):
+            #> create a surrogate shuffled matrix
+            shuffled_parcels = np.random.permutation(matrix.index.tolist())
+            surrogate = matrix.loc[shuffled_parcels, shuffled_parcels]
+            surrogate.index = matrix.index
+            surrogate.columns = matrix.columns
+            null_intra_intertype = pd.DataFrame(
+                np.zeros((n_types, 2)),
+                columns=['intra', 'inter'],
+                index=included_types)
+            for group_idx, group_df in surrogate.groupby(parcellated_cortical_types):
+                null_intra_intertype.loc[group_idx, 'intra'] = \
+                    (group_df
+                    .T.groupby(parcellated_cortical_types) # group columns by cortical type
+                    .mean() # take average of cortical types for each row (parcel)
+                    .loc[group_idx].mean()) # take the average of average of rows in each cortical type
+                null_intra_intertype.loc[group_idx, 'inter'] = \
+                    (group_df
+                    .T.groupby(parcellated_cortical_types) # group columns by cortical type
+                    .mean() # take average of cortical types for each row (parcel)
+                    .drop(index=group_idx) # remove the same type
+                    .dropna() # drop unknown and ALO
+                    .values.mean()) # take the average of average of rows in each cortical type
+            null_dist_intra_intertype[perm_idx, :, :] = null_intra_intertype.values
+        null_dist_diff_intra_inter = null_dist_intra_intertype[:, :, 0] - null_dist_intra_intertype[:, :, 1]
+        diff_intra_inter = (intra_intertype.iloc[:, 0] - intra_intertype.iloc[:, 1]).values.reshape(1, -1)
+        intra_intertype['pvals'] = (null_dist_diff_intra_inter > diff_intra_inter).mean(axis=0)
+        intra_intertype.to_csv(self.file_path.replace('.csv', '_intra_intertype_diff.txt'))
 
 class CurvatureSimilarityMatrix(Matrix):
     """
@@ -254,6 +362,7 @@ class CurvatureSimilarityMatrix(Matrix):
     """
     label = "Curvature similarity"
     dir_path = os.path.join(OUTPUT_DIR, 'curvature')
+    cmap = sns.color_palette("mako", as_cmap=True)
     def __init__(self, parcellation_name, exc_adys=True):
         """
         Creates curvature similarity matrix or loads it if it already exist
@@ -280,7 +389,7 @@ class CurvatureSimilarityMatrix(Matrix):
             self.matrix = self._remove_parcels('adysgranular')
         else:
             self.matrix = self._remove_parcels('allocortex')
-        # TODO plot
+        self.plot()
         
     def _create(self):
         """
@@ -354,6 +463,7 @@ class GeodesicDistanceMatrix(Matrix):
     label = "Geodesic distance"
     dir_path = os.path.join(OUTPUT_DIR, 'geodesic_distance')
     split_hem = True
+    cmap = sns.color_palette("viridis", as_cmap=True)
     def __init__(self, parcellation_name, approach='center-to-center', exc_adys=True):
         """
         Creates parcel-to-parcel geodesic distance matrix based on the
@@ -394,7 +504,7 @@ class GeodesicDistanceMatrix(Matrix):
             self.matrix = self._remove_parcels('adysgranular')
         else:
             self.matrix = self._remove_parcels('allocortex') 
-        # TODO plot
+        self.plot()
 
     def _create(self):
         """
@@ -485,7 +595,6 @@ class ConnectivityMatrix(Matrix):
     """
     Structural or functional connectivity matrix
     """
-    dir_path = os.path.join(OUTPUT_DIR, 'connectivity')
     def __init__(self, kind, exc_adys=True, sc_zero_contra=True, parcellation_name='schaefer400'):
         """
         Initializes structural/functional connectivity matrix
@@ -503,21 +612,27 @@ class ConnectivityMatrix(Matrix):
         self.kind = kind
         self.exc_adys = exc_adys
         self.sc_zero_contra = sc_zero_contra
-        if (self.kind == 'structural') & self.sc_zero_contra:
-            self.split_hem = True
+        if self.kind == 'structural':
+            self.cmap = cmcrameri.cm.davos
+            if self.sc_zero_contra:
+                self.split_hem = True
+        else:
+            self.cmap = cmcrameri.cm.acton
         self.parcellation_name = parcellation_name
         self.label = f'{self.kind.title()} connectivity'
-        self.filename = f'matrix-{self.kind}_connectivity'\
+        self.dir_path = os.path.join(
+            OUTPUT_DIR, 'connectivity',
+            f'{self.kind[0]}c'\
             + f'_parc-{self.parcellation_name}' \
-            + ('_split_hem' if self.split_hem else '') \
-            + '.csv'
-        self.file_path = os.path.join(self.dir_path, self.filename)
+            + ('_split_hem' if self.split_hem else '')
+            )
+        self.file_path = os.path.join(self.dir_path, 'matrix.csv')
         if os.path.exists(self.file_path):
             self._load()
         else:
             os.makedirs(self.dir_path, exist_ok=True)
             self.matrix = datasets.load_conn_matrices(self.kind, self.parcellation_name)
-            if self.sc_zero_contra:
+            if (self.kind == 'structural') & self.sc_zero_contra:
                 split_hem_idx = helpers.get_split_hem_idx(self.parcellation_name, self.exc_adys)
                 self.matrix.iloc[:split_hem_idx, split_hem_idx:] = 0
                 self.matrix.iloc[split_hem_idx:, :split_hem_idx] = 0
@@ -529,7 +644,7 @@ class ConnectivityMatrix(Matrix):
             self.matrix = self._remove_parcels('adysgranular')
         else:
             self.matrix = self._remove_parcels('allocortex') 
-        # TODO plot
+        self.plot()
 
 
 class MicrostructuralCovarianceMatrix(Matrix):
@@ -584,6 +699,11 @@ class MicrostructuralCovarianceMatrix(Matrix):
             'thickness-density': 'Laminar thickness and microstructural covariance'
         }
         self.label = LABELS[self.input_type]
+        #> set cmap
+        if self.input_type == 'density':
+            self.cmap = sns.color_palette("rocket", as_cmap=True)
+        else: # TODO: use different colors for each input type in the plot in thickness-density
+            self.cmap = sns.color_palette("RdBu_r", as_cmap=True)
         #> directory and filename (prefix which will be used for .npz and .jpg files)
         self.dir_path = self._get_dir_path()
         os.makedirs(self.dir_path, exist_ok=True)
@@ -849,23 +969,3 @@ class MicrostructuralCovarianceMatrix(Matrix):
         sub_dir += f'_metric-{self.similarity_metric}'\
             + f'_scale-{self.similarity_scale}'
         return os.path.join(OUTPUT_DIR, main_dir, sub_dir)
-        
-    def plot(self):
-        """
-        Plot the matrix as heatmap
-        """
-        #> use different colors for different input types
-        if self.input_type == 'thickness':
-            cmap = sns.color_palette("RdBu_r", as_cmap=True)
-        elif self.input_type == 'density':
-            cmap = sns.color_palette("rocket", as_cmap=True)
-        else:
-            # TODO: use different colors for each input type in the plot
-            cmap = sns.color_palette("RdBu_r", as_cmap=True)
-        #> plot the matrix
-        helpers.plot_matrix(
-            self.matrix.values,
-            os.path.join(self.dir_path,'matrix'),
-            cmap=cmap,
-            vrange=(0.025, 0.975)
-            )
