@@ -14,6 +14,8 @@ import brainspace.mesh, brainspace.plotting
 import nilearn.surface
 import nilearn.plotting
 import statsmodels.api as sm
+import scipy.io
+
 import datasets
 
 #> specify the data dir
@@ -152,7 +154,8 @@ def concat_hemispheres(parcellated_data, dropna=False):
     Parameters
     ----------
     parcellated_data: (dict of pd.DataFrame) n_parcels x 6 for laminar data of L and R hemispheres
-    dropna: (bool) remove parcels with no data. Default: False TODO: why removing NaNs here?!
+    dropna: (bool) remove parcels with no data. Default: False
+    TODO: merge this with parcellate
 
     Returns
     ----------
@@ -171,6 +174,67 @@ def concat_hemispheres(parcellated_data, dropna=False):
     if dropna:
         concat_data = concat_data.dropna()
     return concat_data
+
+def downsample(surface_data):
+    """
+    Downsamples `surface data` in bigbrain ico7 space to ico5 by treating the mapping
+    between ico7 and ico5 (previously calculated in `local/downsample_bb.m`) as a
+    pseudo-parcellation, where each parcel consists of the central vertex shared between ico7
+    and ico5 ('bb_downsample') + its neighbors (found in 'nn_bb'). Then the average of
+    each parcel is calculated and the "parcels" (or ico5 central vertices) are ordered
+    to match ico5 surface.
+
+    Parameters
+    ----------
+    surface_data: (np.ndarray or dict of np.ndarray) n_vertices_ico7 x n_features
+
+    Returns
+    ---------
+    downsampled_surface_data: (np.ndarray or dict of np.ndarray) n_vertices_ico5 x n_features
+    """
+    concat_output = False
+    if isinstance(surface_data, np.ndarray):
+        surface_data = {
+            'L': surface_data[:datasets.N_VERTICES_HEM_BB, :],
+            'R': surface_data[datasets.N_VERTICES_HEM_BB:, :],
+        }
+        concat_output = True
+    downsampled_surface_data = {}
+    for hem in ['L', 'R']:
+        #> load the downsampled surface from matlab results
+        mat = scipy.io.loadmat(
+            os.path.join(
+                SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-pial_downsampled.mat'
+                )
+        )
+        #> load the "parcellation map" of downsampled bigbrain surface
+        #  indicating the index for the center vertex of each parcel
+        #  in the original ico7 (320k) BB surface
+        downsample_parcellation = mat['nn_bb'][0, :]-1 #1-indexing to 0-indexing
+        #> then "parcellate" the ico7 data to ico5 by taking
+        #  the average of center vertices and their neighbors
+        #  indicated in 'nn_bb'
+        downsampled = (
+            pd.DataFrame(surface_data[hem], index=downsample_parcellation)
+            .reset_index(drop=False)
+            .groupby('index')
+            .mean()
+        )
+        #> load correctly ordered indices of center vertices
+        #  and reorder downsampled data to the correct order alligned with ico5 surface
+        bb_downsample_indices = mat['bb_downsample'][:, 0]-1 #1-indexing to 0-indexing
+        downsampled_surface_data[hem] = downsampled.loc[bb_downsample_indices].values
+    if concat_output:
+        return np.concatenate([
+            downsampled_surface_data['L'],
+            downsampled_surface_data['R']
+            ], axis=0)
+    else:
+        return downsampled_surface_data
+
+
+
+    
 
 def regress_out_matrix_covariates(input_matrix, cov_matrices, pos_only=True):
     """
@@ -457,34 +521,63 @@ def plot_on_bigbrain_nl(surface_data, filename, inflate=False, layout='horizonta
     figure.savefig(filename, dpi=192)
 
 #### Spin permutation functions ####
-def create_bigbrain_spin_permutations(n_perm=1000, batch_size=20):
+def create_bigbrain_spin_permutations(is_downsampled=True, n_perm=1000, batch_size=20):
     """
     Creates spin permutations of the bigbrain surface sphere and stores the
     vertex indices of spins in batches on 'src' folder
 
-    n_perm: (int) total number of permutations
-    batch_size: (int) number of permutations per batch
+    downsample: (bool) use the downsampled (ico5) version instead of ico7
+    n_perm: (int) total number of permutations.
+    batch_size: (int) number of permutations per batch. Only used if downsample=False
     """
-    print(f"Creating {n_perm} spin permutations")
-    if os.path.exists(os.path.join(SPIN_BATCHES_DIR, 'tpl-bigbrain_desc-spin_indices_batch0.npz')):
-        print("Spin permutation batches already exist")
-        return
-    #> read the bigbrain surface sphere files as a mesh that can be used by spin_permutations function
-    lh_sphere = brainspace.mesh.mesh_io.read_surface(os.path.join(SRC_DIR, 'tpl-bigbrain_hemi-L_desc-sphere_rot_fsaverage.surf.gii'))
-    rh_sphere = brainspace.mesh.mesh_io.read_surface(os.path.join(SRC_DIR, 'tpl-bigbrain_hemi-R_desc-sphere_rot_fsaverage.surf.gii'))
-    #> create permutations of surface_data with preserved spatial-autocorrelation using spin_permutations
-    #  doing it in batches to reduce memory requirements
-    n_batch = n_perm // batch_size
-    for batch in range(n_batch):
-        print('\t\tBatch', batch)
+    #TODO clean the code
+    if is_downsampled:
+        outpath = os.path.join(SRC_DIR, f'tpl-bigbrain_desc-spin_indices_downsampled_n-{n_perm}.npz')
+        if os.path.exists(outpath):
+            print("Spin permutations already exist")
+            return
+        print(f"Creating {n_perm} spin permutations")
+        #> read the bigbrain surface sphere files as a mesh that can be used by _generate_spins function
+        downsampled_sphere_paths = datasets.load_downsampled_surface_paths('sphere')
+        lh_sphere = brainspace.mesh.mesh_io.read_surface(downsampled_sphere_paths['L'])
+        rh_sphere = brainspace.mesh.mesh_io.read_surface(downsampled_sphere_paths['R'])
         spin_idx = brainspace.null_models.spin._generate_spins(
             lh_sphere, rh_sphere, 
-            n_rep = batch_size,
-            random_state = 9*batch, # it's important for random states to be different across batches
+            n_rep = n_perm,
+            random_state = 921,
             )
-        np.savez_compressed(os.path.join(SPIN_BATCHES_DIR, f'tpl-bigbrain_desc-spin_indices_batch{batch}.npz'), lh=spin_idx['lh'], rh=spin_idx['rh'])
+        np.savez_compressed(
+            outpath, 
+            lh=spin_idx['lh'], 
+            rh=spin_idx['rh']
+            )
+    else:    
+        if os.path.exists(os.path.join(SPIN_BATCHES_DIR, 'tpl-bigbrain_desc-spin_indices_batch0.npz')):
+            print("Spin permutation batches already exist")
+            return
+        print(f"Creating {n_perm} spin permutations")
+        #> read the bigbrain surface sphere files as a mesh that can be used by _generate_spins function
+        lh_sphere = brainspace.mesh.mesh_io.read_surface(os.path.join(SRC_DIR, 'tpl-bigbrain_hemi-L_desc-sphere_rot_fsaverage.surf.gii'))
+        rh_sphere = brainspace.mesh.mesh_io.read_surface(os.path.join(SRC_DIR, 'tpl-bigbrain_hemi-R_desc-sphere_rot_fsaverage.surf.gii'))
+        #> create permutations of surface_data with preserved spatial-autocorrelation using _generate_spins
+        #  doing it in batches to reduce memory requirements
+        n_batch = n_perm // batch_size
+        for batch in range(n_batch):
+            print('\t\tBatch', batch)
+            spin_idx = brainspace.null_models.spin._generate_spins(
+                lh_sphere, rh_sphere, 
+                n_rep = batch_size,
+                random_state = 9*batch, # it's important for random states to be different across batches
+                )
+            np.savez_compressed(
+                os.path.join(
+                    SPIN_BATCHES_DIR, f'tpl-bigbrain_desc-spin_indices_batch{batch}.npz'
+                    ), 
+                lh=spin_idx['lh'], 
+                rh=spin_idx['rh']
+                )
 
-def spin_test(surface_data_to_spin, surface_data_target):
+def spin_test(surface_data_to_spin, surface_data_target, n_perm, is_downsampled):
     """
     Performs spin test on the correlation between `surface_data_to_spin` and 
     `surface_data_target` after parcellation, where `surface_data_to_spin` is spun
@@ -493,11 +586,13 @@ def spin_test(surface_data_to_spin, surface_data_target):
     ----------
     surface_data_to_spin: (np.ndarray | dict of np.ndarray) n_vert * n_features in bigbrain surface space of L and R hemispheres
     surface_data_target: (np.ndarray | dict of np.ndarray) n_vert * n_features in bigbrain surface space of L and R hemispheres
-    n_perm: (int) number of spin permutations
-    batch_prefix: (str) batches filename prefix
+    n_perm: (int) number of spin permutations (max: 1000)
+    is_downsampled: (bool) whether the input data is ico5 (downsampled) or ico7
     """
-    #> create spin permutation batches
-    create_bigbrain_spin_permutations()
+    # TODO: consider removing the option of downsample=False
+    #> create spins of indices in batches or a single file
+    create_bigbrain_spin_permutations(n_perm=n_perm, is_downsampled=is_downsampled)
+    assert n_perm <= 1000
     #> split hemispheres if the input is concatenated
     if isinstance(surface_data_to_spin, np.ndarray):
         surface_data_to_spin = {
@@ -529,14 +624,20 @@ def spin_test(surface_data_to_spin, surface_data_target):
         .T.values[np.newaxis, :] # convert it to shape (1, n_features_surface_data_target, n_features_surface_data_to_spin)
     )
     null_distribution = test_r.copy() # will have the shape (n_perms, n_features_surface_data_target, n_features_surface_data_to_spin)
-    for batch_file in sorted(glob.glob(os.path.join(SPIN_BATCHES_DIR, f'tpl-bigbrain_desc-spin_indices_batch*.npz'))):
+    counter = 0
+    if is_downsampled:
+        batch_files = [os.path.join(SRC_DIR, f'tpl-bigbrain_desc-spin_indices_downsampled_n-{n_perm}.npz')]
+    else:
+        batch_files = sorted(glob.glob(os.path.join(SPIN_BATCHES_DIR, f'tpl-bigbrain_desc-spin_indices_batch*.npz')))
+    for batch_file in batch_files:
         print("\t\tBatch", batch_file)
-        #> load the 20-spin batch of spin permutated maps and concatenate left and right hemispheres
+        #> load the batch of spin permutated maps and concatenate left and right hemispheres
         batch_idx = np.load(batch_file) # n_perm * n_vert arrays for 'lh' and 'rh'
         batch_lh_surrogates = surface_data_to_spin['L'][batch_idx['lh']] # n_perm * n_vert * n_features
         batch_rh_surrogates = surface_data_to_spin['R'][batch_idx['rh']]
         concat_batch_surrogates = np.concatenate([batch_lh_surrogates, batch_rh_surrogates], axis=1)
         for perm_idx in range(batch_rh_surrogates.shape[0]):
+            print(counter)
             surrogate = pd.DataFrame(concat_batch_surrogates[perm_idx, :, :])
             #> calculate null correlation coefficient between all gradients and all other surface maps
             null_r = (
@@ -547,9 +648,12 @@ def spin_test(surface_data_to_spin, surface_data_target):
             )
             #> add this to the null distribution
             null_distribution = np.concatenate([null_distribution, null_r], axis=0)
+            counter += 1
             #> free up memory
             del surrogate
             gc.collect()
+        if counter >= n_perm:
+            break
     #> remove the test_r from null_distribution
     null_distribution = null_distribution[1:, :, :]
     #> calculate p value

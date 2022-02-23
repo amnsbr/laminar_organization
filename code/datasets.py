@@ -8,6 +8,7 @@ import helpers
 import enigmatoolbox.datasets
 from cortex.polyutils import Surface
 import scipy.spatial.distance
+import scipy.io
 
 import helpers
 
@@ -20,6 +21,70 @@ SRC_DIR = os.path.join(cwd, '..', 'src')
 
 #> constants / configs
 N_VERTICES_HEM_BB = 163842
+N_VERTICES_HEM_BB_ICO5 = 10242
+
+def load_downsampled_surface_paths(kind='orig'):
+    """
+    Loads or creates downsampled surfaces of bigbrain left and right hemispheres
+    (from ico7 to ico5)
+    The actual downsampling is done in `local/downsample_bb.m` in matlab and this
+    function just makes it python-readable
+
+    Parameters
+    ----------
+    kind: (str)
+        - 'orig'
+        - 'inflated'
+        - 'sphere'
+
+    Returns
+    ------
+    paths: (dict of str) path to downsampled surfaces of L and R
+    """
+    paths = {}
+    for hem in ['L', 'R']:
+        paths[hem] = os.path.join(
+            SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-pial_downsampled_{kind}.surf.gii'
+            )
+        if os.path.exists(paths[hem]):
+            continue
+        #> load the faces and coords of downsampled surface from matlab results
+        mat = scipy.io.loadmat(
+            os.path.join(
+                SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-pial_downsampled.mat'
+                )
+        )
+        faces = mat['BB10'][0,0][0]-1 # 1-indexing of matlab to 0-indexing of python
+        coords = mat['BB10'][0,0][1].T
+        if kind != 'orig':
+            #> load the sphere|inflated ico7 surface to use their coordinates
+            if kind == 'sphere':
+                deformed_path = os.path.join(SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-sphere_rot_fsaverage.surf.gii')
+            else:
+                deformed_path = os.path.join(SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-mid.surf.inflate.gii')
+            deformed_ico7 = nilearn.surface.load_surf_mesh(deformed_path)
+            #> get the coordinates of central vertices which are in both ico7 and ico5.
+            #  Note that for faces we will use the faces of non-deformed version of ico5
+            #  surface, as it wouldn be the same regardless of the shape of surface (i.e.,
+            #  the position of vertices)
+            bb_downsample_indices = mat['bb_downsample'][:, 0]-1 #1-indexing to 0-indexing
+            coords = deformed_ico7.coordinates[bb_downsample_indices]
+        #> save it as gifti
+        bb10_gifti = nibabel.gifti.gifti.GiftiImage(
+            darrays = [
+                nibabel.gifti.gifti.GiftiDataArray(
+                    data=coords,
+                    intent='NIFTI_INTENT_POINTSET'
+                    ),
+                nibabel.gifti.gifti.GiftiDataArray(
+                    data=faces,
+                    intent='NIFTI_INTENT_TRIANGLE'
+                    )
+            ])
+        nibabel.save(bb10_gifti, paths[hem])
+    return paths
+
+
 
 def load_curvature_maps():
     """
@@ -346,7 +411,7 @@ def load_laminar_density(exc_masks=None, method='mean'):
             profiles = np.load(
                 os.path.join(
                     SRC_DIR,
-                    f'tpl-bigbrain_hemi-{hem[0].upper()}_desc-layer-{layer_num}_profiles_nsurf-10.npz'
+                    f'tpl-bigbrain_hemi-{hem[0].upper()}_desc-layer{layer_num}_profiles_nsurf-10.npz'
                     ))['profiles']
             if method == 'mean':
                 laminar_density[hem][:, layer_num-1] = profiles.mean(axis=0)
