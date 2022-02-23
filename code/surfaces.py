@@ -7,11 +7,89 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import cmcrameri.cm # color maps
 import brainspace.gradient
+import scipy.stats
 
 import helpers
 import datasets
 
-class MicrostructuralCovarianceGradients:
+#> specify directories
+abspath = os.path.abspath(__file__)
+cwd = os.path.dirname(abspath)
+OUTPUT_DIR = os.path.join(cwd, '..', 'output')
+SRC_DIR = os.path.join(cwd, '..', 'src')
+
+
+class CorticalSurface:
+    """
+    Generic class for common functions on cortical surfaces
+    """
+    def correlate(self, other, parcellation_name=None, n_perm=1000):
+        """
+        Calculate the correlation of surface maps with spin test
+        and plot the scatter plots
+        """
+        #> spin test
+        print(f"\tCalculating correlations with spin test")
+        coefs, pvals, coefs_null_dist =  helpers.spin_test(
+            surface_data_to_spin = self.surf_data, 
+            surface_data_target = other.surf_data,
+            n_perm=n_perm
+            )
+        #> save null distribution for future reference
+        np.savez_compressed(
+            os.path.join(self.dir_path, f'correlation_{other.label.lower().replace(" ", "_")}_null.npz'),
+            coefs_null_dist=coefs_null_dist
+        )
+        #> clean and save the results
+        coefs = pd.DataFrame(coefs)
+        pvals = pd.DataFrame(pvals)
+        coefs.columns = pvals.columns = self.columns
+        coefs.index = pvals.index = other.columns
+        coefs.to_csv(
+            os.path.join(self.dir_path, f'correlation_{other.label.lower().replace(" ", "_")}_coefs.csv')
+            )
+        pvals.to_csv(
+            os.path.join(self.dir_path, f'correlation_{other.label.lower().replace(" ", "_")}_pvals.csv')
+            )
+        #> regression plots
+        if not parcellation_name:
+            parcellation_name = 'sjh' # TODO: change to downsampled bb
+        x_parcellated = helpers.parcellate(self.surf_data, parcellation_name)
+        x_parcellated.columns = self.columns
+        y_parcellated = helpers.parcellate(other.surf_data, parcellation_name)
+        y_parcellated.columns = other.columns
+        for x_column in self.columns:
+            for y_column in other.columns:
+                fig, ax = plt.subplots(figsize=(4, 4))
+                sns.regplot(
+                    x=x_parcellated.loc[:,x_column], 
+                    y=y_parcellated.loc[:,y_column],
+                    color='grey', # TODO change this for each correlation 
+                    scatter_kws={'alpha':0.2, 's':5},
+                    ax=ax)
+                sns.despine(offset=10, trim=True, ax=ax)
+                ax.set_xlabel(x_column)
+                ax.set_ylabel(y_column)
+                #> add correlation coefficients and p vals on the figure
+                text_x = ax.get_xlim()[0]+(ax.get_xlim()[1]-ax.get_xlim()[0])*0.05
+                text_y = ax.get_ylim()[0]+(ax.get_ylim()[1]-ax.get_ylim()[0])*0.05
+                ax.text(text_x, text_y, 
+                        f'r = {coefs.loc[y_column, x_column]:.2f}; $\mathregular{{p_{{spin}}}}$ = {pvals.loc[y_column, x_column]:.2f}',
+                        color='black',
+                        size=8,
+                        multialignment='left')
+                fig.tight_layout()
+                fig.savefig(
+                    os.path.join(
+                        self.dir_path, 
+                        'correlation_'\
+                        + f'{x_column.lower().replace(" ", "_")}_'\
+                        + f'{y_column.lower().replace(" ", "_")}.png'),
+                    dpi=192
+                    )
+
+
+class MicrostructuralCovarianceGradients(CorticalSurface):
     """
     Creates and plots gradients of microstructural covariance
     """
@@ -41,6 +119,15 @@ class MicrostructuralCovarianceGradients:
         self.n_parcels = self.matrix_obj.matrix.shape[0]
         self.n_matrices = self.matrix_obj.matrix.shape[1] // self.n_parcels
         self._sparsity = 1 - ((1 - sparsity) * self.n_matrices)
+        # column names
+        self.columns = [f'G{num}' for num in range(1, n_components_create+1)]
+        # label
+        LABELS = {
+            'thickness': 'Laminar thickness covariance',
+            'density': 'Microstructural covariance',
+            'thickness-density': 'Laminar thickness and microstructural covariance'
+        }
+        self.label = LABELS[self.matrix_obj.input_type]
         # directory
         self.dir_path = self._get_dir_path()
         os.makedirs(self.dir_path, exist_ok=True)
@@ -76,7 +163,7 @@ class MicrostructuralCovarianceGradients:
             index=self.matrix_obj.matrix.index
             )
         #> project to surface
-        self.gradients_surface = helpers.deparcellate(
+        self.surf_data = helpers.deparcellate(
             self.labeled_gradients,
             self.matrix_obj.parcellation_name
             )
@@ -104,7 +191,7 @@ class MicrostructuralCovarianceGradients:
             )
         np.savez_compressed(
             os.path.join(self.dir_path,'gradients_surface.npz'),
-            surface=self.gradients_surface
+            surface=self.surf_data
             )
         np.savetxt(
             os.path.join(self.dir_path,'lambdas.txt'),
@@ -119,7 +206,7 @@ class MicrostructuralCovarianceGradients:
             os.path.join(self.dir_path, 'gradients_parcels.csv'),
             index_col='parcel')
         self.labeled_gradients.columns = self.labeled_gradients.columns.map(int)
-        self.gradients_surface = np.load(os.path.join(self.dir_path, 'gradients_surface.npz'))['surface']
+        self.surf_data = np.load(os.path.join(self.dir_path, 'gradients_surface.npz'))['surface']
         self.lambdas = np.loadtxt(os.path.join(self.dir_path, 'lambdas.txt'))
 
     def plot_surface(self, layout='grid', inflate=False):
@@ -129,7 +216,7 @@ class MicrostructuralCovarianceGradients:
         """
         for gradient_num in range(1, self._n_components_report+1):
             helpers.plot_on_bigbrain_nl(
-                self.gradients_surface[:, gradient_num-1],
+                self.surf_data[:, gradient_num-1],
                 filename=os.path.join(self.dir_path, f'surface_{layout}_G{gradient_num}.png'),
                 layout=layout,
                 inflate=inflate,
@@ -301,3 +388,104 @@ class MicrostructuralCovarianceGradients:
                 bins=10, 
                 orientation='horizontal', figsize=(6,4))
             clfig.savefig(os.path.join(self.dir_path, f'binned_profile_G{gradient_num}_clbar.png'), dpi=192)
+
+class StructuralFeatures(CorticalSurface):
+    label = 'Structural features'
+    regplot_color = 'C3'
+    def __init__(self, correct_curvature):
+        """
+        Structural features including
+        
+        Parameters
+        ----------
+        correct_curvature: (str or None)
+            - 'volume' [default]: normalize relative thickness by curvature according to the 
+            equivolumetric principle i.e., use relative laminar volume instead of relative laminar 
+            thickness. Laminar volume is expected to be less affected by curvature.
+            - 'regress': regresses map of curvature out from the map of relative thickness
+            of each layer (separately) using a linear regression. This is a more lenient approach of 
+            controlling for curvature.
+            - None
+        """
+        self.correct_curvature = correct_curvature
+        self.dir_path = OUTPUT_DIR
+        self.file_path = os.path.join(SRC_DIR, 'structural_features.npz')
+        if os.path.exists(self.file_path):
+            with np.load(self.file_path) as loaded_data:
+                self.surf_data = loaded_data['surface']
+                self.columns = loaded_data['columns']
+        else:
+            self._create()
+            np.savez_compressed(
+                self.file_path,
+                surface=self.surf_data,
+                columns=self.columns
+            )
+            
+    
+    def _create(self):
+        self.columns = []
+        features = []
+        #> Absolute thicknesses
+        abs_laminar_thickness = datasets.load_laminar_thickness(
+            regress_out_curvature=False,
+            normalize_by_total_thickness=False
+        )
+        abs_laminar_thickness = np.concatenate(
+            [abs_laminar_thickness['L'], abs_laminar_thickness['R']], axis=0
+            )
+        features.append(abs_laminar_thickness)
+        self.columns += [f'Layer {num} thickness (absolute)' for num in range(1, 7)]
+        #> Total cortical thickness
+        total_thickness = abs_laminar_thickness.sum(axis=1)[:, np.newaxis]
+        features.append(total_thickness)
+        self.columns += ['Total thickness']
+        #> Relative thicknesses/volumes
+        if self.correct_curvature == 'volume':
+            rel_laminar_thickness = datasets.load_laminar_volume()
+        elif self.correct_curvature == 'regress':
+            rel_laminar_thickness = datasets.load_laminar_thickness(
+                regress_out_curvature=True,
+                normalize_by_total_thickness=True,
+                )
+        else:
+            rel_laminar_thickness = datasets.load_laminar_thickness(
+                regress_out_curvature=False,
+                normalize_by_total_thickness=True,
+                )
+        rel_laminar_thickness = np.concatenate(
+            [rel_laminar_thickness['L'], rel_laminar_thickness['R']], axis=0
+            )
+        features.append(rel_laminar_thickness)
+        self.columns += [f'Layer {num} thickness (relative)' for num in range(1, 7)]
+        #> Deep thickness ratio
+        deep_thickness_ratio = rel_laminar_thickness[:, 3:].sum(axis=1)[:, np.newaxis]
+        features.append(deep_thickness_ratio)
+        self.columns += ['Deep laminar thickness ratio']
+        #> Laminar densities
+        laminar_density = datasets.load_laminar_density()
+        laminar_density = np.concatenate(
+            [laminar_density['L'], laminar_density['R']], axis=0
+            )
+        features.append(laminar_density)
+        self.columns += [f'Layer {num} density' for num in range(1, 7)]
+        #> Microstructural profile moments
+        density_profiles = datasets.load_total_depth_density()
+        density_profiles = np.concatenate(
+            [density_profiles['L'], density_profiles['R']], axis=0
+            )
+        features += [
+            np.mean(density_profiles, axis=1)[:, np.newaxis],
+            np.std(density_profiles, axis=1)[:, np.newaxis],
+            scipy.stats.skew(density_profiles, axis=1)[:, np.newaxis],
+            scipy.stats.kurtosis(density_profiles, axis=1)[:, np.newaxis]
+        ]
+        self.columns += ['Density mean', 'Density std', 'Density skewness', 'Density kurtosis']
+        #> Curvature
+        curvature = datasets.load_curvature_maps()
+        curvature = np.concatenate(
+            [curvature['L'], curvature['R']]
+            )[:, np.newaxis]
+        features.append(curvature)
+        self.columns += ['Mean curvature']
+        self.surf_data = np.hstack(features)

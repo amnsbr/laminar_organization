@@ -1,7 +1,7 @@
 import datasets
 import helpers
 import matrices
-import gradients
+import surfaces
 
 def run():
     for parcellation_name in ['sjh', 'schaefer400']:
@@ -37,7 +37,7 @@ def run():
                     )
                     # TODO: add matrix associations
                     # TODO: add more loops for different gradient options
-                    gradients_obj = gradients.MicrostructuralCovarianceGradients(
+                    gradients_obj = surfaces.MicrostructuralCovarianceGradients(
                         matrix_obj,
                     )
                     gradients_obj.plot_binned_profile()
