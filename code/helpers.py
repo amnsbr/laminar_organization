@@ -465,7 +465,8 @@ def plot_on_bigbrain_brainspace(surface_data_files, outfile=None):
         color_bar=True, interactive=False, embed_nb=False, size=(1600, 400), zoom=1.2,
         screenshot=True, filename=outfile, transparent_bg=True, offscreen=True)
 
-def plot_on_bigbrain_nl(surface_data, filename, inflate=False, layout='horizontal', cmap='viridis'):
+def plot_on_bigbrain_nl(surface_data, filename, inflate=False, plot_downsampled=True,
+                        layout='horizontal', cmap='viridis'):
     """
     Plots the `surface_data_files` on the bigbrain space and saves it in `outfile`
     using nilearn
@@ -475,6 +476,7 @@ def plot_on_bigbrain_nl(surface_data, filename, inflate=False, layout='horizonta
     surface_data: (np.ndarray or dict of np.ndarray) (n_vert,) surface data: concatenated or 'L' and 'R' hemispheres
     filename: (str) path to output; default would be the same as surface file
     inflate: (bool) whether to plot the inflated surface
+    plot_downsampled: (bool) whether to plot the ico5 vs ico7 surface
     layout:
         - horizontal: left-lateral, left-medial, right-medial, right-lateral
         - grid: lateral views on the top and medial views on the bottom
@@ -489,6 +491,8 @@ def plot_on_bigbrain_nl(surface_data, filename, inflate=False, layout='horizonta
         surface_data = {'L': lh_surface_data, 'R': rh_surface_data}
     else:
         assert surface_data['L'].shape[0] == datasets.N_VERTICES_HEM_BB
+    if plot_downsampled:
+        surface_data = downsample(surface_data)
     #> initialize the figures
     if layout == 'horizontal':
         figure, axes = plt.subplots(1, 4, figsize=(24, 5), subplot_kw={'projection': '3d'})
@@ -499,22 +503,34 @@ def plot_on_bigbrain_nl(surface_data, filename, inflate=False, layout='horizonta
         axes = np.array([axes[0, 0], axes[1, 0], axes[1, 1], axes[0, 1]])
     curr_ax_idx = 0
     for hemi in ['left', 'right']:
-        #> plot the medial and lateral views
+        #> specify the mesh
+        if plot_downsampled:
+            if inflate:
+                mesh_path = datasets.load_downsampled_surface_paths('inflated')[hemi[0].upper()]
+            else:
+                mesh_path = datasets.load_downsampled_surface_paths('orig')[hemi[0].upper()]
+        else:
+            if inflate:
+                mesh_path = os.path.join(
+                    SRC_DIR, f'tpl-bigbrain_hemi-{hemi[0].upper()}_desc-mid.surf.inflated.gii'
+                    )
+            else:
+                mesh_path = os.path.join(
+                    SRC_DIR, f'tpl-bigbrain_hemi-{hemi[0].upper()}_desc-mid.surf.gii'
+                    )
+        #> specify the view order
         if hemi == 'left':
             views_order = ['lateral', 'medial']
-            mesh_path = os.path.join(SRC_DIR, 'tpl-bigbrain_hemi-L_desc-mid.surf.gii')
         else:
             views_order = ['medial', 'lateral']
-            mesh_path = os.path.join(SRC_DIR, 'tpl-bigbrain_hemi-R_desc-mid.surf.gii')
-        if inflate:
-            mesh_path = mesh_path.replace('.surf', '.surf.inflate')
+        #> plot
         for view in views_order:
             nilearn.plotting.plot_surf(
                 mesh_path,
                 surface_data[hemi[0].upper()],
                 hemi=hemi, view=view, axes=axes[curr_ax_idx],
-                cmap=cmap
-            )
+                cmap=cmap,
+                )
             curr_ax_idx += 1
     figure.subplots_adjust(wspace=0, hspace=0)
     figure.tight_layout()

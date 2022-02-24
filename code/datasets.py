@@ -86,7 +86,7 @@ def load_downsampled_surface_paths(kind='orig'):
 
 
 
-def load_curvature_maps():
+def load_curvature_maps(downsampled=False):
     """
     Creates the map of curvature for the bigbrain surface
     using pycortex or loads it if it already exist
@@ -99,18 +99,21 @@ def load_curvature_maps():
     for hem in ['L', 'R']:
         curvature_filepath = os.path.join(
             OUTPUT_DIR, 'curvature', 
-            f'tpl-bigbrain_hemi-{hem}_desc-mean_curvature.npy'
+            f'tpl-bigbrain_hemi-{hem}'\
+            + f'_desc-{"downsampled_" if downsampled else ""}mean_curvature.npy'
             )
         if os.path.exists(curvature_filepath):
             curvature_maps[hem] = np.load(curvature_filepath)
             continue
         #> load surface
-        vertices, faces = nilearn.surface.load_surf_mesh(
-            os.path.join(
+        if downsampled:
+            mesh_path = load_downsampled_surface_paths('orig')[hem]
+        else:
+            mesh_path = os.path.join(
                 SRC_DIR,
-                f'tpl-bigbrain_hemi-{hem}_desc-mid.surf.gii'
+                f'tpl-bigbrain_hemi-{hem}_desc-pial.surf.gii'
                 )
-        )
+        vertices, faces = nilearn.surface.load_surf_mesh(mesh_path)
         surface = Surface(vertices, faces)
         #> calculate mean curvature
         curvature = surface.mean_curvature()

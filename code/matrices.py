@@ -1,7 +1,6 @@
 import os
 import numpy as np
 import nilearn.surface
-from pyrsistent import v
 import sklearn as sk
 import scipy.stats
 import subprocess
@@ -695,8 +694,8 @@ class MicrostructuralCovarianceMatrix(Matrix):
         #> set the label based on input type
         LABELS = {
             'thickness': 'Laminar thickness covariance',
-            'density': 'Microstructural covariance',
-            'thickness-density': 'Laminar thickness and microstructural covariance'
+            'density': 'Microstructural profile covariance',
+            'thickness-density': 'Laminar thickness and microstructural profile covariance'
         }
         self.label = LABELS[self.input_type]
         #> set cmap
@@ -828,7 +827,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
             #> zero out negative correlations
             matrix[matrix<0] = 0
             #> zero out correlations of 1 (to avoid division by 0)
-            matrix[matrix==1] = 0
+            matrix[np.isclose(matrix, 1)] = 0
             #> Fisher's z-transformation
             matrix = 0.5 * np.log((1 + matrix) /  (1 - matrix))
             #> zero out NaNs and inf
@@ -923,33 +922,51 @@ class MicrostructuralCovarianceMatrix(Matrix):
         all processes are completed on the input matrices
         """
         rank_normalized_matrices = []
-        #> rank normalize the first matrix
-        rank_normalized_matrices.append(
-            pd.DataFrame(
-                scipy.stats.rankdata(matrices[0].values)
-                .reshape(matrices[0].shape)
-            )
-        )
-        #> rank normalize and rescale next matrices
-        for matrix in matrices[1:]:
+        for idx, matrix in enumerate(matrices):
             #> rank normalize (and flatten) the matrix
             rank_normalized_matrix_flat = scipy.stats.rankdata(matrix.values)
-            #> rescale it by the first matrix
-            rank_normalized_rescaled_matrix_flat = np.interp(
-                rank_normalized_matrix_flat,
-                (rank_normalized_matrix_flat.min(), rank_normalized_matrix_flat.max()),
-                (rank_normalized_matrices[0].values.min(), rank_normalized_matrices[0].values.max())
-            )
+            if idx > 0:
+                #> rescale it by the first matrix
+                rank_normalized_matrix_flat = np.interp(
+                    rank_normalized_matrix_flat,
+                    (rank_normalized_matrix_flat.min(), rank_normalized_matrix_flat.max()),
+                    (rank_normalized_matrices[0].min(), rank_normalized_matrices[0].max())
+                    )
             rank_normalized_matrices.append(
-                pd.DataFrame(
-                    rank_normalized_rescaled_matrix_flat.reshape(matrix.shape)
+                rank_normalized_matrix_flat.reshape(matrix.shape)
                 )
-            )
-        #> fuse the matrices horizontally as a pd.DataFrame and label it
-        fused_matrix = pd.concat(rank_normalized_matrices, axis=1)
-        fused_matrix.index = matrices[0].index
-        fused_matrix.columns = matrices[0].index.tolist() * len(matrices)
+        #> fuse the matrices horizontally
+        fused_matrix = np.hstack(rank_normalized_matrices)
+        #> rescale to 0-1 (which also zeros out originally zero values)
+        fused_matrix = np.interp(
+            fused_matrix.flatten(),
+            (fused_matrix.flatten().min(), fused_matrix.flatten().max()), # from
+            (0, 1) # to
+        ).reshape(fused_matrix.shape)
+        fused_matrix = pd.DataFrame(
+            fused_matrix,
+            index = matrices[0].index,
+            columns = matrices[0].index.tolist() * len(matrices)
+        )
         return fused_matrix
+
+    def _make_sparse_fairly(self, sparsity):
+        """
+        Applies sparsity to a fused matrix fairly to the
+        matrices so that the same number of nodes are selected
+        per region per matrix, and the same number are zeroed out
+        """
+        #TODO this is called from MicrostructuralCovarianceGradients. Fix it!
+        n_parcels = self.matrix.shape[0]
+        n_matrices = self.matrix.shape[1] // n_parcels
+        split_matrices = []
+        for i in range(n_matrices):
+            split_matrix = self.matrix.copy().iloc[:, n_parcels*(i):n_parcels*(i+1)]
+            selected_edges = split_matrix.apply(lambda row: row>=row.quantile(sparsity), axis=1)
+            split_matrix[~selected_edges]=0
+            split_matrices.append(split_matrix)
+        return np.hstack(split_matrices)
+
 
     def _get_dir_path(self):
         """
