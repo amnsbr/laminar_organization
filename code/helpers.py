@@ -79,7 +79,8 @@ def download_bigbrain_ftp(ftp_dir, ftp_filename, out_filename=None, copy_to=None
 
 ###### Data manipulation ######
 
-def parcellate(surface_data, parcellation_name, averaging_method='median', na_midline=True):
+def parcellate(surface_data, parcellation_name, averaging_method='median', 
+               na_midline=True):
     """
     Parcellates `surface data` using `parcellation` and by taking the
     median or mean (specified via `averaging_method`) of the vertices within each parcel.
@@ -99,8 +100,13 @@ def parcellate(surface_data, parcellation_name, averaging_method='median', na_mi
     parcellated_data: (pd.DataFrame or dict of pd.DataFrame) n_parcels x n_features for data of L and R hemispheres or both hemispheres
     """
     if isinstance(surface_data, dict):
+        #> determine if the surface data is downsampled
+        is_downsampled = (surface_data['L'].shape[0] == datasets.N_VERTICES_HEM_BB_ICO5)
         #> load parcellation map
-        labeled_parcellation_maps = datasets.load_parcellation_map(parcellation_name, concatenate=False)
+        labeled_parcellation_maps = datasets.load_parcellation_map(
+            parcellation_name, 
+            concatenate=False,
+            downsampled=is_downsampled)
         parcellated_data = {}
         for hem in ['L', 'R']:
             #> parcellate
@@ -124,8 +130,13 @@ def parcellate(surface_data, parcellation_name, averaging_method='median', na_mi
             else:
                 parcellated_data[hem] = parcellated_vertices
     elif isinstance(surface_data, np.ndarray):
+        #> determine if the surface data is downsampled
+        is_downsampled = (surface_data.shape[0] == datasets.N_VERTICES_HEM_BB_ICO5*2)
         #> load parcellation map
-        labeled_parcellation_maps = datasets.load_parcellation_map(parcellation_name, concatenate=True)
+        labeled_parcellation_maps = datasets.load_parcellation_map(
+            parcellation_name, 
+            concatenate=True,
+            downsampled=is_downsampled)
         #> parcellate
         parcellated_vertices = (
             pd.DataFrame(surface_data, index=labeled_parcellation_maps)
@@ -325,7 +336,7 @@ def regress_out_surf_covariates(input_surface_data, cov_surface_data, sig_only=F
         cleaned_surface_data /= cleaned_surface_data.sum(axis=1, keepdims=True)    
     return cleaned_surface_data
 
-def deparcellate(parcellated_data, parcellation_name):
+def deparcellate(parcellated_data, parcellation_name, downsampled=False):
     """
     Project the parcellated data to surface vertices while handling empty parcels
     (parcels that are not in the parcellated data but are in the parcellation map)
@@ -334,15 +345,20 @@ def deparcellate(parcellated_data, parcellation_name):
     ----------
     parcellated_data: (pd.DataFrame | pd.Series) n_parcels x n_features
     parcellation_name: (str)
+    downsampled: (bool)
 
     Returns
     -------
     surface_map: (np.ndarray) n_vertices [both hemispheres] x n_features
     """
     #> load concatenated parcellation map
-    concat_parcellation_map = datasets.load_parcellation_map(parcellation_name, concatenate=True)
+    concat_parcellation_map = datasets.load_parcellation_map(
+        parcellation_name, concatenate=True, downsampled=downsampled)
     #> load dummy parcellated data covering the whole brain
-    dummy_surf_data = np.zeros(datasets.N_VERTICES_HEM_BB)
+    if downsampled:
+        dummy_surf_data = np.zeros(datasets.N_VERTICES_HEM_BB_ICO5)
+    else:
+        dummy_surf_data = np.zeros(datasets.N_VERTICES_HEM_BB)
     parcellated_dummy = parcellate(
         {'L': dummy_surf_data,
          'R': dummy_surf_data,},
@@ -512,7 +528,7 @@ def plot_on_bigbrain_nl(surface_data, filename, inflate=False, plot_downsampled=
         else:
             if inflate:
                 mesh_path = os.path.join(
-                    SRC_DIR, f'tpl-bigbrain_hemi-{hemi[0].upper()}_desc-mid.surf.inflated.gii'
+                    SRC_DIR, f'tpl-bigbrain_hemi-{hemi[0].upper()}_desc-mid.surf.inflate.gii'
                     )
             else:
                 mesh_path = os.path.join(
@@ -607,8 +623,8 @@ def spin_test(surface_data_to_spin, surface_data_target, n_perm, is_downsampled)
     """
     # TODO: consider removing the option of downsample=False
     #> create spins of indices in batches or a single file
-    create_bigbrain_spin_permutations(n_perm=n_perm, is_downsampled=is_downsampled)
     assert n_perm <= 1000
+    create_bigbrain_spin_permutations(n_perm=n_perm, is_downsampled=is_downsampled)
     #> split hemispheres if the input is concatenated
     if isinstance(surface_data_to_spin, np.ndarray):
         surface_data_to_spin = {

@@ -1,5 +1,6 @@
 
 import os
+import itertools
 import numpy as np
 import scipy.spatial.distance
 import pandas as pd
@@ -8,7 +9,8 @@ import seaborn as sns
 import cmcrameri.cm # color maps
 import brainspace.gradient
 import scipy.stats
-import copy
+import ptitprince
+import enigmatoolbox
 
 import helpers
 import datasets
@@ -420,7 +422,6 @@ class MicrostructuralCovarianceGradients(CorticalSurface):
 
 class StructuralFeatures(CorticalSurface):
     label = 'Structural features'
-    regplot_color = 'C3'
     def __init__(self, correct_curvature):
         """
         Structural features including
@@ -511,7 +512,273 @@ class StructuralFeatures(CorticalSurface):
         self.surf_data = np.hstack(features)
 
 class CorticalTypes(CorticalSurface):
-    pass
+    """
+    Map of cortical types
+    """
+    label = 'Cortical Types'
+    def __init__(self, exc_adys=True):
+        """
+        Loads the map of cortical types for `parcellation_name`
+        """
+        self.surf_data = datasets.load_cortical_types().cat.codes.values.reshape(-1, 1)
+        self.columns = ['Cortical Types']
+        self.exc_adys = exc_adys
+        self.type_colors = sns.color_palette("RdYlGn_r", 6)
+        if self.exc_adys:
+            self.included_types = ['EU1', 'EU2', 'EU3', 'KO']
+            self.excluded_types = [np.NaN, 'ALO', 'AG', 'DG']
+            self.type_colors = self.type_colors[2:]
+        else:
+            self.included_types = ['AG', 'DG', 'EU1', 'EU2', 'EU3', 'KO']
+            self.excluded_types = [np.NaN, 'ALO']
+        self.n_types = len(self.included_types)
 
-class DiseaseThicknessDiff(CorticalSurface):
-    pass
+    
+    def _parcellate_and_type(self, surf_data, columns, parcellation_name):
+        """
+        Parcellates other.surf_data and adds a column for cortical type of each parcel
+        to it
+
+        Parameters
+        ---------
+        surf_data (np.ndarray): n_vert x n_features
+        columns (list of str): names of columns
+        parcellation_name (str)
+
+        Returns
+        --------
+        parcellated_data (pd.DataFrame)
+        """
+        #> parcellate the continous data
+        parcellated_data = helpers.parcellate(surf_data, parcellation_name)
+        parcellated_data.columns = columns
+        #> add the cortical type of parcels to the parcellated data
+        is_downsampled = (surf_data.shape[0] == datasets.N_VERTICES_HEM_BB_ICO5*2)
+        parcellated_data.loc[:, 'Cortical Type'] = datasets.load_cortical_types(parcellation_name, downsampled=is_downsampled)
+        #> exclude allocortical +/- a/dysgranular regions
+        parcellated_data = parcellated_data[~parcellated_data['Cortical Type'].isin(self.excluded_types)]
+        parcellated_data['Cortical Type'] = parcellated_data['Cortical Type'].cat.remove_unused_categories()
+        return parcellated_data
+
+    def _plot_raincloud(self, parcellated_data, column, out_dir):
+        """
+        Plots the raincloud of the `column` from `parcellated_data`
+        across cortical types and saves it in `out_dir`
+        """
+        fig, ax = plt.subplots(figsize=(5, 5))
+        ax = ptitprince.RainCloud(
+            data=parcellated_data, 
+            y=column,
+            x='Cortical Type',
+            palette=self.type_colors,
+            bw = 0.2, width_viol = 1, 
+            orient = 'h', move = 0.2, alpha = 0.4,
+            ax=ax)
+        sns.despine(ax=ax, offset=10, trim=True)
+        fig.tight_layout()
+        fig.savefig(os.path.join(out_dir, f'{column}_raincloud'), dpi=192)
+        #> colorbar with the correct vmin and vmax
+        clbar_fig = helpers.make_colorbar(
+            ax.get_xticks()[0], ax.get_xticks()[-1], 
+            figsize=(4, 4), orientation='horizontal')
+        clbar_fig.tight_layout()
+        clbar_fig.savefig(os.path.join(out_dir, f'{column}_raincloud_clbar'), dpi=192)
+
+    def _plot_binned_stacked_bar(self, parcellated_data, column, out_dir, nbins):
+        """
+        Plots the binned stacked of the `column` from `parcellated_data`
+        across cortical types and saves it in `out_dir`
+        """
+        #>> assign each vertex to one of the 10 bins
+        _, bin_edges = np.histogram(parcellated_data.loc[:,column], bins=nbins)
+        parcellated_data[f'{column}_bin'] = np.digitize(parcellated_data.loc[:,column], bin_edges[:-1])
+        #>> calculate ratio of cortical types in each bin
+        bins_types_counts = (parcellated_data
+                            .groupby([f'{column}_bin','Cortical Type'])
+                            .size().unstack(fill_value=0))
+        bins_types_freq = bins_types_counts.divide(bins_types_counts.sum(axis=1), axis=0)
+        #>> plot stacked bars at each bin showing freq of the cortical types
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.bar(
+            x = bins_types_freq.index,
+            height = bins_types_freq.iloc[:, 0],
+            width = 0.95,
+            color=self.type_colors[0],
+            label=self.included_types[0]
+            )
+        for type_idx in range(1, self.n_types):
+            ax.bar(
+                x = bins_types_freq.index,
+                height = bins_types_freq.iloc[:, type_idx],
+                width = 0.95,
+                bottom = bins_types_freq.cumsum(axis=1).iloc[:, type_idx-1],
+                color=self.type_colors[type_idx],
+                label=self.included_types[type_idx]
+                )
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_xlabel(f'{column} bins')
+        ax.set_ylabel('Proportion of cortical types')
+        for _, spine in ax.spines.items():
+            spine.set_visible(False)
+        ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+        fig.tight_layout()
+        fig.savefig(os.path.join(out_dir, f'{column}_stacked_bar'), dpi=192)
+        clfig = helpers.make_colorbar(
+            parcellated_data[column].min(), parcellated_data[column].max(),
+            bins=nbins, orientation='horizontal', figsize=(6,4))
+        clfig.savefig(os.path.join(out_dir, f'{column}_stacked_bar_clbar'), dpi=192)
+
+    def _anova(self, parcellated_data, column, output='text', force_posthocs=False):
+        """
+        Compares value of parcellated data across cortical types using ANOVA and
+        post-hoc t-tests
+
+        Parameters
+        ---------
+        parcellated_data: (pd.DataFrame) with parcellated surface data and cortical types
+        column: (str) the selected column
+        output: (str)
+            - text: returns human readable text of the results
+            - stats: returns F and T stats
+        force_posthocs: do and report post-hocs regardless of p-values
+
+        Returns
+        ---------
+        anova_res_str (str): results of anova and post-hocs as text
+        OR
+        anova_res (pd.Series): F and T stats of anova and post-hocs
+        """
+        F, p_val = (scipy.stats.f_oneway(*[
+                                    cortical_type_data[1][column].dropna().values \
+                                    for cortical_type_data in parcellated_data.groupby('Cortical Type')
+                                    ]))
+        anova_res_str = f'----\n{column}: F statistic {F}, pvalue {p_val}\n'
+        anova_res = pd.Series({'F': F})
+        if (p_val < 0.05) or force_posthocs:
+            alpha = 0.05 / len(list(itertools.combinations(parcellated_data['Cortical Type'].cat.categories, 2))) #bonferroni correction
+            if force_posthocs:
+                anova_res_str += f"\tPost-hoc T-tests:\n"
+            else:
+                anova_res_str += f"\tPost-hoc T-tests passing alpha of {alpha}:\n"
+            for type1, type2 in itertools.combinations(parcellated_data['Cortical Type'].cat.categories, 2):
+                t_statistic, t_p = scipy.stats.ttest_ind(
+                    parcellated_data.loc[parcellated_data['Cortical Type']==type1, column].dropna(),
+                    parcellated_data.loc[parcellated_data['Cortical Type']==type2, column].dropna(),
+                )
+                anova_res.loc[f'{type1}-{type2}'] = t_statistic
+                if (t_p < alpha) or (force_posthocs):
+                    anova_res_str += f"\t\t{type1} vs {type2}: T {t_statistic}, p {t_p}\n"
+        if output == 'text':
+            return anova_res_str
+        else:
+            return anova_res
+
+
+    def compare(self, other, parcellation_name, nbins=10):
+        """
+        Compares the difference of `other.surf_data` across cortical types and plots it as
+        raincloud or stacked bar plots
+
+        Parameters
+        ----------
+        self, other (CorticalSurface): other is a cortical surface with continous values
+        parcellation_name (str): parcellation name
+        exc_adys (bool): exclude a-/dysgranular regions
+        nbins (int): number of bins in the binned stacked bar plot
+        """
+        #> parcellate data and specify cortical type of each parcel
+        parcellated_data = self._parcellate_and_type(other.surf_data, other.columns, parcellation_name)
+        #> specify output dir
+        out_dir = os.path.join(other.dir_path, f'cortical_types')
+        os.makedirs(out_dir, exist_ok=True)
+        #> investigate the association of gradient values and cortical types (visually and statistically)
+        anova_res_str = "ANOVA Results\n--------\n"
+        for column in other.columns:
+            # 1) Raincloud plot
+            self._plot_raincloud(parcellated_data, column, out_dir)
+            #> 2) Binned stacked bar plot
+            self._plot_binned_stacked_bar(parcellated_data, column, out_dir, nbins)
+            #> ANOVA
+            anova_res_str += self._anova(parcellated_data, column, out_dir, ouput='text')
+        print(anova_res_str)
+        with open(os.path.join(out_dir, 'anova.txt'), 'w') as anova_res_file:
+            anova_res_file.write(anova_res_str)
+    
+    def spin_compare(self, other, parcellation_name, n_perm=1000):
+        """
+        Compares the difference of `other.surf_data` across cortical types while correcting
+        for spatial autocorrelation
+
+        Note: This is very computationally intensive and slow.
+
+        Parameters
+        ----------
+        self, other (CorticalSurface): other is a cortical surface with continous values
+        parcellation_name (str): parcellation name
+        n_perm (int)
+
+        Returns
+        ---------
+        spin_pvals (pd.DataFrame): n_stats (e.g. F, EU3-EU2, ...) x n_columns
+        """
+        #> create downsampled bigbrain spin permutations
+        assert n_perm <= 1000
+        helpers.create_bigbrain_spin_permutations(n_perm=n_perm, is_downsampled=True)
+        print(f"Comparing surface data across cortical types with spin test ({n_perm} permutations)")
+        #> split the other surface in two hemispheres
+        surf_data = {
+            'L': other.surf_data[:other.surf_data.shape[0]//2],
+            'R': other.surf_data[other.surf_data.shape[0]//2:]
+        }
+        #> load the spin permutation indices
+        spin_indices = np.load(os.path.join(
+            SRC_DIR, f'tpl-bigbrain_desc-spin_indices_downsampled_n-{n_perm}.npz'
+            )) # n_perm * n_vert arrays for 'lh' and 'rh'
+        #> create the lh and rh surrogates and concatenate them
+        surrogates = np.concatenate([
+            surf_data['L'][spin_indices['lh']], 
+            surf_data['R'][spin_indices['rh']]
+            ], axis=1) # n_perm * n_vert * n_features
+        #> add the original surf_data at the beginning
+        downsampled_surf_data_and_surrogates = np.concatenate([
+            helpers.downsample(other.surf_data)[np.newaxis, :, :],
+            surrogates
+            ], axis = 0)
+        all_anova_results = {column:[] for column in other.columns}
+        for perm in range(n_perm+1):
+            print(perm)
+            #> get the F stat and T stats for each permutation
+            curr_data = downsampled_surf_data_and_surrogates[perm, :, :]
+            curr_parcelated_data = self._parcellate_and_type(curr_data, other.columns, parcellation_name)
+            for column in other.columns:
+                all_anova_results[column].append(
+                    self._anova(curr_parcelated_data, column, output='stats', force_posthocs=True)
+                )
+        spin_pvals = pd.DataFrame()
+        for column in other.columns:
+            #> calculate the two-sided non-parametric p-values as the
+            #  ratio of permutated F stat and T stats more extreme
+            #  to the non-permutated values (in index -1)
+            curr_column_res = pd.concat(all_anova_results[column], axis=1).T # n_perm x n_stats
+            spin_pvals.loc[:, column] = (np.abs(curr_column_res.iloc[:-1, :]) >= np.abs(curr_column_res.iloc[-1, :])).mean(axis=0)
+        return spin_pvals
+
+class DisorderMaps(CorticalSurface):
+    """
+    Maps of cortical thickness differences in disorders from ENIGMA 
+    mega-/meta-analyses. When different options are provided, adult
+    population, mega-analyses, and combined disorder subtypes are
+    loaded.
+    """
+    def __init__(self):
+        """
+        Loads disorder maps from ENIGMA toolbox and projects
+        them back to surface
+        """
+        #> load disorder maps from ENIGMA toolbox
+        # (in DK parcellation)
+        self.parcellated_disorder_maps = datasets.load_disorder_maps()
+        #> project it back to surface
+        self.surf_data = helpers.deparcellate(self.parcellated_disorder_maps, 'aparc')
+        self.columns = self.parcellated_disorder_maps.columns

@@ -123,7 +123,7 @@ def load_curvature_maps(downsampled=False):
         curvature_maps[hem] = curvature
     return curvature_maps
 
-def load_cortical_types(parcellation_name=None):
+def load_cortical_types(parcellation_name=None, downsampled=False):
     """
     Loads the surface map of cortical types parcellated or unparcellated
 
@@ -132,6 +132,11 @@ def load_cortical_types(parcellation_name=None):
     parcellation_name: (str or None)
         - None: vertex-wise
         - str: parcellation name (must exists in data/parcellation)
+    downsampled: (bool) load downsampled map of cortical types
+
+    Returns
+    --------
+    cortical_types_map (pd.DataFrame): with the length n_vertices|n_parcels
     """
     #> load the economo map and concatenate left and right hemispheres
     economo_maps = {}
@@ -142,6 +147,15 @@ def load_cortical_types(parcellation_name=None):
                 f'tpl-bigbrain_hemi-{hem}_desc-economo_parcellation.label.gii'
                 )
             )
+        if downsampled:
+            #> select only the vertices corresponding to the downsampled ico5 surface
+            mat = scipy.io.loadmat(
+                os.path.join(
+                    SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-pial_downsampled.mat'
+                )
+            )
+            bb_downsample_indices = mat['bb_downsample'][:, 0]-1 #1-indexing to 0-indexing
+            economo_maps[hem] = economo_maps[hem][bb_downsample_indices]
     economo_map = np.concatenate([economo_maps['L'], economo_maps['R']])
     #> load the cortical types for each economo parcel
     economo_cortical_types = pd.read_csv(
@@ -156,7 +170,7 @@ def load_cortical_types(parcellation_name=None):
     cortical_types_map = cortical_types_map.cat.reorder_categories(['ALO', 'AG', 'DG', 'EU1', 'EU2', 'EU3', 'KO'])
     if parcellation_name:
         #> load parcellation map
-        parcellation_map = load_parcellation_map(parcellation_name, concatenate=True)
+        parcellation_map = load_parcellation_map(parcellation_name, concatenate=True, downsampled=downsampled)
         parcellated_cortical_types_map = (
             #>> create a dataframe of surface map including both cortical type and parcel index
             pd.DataFrame({'Cortical Type': cortical_types_map, 'Parcel': pd.Series(parcellation_map)})
@@ -172,13 +186,6 @@ def load_cortical_types(parcellation_name=None):
         parcellated_cortical_types_map.loc[helpers.MIDLINE_PARCELS[parcellation_name]] = np.NaN
         return parcellated_cortical_types_map
     else:
-        # #> save the map
-        # # TODO: maybe split hemispheres
-        # np.save(
-        #     os.path.join(
-        #         SRC_DIR,
-        #         f'tpl-bigbrain_desc-cortical_types_parcellation.npy'
-        #     ), cortical_types_map.cat.codes.values)
         return cortical_types_map      
 
 def load_exc_masks(exc_mask_type, parcellation_name=None):
@@ -426,7 +433,7 @@ def load_laminar_density(exc_masks=None, method='mean'):
         # TODO: also normalize density?
     return laminar_density
 
-def load_parcellation_map(parcellation_name, concatenate):
+def load_parcellation_map(parcellation_name, concatenate, downsampled=False):
     """
     Loads parcellation maps of L and R hemispheres, correctly relabels them
     and concatenates them if `concatenate` is True
@@ -436,6 +443,7 @@ def load_parcellation_map(parcellation_name, concatenate):
     ----------
     parcellation_name: (str) Parcellation scheme
     concatenate: (bool) whether to cocnatenate the hemispheres
+    downsampled: (bool) whether to load a downsampled version of parcellation map
 
     Returns
     -------
@@ -464,95 +472,22 @@ def load_parcellation_map(parcellation_name, concatenate):
             sorted_labels = list(map(lambda l: l.decode(), sorted_labels)) # b'name' => 'name'
         transdict = dict(enumerate(sorted_labels))
         labeled_parcellation_map[hem] = np.vectorize(transdict.get)(parcellation_map)
+        if downsampled:
+            #> select only the vertices corresponding to the downsampled ico5 surface
+            # Warning: For fine grained parcels such as sjh this approach leads to
+            # a few parcels being removed
+            mat = scipy.io.loadmat(
+                os.path.join(
+                    SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-pial_downsampled.mat'
+                )
+            )
+            bb_downsample_indices = mat['bb_downsample'][:, 0]-1 #1-indexing to 0-indexing
+            labeled_parcellation_map[hem] = labeled_parcellation_map[hem][bb_downsample_indices]
     if concatenate:
         return np.concatenate([labeled_parcellation_map['L'], labeled_parcellation_map['R']])
     else:
         return labeled_parcellation_map
 
-
-def load_hist_mpc_gradients():
-    """
-    Loads two main gradients of Paquola et al. based on BigBrain MPC
-
-    Returns
-    -------
-    hist_gradients: n_vertices x 2 (both hemispheres)
-    """
-    hist_gradients = {}
-    for hist_gradient_num in range(1, 3):
-        hist_gradients[hist_gradient_num] = {}
-        for hem in ['L', 'R']:
-            hist_gradients[hist_gradient_num][hem] = np.loadtxt(
-                os.path.join(
-                    SRC_DIR,
-                    f'tpl-bigbrain_hemi-{hem}_desc-Hist_G{hist_gradient_num}.txt'
-                )
-            )
-        hist_gradients[hist_gradient_num] = np.concatenate([
-            hist_gradients[hist_gradient_num]['L'], 
-            hist_gradients[hist_gradient_num]['R']
-            ])
-    hist_gradients = np.vstack([
-        hist_gradients[1],
-        hist_gradients[2],
-    ]).T
-    return hist_gradients
-
-
-def load_laminar_properties(regress_out_cruvature):
-    """
-    Loads laminar properties including relative thickness of each layer in addition to
-    the sum of supragranular and infragranular layers and their ratios
-    
-    Parameters
-    ----------
-    regress_out_curvature: (bool) regress out curvature from relative laminar thickness
-
-    Returns
-    ------
-    laminar_properties (pd.DataFrame) n_vert * n_properties
-    """
-    laminar_properties = helpers.read_laminar_thickness(regress_out_curvature=regress_out_cruvature)
-    laminar_properties = pd.DataFrame(np.concatenate([laminar_properties['L'], laminar_properties['R']], axis=0))
-    laminar_properties.columns = [f'Layer {idx+1}' for idx in range(6)]
-    laminar_properties['L1-3 sum'] = laminar_properties.iloc[:, :3].sum(axis=1)
-    laminar_properties['L4-6 sum'] = laminar_properties.iloc[:, 3:6].sum(axis=1)
-    laminar_properties['L4-6 to L1-3 thickness ratio'] = laminar_properties.iloc[:, 3:6].sum(axis=1) / laminar_properties.iloc[:, :3].sum(axis=1)
-    laminar_properties['L5-6 to L1-3 thickness ratio'] = laminar_properties.iloc[:, 4:6].sum(axis=1) / laminar_properties.iloc[:, :3].sum(axis=1)
-    return laminar_properties
-
-def load_profile_moments():
-    """
-    Loads mean, std, skewness and kurtosis of vertical intensity profiles for all vertices
-
-    Returns
-    -------
-    profile_moments (pd.DataFrame) n_vert * 4
-    """
-    profiles = np.loadtxt(os.path.join(SRC_DIR, 'tpl-bigbrain_desc-profiles.txt'))
-    profile_moments = pd.DataFrame()
-    profile_moments['Intensity mean'] = np.mean(profiles, axis=0)
-    profile_moments['Intensity std'] = np.std(profiles, axis=0)
-    profile_moments['Intensity skewness'] = scipy.stats.skew(profiles, axis=0)
-    profile_moments['Intensity kurtosis'] = scipy.stats.kurtosis(profiles, axis=0)
-    return profile_moments
-
-def load_disorder_atrophy_maps():
-    disorder_atrophy_maps = pd.DataFrame()
-    for disorder in ['adhd', 'bipolar', 'depression', 'ocd']:
-        disorder_atrophy_maps[disorder] = (
-            enigmatoolbox.datasets.load_summary_stats(disorder)
-            ['CortThick_case_vs_controls_adult']
-            .set_index('Structure')['d_icv'])
-    disorder_atrophy_maps['schizophrenia'] = (
-        enigmatoolbox.datasets.load_summary_stats('schizophrenia')
-        ['CortThick_case_vs_controls']
-        .set_index('Structure')['d_icv'])
-    disorder_atrophy_maps['epilepsy'] = (
-        enigmatoolbox.datasets.load_summary_stats('epilepsy')
-        ['CortThick_case_vs_controls_allepilepsy']
-        .set_index('Structure')['d_icv'])
-    return disorder_atrophy_maps
 
 def load_parcels_adys(parcellation_name, concat=True):
     """
@@ -573,6 +508,37 @@ def load_parcels_adys(parcellation_name, concat=True):
     if concat:
         parcels_adys = helpers.concat_hemispheres(parcels_adys, dropna=True)
     return parcels_adys
+
+def load_disorder_maps():
+    """
+    Loads maps of cortical thickness difference in disorders.
+    Adult popultation, mega-analyses, and more general categories
+    of disorders (e.g. all epliepsy vs TLE) are preferred
+
+    Returns
+    -------
+    parcellated_disorder_maps (pd.DataFrame): 
+    """
+    parcellated_disorder_maps = pd.DataFrame()
+    for disorder in ['adhd', 'bipolar', 'depression', 'ocd']:
+        parcellated_disorder_maps[disorder] = (
+            enigmatoolbox.datasets.load_summary_stats(disorder)
+            ['CortThick_case_vs_controls_adult']
+            .set_index('Structure')['d_icv'])
+    parcellated_disorder_maps['schizophrenia'] = (
+        enigmatoolbox.datasets.load_summary_stats('schizophrenia')
+        ['CortThick_case_vs_controls']
+        .set_index('Structure')['d_icv'])
+    parcellated_disorder_maps['asd'] = (
+        enigmatoolbox.datasets.load_summary_stats('asd')
+        ['CortThick_case_vs_controls_mega_analysis']
+        .set_index('Structure')['d_icv'])
+    parcellated_disorder_maps['epilepsy'] = (
+        enigmatoolbox.datasets.load_summary_stats('epilepsy')
+        ['CortThick_case_vs_controls_allepilepsy']
+        .set_index('Structure')['d_icv'])
+    return parcellated_disorder_maps
+
 
 def load_conn_matrices(kind, parcellation_name='schaefer400'):
     """
