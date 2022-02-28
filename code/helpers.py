@@ -507,8 +507,10 @@ def plot_on_bigbrain_nl(surface_data, filename, inflate=False, plot_downsampled=
         surface_data = {'L': lh_surface_data, 'R': rh_surface_data}
     else:
         assert surface_data['L'].shape[0] == datasets.N_VERTICES_HEM_BB
+    #> downsample the data if needed
     if plot_downsampled:
-        surface_data = downsample(surface_data)
+        if (surface_data.shape[0] == datasets.N_VERTICES_HEM_BB*2):
+            surface_data = downsample(surface_data)
     #> initialize the figures
     if layout == 'horizontal':
         figure, axes = plt.subplots(1, 4, figsize=(24, 5), subplot_kw={'projection': '3d'})

@@ -125,7 +125,7 @@ def load_curvature_maps(downsampled=False):
 
 def load_cortical_types(parcellation_name=None, downsampled=False):
     """
-    Loads the surface map of cortical types parcellated or unparcellated
+    Loads the map of cortical types
 
     Parameters
     ---------
@@ -187,6 +187,75 @@ def load_cortical_types(parcellation_name=None, downsampled=False):
         return parcellated_cortical_types_map
     else:
         return cortical_types_map      
+
+def load_yeo_map(parcellation_name=None, downsampled=False):
+    """
+    Loads the map of Yeo networks
+
+    Parameters
+    ---------
+    parcellation_name: (str or None)
+        - None: vertex-wise
+        - str: parcellation name (must exists in data/parcellation)
+    downsampled: (bool) 
+        load downsampled map of cortical types
+
+    Returns
+    --------
+    yeo_map: (pd.Series:category)
+        with the length n_vertices|n_parcels
+    """
+    yeo_maps = {}
+    for hem in ['L', 'R']:
+        yeo_giftii = nibabel.load(
+            os.path.join(
+                SRC_DIR,
+                f'tpl-bigbrain_hemi-{hem}_desc-Yeo2011_7Networks_N1000.label.gii')
+            )
+        yeo_maps[hem] = yeo_giftii.darrays[0].data
+        if downsampled:
+            #> select only the vertices corresponding to the downsampled ico5 surface
+            mat = scipy.io.loadmat(
+                os.path.join(
+                    SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-pial_downsampled.mat'
+                )
+            )
+            bb_downsample_indices = mat['bb_downsample'][:, 0]-1 #1-indexing to 0-indexing
+            yeo_maps[hem] = yeo_maps[hem][bb_downsample_indices]
+    #> concatenate the hemispheres and convert to pd category
+    yeo_names = [
+        'None', 'Visual', 'Somatomotor', 'Dorsal attention', 
+        'Ventral attention', 'Limbic', 'Frontoparietal', 'Default'
+        ]
+    yeo_map = np.concatenate([yeo_maps['L'], yeo_maps['R']])
+    yeo_map = pd.Series(yeo_map).astype('category').cat.rename_categories(yeo_names)
+    if parcellation_name:
+        #> load parcellation map
+        parcellation_map = load_parcellation_map(parcellation_name, concatenate=True, downsampled=downsampled)
+        parcellated_yeo_map = (
+            #>> create a dataframe of surface map including both cortical type and parcel index
+            pd.DataFrame({'Cortical Type': yeo_map, 'Parcel': pd.Series(parcellation_map)})
+            #>> group by parcel
+            .groupby('Parcel')
+            #>> find the cortical types with the highest count (may also be non-cortex)
+            ['Cortical Type'].value_counts(sort=True).unstack().idxmax(axis=1)
+            #>> convert it back to category
+            .astype('category')
+            .cat.reorder_categories(yeo_names)
+        )
+        #> assign Yeo network of midline parcels to NaN
+        parcellated_yeo_map.loc[helpers.MIDLINE_PARCELS[parcellation_name]] = np.NaN
+        # TODO: this parcellation approach does not work perfectly
+        # e.g. for schaefer 400 the 7Networks_LH_Cont_PFCl_1 parcel
+        # is assigned to DMN! Maybe this is because of differences in Schaefer
+        # versions (one is 400, and the other is 1000)
+        # TODO: also sometimes the networks of the same parcel using
+        # downsampled or original data is different (e.g. parcel 3 in SJH)
+        # ideally don't use downsampled and parcellation_map functions together
+        return parcellated_yeo_map
+    else:
+        return yeo_map
+
 
 def load_exc_masks(exc_mask_type, parcellation_name=None):
     """
