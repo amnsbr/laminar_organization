@@ -11,9 +11,11 @@ import brainspace.gradient
 import scipy.stats
 import ptitprince
 import nibabel
+from dominance_analysis import Dominance
 
 import helpers
 import datasets
+import matrices
 
 #> specify directories
 abspath = os.path.abspath(__file__)
@@ -366,7 +368,8 @@ class MicrostructuralCovarianceGradients(Gradients):
         plot_surface: (bool) Default: False
         """
         super().__init__(*args, **kwargs)
-        self.plot_binned_profile()
+        if not os.path.exists(os.path.join(self.dir_path, 'gradients_surface.npz')):
+            self.plot_binned_profile()
 
     def plot_binned_profile(self, n_bins=10, cmap='Blues'):
         """
@@ -383,7 +386,7 @@ class MicrostructuralCovarianceGradients(Gradients):
         parcellated_laminar_thickness = parcellated_laminar_thickness.divide(parcellated_laminar_thickness.sum(axis=1), axis=0)
         for gradient_num in range(1, self._n_components_report+1):
             binned_parcels_laminar_thickness = parcellated_laminar_thickness.copy()
-            binned_parcels_laminar_thickness['bin'] = pd.cut(self.labeled_gradients[gradient_num-1], 10)
+            binned_parcels_laminar_thickness['bin'] = pd.cut(self.labeled_gradients[gradient_num-1], n_bins)
             #> calculate average laminar thickness at each bin
             bins_laminar_thickness = binned_parcels_laminar_thickness.groupby('bin').mean().reset_index(drop=True)
             bins_laminar_thickness.columns = [f'Layer {idx+1}' for idx in range(6)]
@@ -423,7 +426,116 @@ class MicrostructuralCovarianceGradients(Gradients):
                 bins=10, 
                 orientation='horizontal', figsize=(6,4))
             clfig.savefig(os.path.join(self.dir_path, f'binned_profile_G{gradient_num}_clbar.png'), dpi=192)
-    
+
+class DiseaseCovarianceGradients(Gradients):
+    """
+    Disease covariance gradients
+
+    Credit: Based on Hettwer 2022 medRxiv
+    """
+    def perform_dominance_analysis(self, spin_permutation=False, n_perm=1000):
+        """
+        Performs dominance analysis to compare the contribution
+        of LTC G1, MPC G1 and C.Types in explaining the variance
+        of Disease G1, while testing the significance of contributions
+        using spin permutation if indicated
+        See https://github.com/dominance-analysis/dominance-analysis
+        and Hansen 2021 bioRxiv
+
+        Parameters
+        ----------
+        spin_permutation: (bool)
+        n_perm: (int)
+        
+        Returns
+        -------
+        dominance_stats: (pd.DataFrame)
+        dominance_pvals: (pd.DataFrame)
+            if `spin_permutation` is True
+        """
+        #> get the gradients and downsample them
+        ltcg = MicrostructuralCovarianceGradients(
+            matrices.MicrostructuralCovarianceMatrix(
+                'thickness', 
+                parcellation_name='aparc',
+                exc_adys=self.matrix_obj.exc_adys
+                )
+            )
+        ltcg1_surf = helpers.downsample(ltcg.surf_data)[:, :1]
+        mpcg = MicrostructuralCovarianceGradients(
+            matrices.MicrostructuralCovarianceMatrix(
+                'density', 
+                parcellation_name='aparc',
+                exc_adys=self.matrix_obj.exc_adys
+                )
+            )
+        mpcg1_surf = helpers.downsample(mpcg.surf_data)[:, :1]
+        #> get the downsampled ctypes as float
+        ctypes_surf = CorticalTypes(exc_adys=self.matrix_obj.exc_adys, downsampled=True).surf_data
+        #> create dataframes
+        predictors = pd.DataFrame(
+            np.hstack([ltcg1_surf, mpcg1_surf, ctypes_surf]),
+            columns = ['LTC G1', 'MPC G1', 'Cortical Types']
+        )
+        outcome = pd.Series(helpers.downsample(self.surf_data[:, :1])[:, 0], name='Dis G1')
+        data = pd.concat([predictors, outcome], axis=1).dropna()
+        #> dominance analysis on non-permutated data
+        test_dominance_analysis = Dominance(data,target='Dis G1')
+        test_dominance_analysis.incremental_rsquare()
+        dominance_stats = test_dominance_analysis.dominance_stats()
+        if spin_permutation:
+            #> create downsampled bigbrain spin permutations
+            assert n_perm <= 1000
+            helpers.create_bigbrain_spin_permutations(n_perm=n_perm, is_downsampled=True)
+            print(f"Comparing surface data across {self.label} with spin test ({n_perm} permutations)")
+            #> load the spin permutation indices
+            spin_indices = np.load(os.path.join(
+                SRC_DIR, f'tpl-bigbrain_desc-spin_indices_downsampled_n-{n_perm}.npz'
+                )) # n_perm * n_vert arrays for 'lh' and 'rh'
+            #> split the disease G1 in two hemispheres
+            outcome_split = {
+                'L': outcome.values[:outcome.shape[0]//2],
+                'R': outcome.values[outcome.shape[0]//2:]
+            }
+            #> create the lh and rh surrogates and concatenate them
+            perm_outcomes = np.concatenate([
+                outcome_split['L'][spin_indices['lh']], 
+                outcome_split['R'][spin_indices['rh']]
+                ], axis=1) # n_perm * n_vert * n_features
+            perm_dominance_stats = np.zeros((n_perm, *dominance_stats.shape))
+            for perm in range(n_perm):
+                print(perm)
+                #> do the dominance analysis in each spin
+                perm_outcome = pd.Series(perm_outcomes[perm, :], name='Dis G1')
+                perm_data = pd.concat([predictors, perm_outcome], axis=1).dropna()
+                perm_dominance_analysis = Dominance(data=perm_data, target='Dis G1')
+                perm_dominance_analysis.incremental_rsquare()
+                perm_dominance_stats[perm, :, :] = perm_dominance_analysis.dominance_stats().values
+            #> save null distribution for future reference
+            np.savez_compressed(
+                os.path.join(self.dir_path, 'dominance_null.npz'),
+                perm_dominance_stats
+            )
+            #> calculate one-sided p-vals (all values are positive so no difference between one or two-sided)
+            dominance_pvals = (perm_dominance_stats > dominance_stats.values[np.newaxis, :, :]).mean(axis=0)
+            dominance_pvals = pd.DataFrame(
+                dominance_pvals,
+                columns=dominance_stats.columns,
+                index=dominance_stats.index
+                )
+            #> calculate p-value for the total variance explained
+            # by the model (which is the sum of 'Total Dominance' 
+            # for all variables)
+            perm_total_var = perm_dominance_stats[:, :, 3].sum(axis=1)
+            dominance_stats.loc['Sum', 'Total Dominance'] \
+                = dominance_stats.loc[:, 'Total Dominance'].sum()
+            dominance_pvals.loc['Sum', 'Total Dominance'] \
+                = (perm_total_var > dominance_stats.loc['Sum', 'Total Dominance']).mean()
+            return dominance_stats, dominance_pvals
+        else:
+            dominance_stats.loc['Sum', 'Total Dominance'] \
+                = dominance_stats.loc[:, 'Total Dominance'].sum()
+            return dominance_stats
 
 class StructuralFeatures(ContCorticalSurface):
     label = 'Structural features'
@@ -776,7 +888,7 @@ class CorticalTypes(CatCorticalSurface):
     Map of cortical types
     """
     label = 'Cortical Type'
-    def __init__(self, exc_adys=True):
+    def __init__(self, exc_adys=True, downsampled=False):
         """
         Loads the map of cortical types
         """
@@ -791,7 +903,7 @@ class CorticalTypes(CatCorticalSurface):
             self.excluded_categories = [np.NaN, 'ALO']
         self.n_categories = len(self.included_categories)
         # load unparcellated surface data
-        cortical_types_map = datasets.load_cortical_types()
+        cortical_types_map = datasets.load_cortical_types(downsampled=downsampled)
         self.surf_data = cortical_types_map.cat.codes.values.reshape(-1, 1).astype('float')
         self.surf_data[cortical_types_map.isin(self.excluded_categories), 0] = np.NaN
         self.columns = ['Cortical Type']
