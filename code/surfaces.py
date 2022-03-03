@@ -10,7 +10,6 @@ import cmcrameri.cm # color maps
 import brainspace.gradient
 import scipy.stats
 import ptitprince
-import enigmatoolbox
 import nibabel
 
 import helpers
@@ -107,14 +106,13 @@ class ContCorticalSurface:
                     dpi=192
                     )
 
-
-class MicrostructuralCovarianceGradients(ContCorticalSurface):
+class Gradients(ContCorticalSurface):
     """
-    Creates and plots gradients of microstructural covariance
+    Generic class for creating and plotting gradients
     """
     def __init__(self, matrix_obj, n_components_create=10, n_components_report=2,
                  approach='dm', kernel='normalized_angle', sparsity=0.9, fair_sparsity=True,
-                 plot_surface=False):
+                 plot_surface=True):
         """
         Initializes laminar similarity gradients based on LaminarSimilarityMatrix objects
         and the gradients fitting parameters
@@ -139,21 +137,9 @@ class MicrostructuralCovarianceGradients(ContCorticalSurface):
         self.n_matrices = self.matrix_obj.matrix.shape[1] // self.n_parcels
         self._sparsity = sparsity
         self._fair_sparsity = fair_sparsity
-        # column names
-        LABELS_SHORT = {
-            'thickness': 'LTC',
-            'density': 'MPC',
-            'thickness-density': 'Fused'
-        }
-        self.columns = [f'{LABELS_SHORT[self.matrix_obj.input_type]} G{num}' \
-            for num in range(1, n_components_create+1)]
-        # label
-        LABELS = {
-            'thickness': 'Laminar thickness covariance gradients',
-            'density': 'Microstructural profile covariance gradients',
-            'thickness-density': 'Laminar thickness and microstructural covariance gradients'
-        }
-        self.label = LABELS[self.matrix_obj.input_type]
+        self.columns = [f'{self.matrix_obj.short_label} G{num}' \
+                        for num in range(1, self._n_components_create+1)]
+        self.label = f'{self.matrix_obj.label} gradients'
         # directory
         self.dir_path = self._get_dir_path()
         os.makedirs(self.dir_path, exist_ok=True)
@@ -168,7 +154,6 @@ class MicrostructuralCovarianceGradients(ContCorticalSurface):
             self.plot_scatter()
             self.plot_scree()
             self.plot_reordered_matrix()
-            self.plot_binned_profile()
 
     def _create(self):
         """
@@ -199,7 +184,7 @@ class MicrostructuralCovarianceGradients(ContCorticalSurface):
             self.labeled_gradients,
             self.matrix_obj.parcellation_name
             )
-        
+
     def _get_dir_path(self):
         """
         Get path to the directory of gradients which would be
@@ -209,6 +194,7 @@ class MicrostructuralCovarianceGradients(ContCorticalSurface):
         sub_dir = f'gradients_approach-{self._approach}'\
             + f'_kernel-{self._kernel}'\
             + f'_sparsity-{self._sparsity}'.replace('.','')\
+            + ('fair' if (self._fair_sparsity & (self.n_matrices>1)) else '')\
             + f'_n-{self._n_components_create}'
         return os.path.join(parent_dir, sub_dir)
 
@@ -241,10 +227,9 @@ class MicrostructuralCovarianceGradients(ContCorticalSurface):
         self.surf_data = np.load(os.path.join(self.dir_path, 'gradients_surface.npz'))['surface']
         self.lambdas = np.loadtxt(os.path.join(self.dir_path, 'lambdas.txt'))
 
-    def plot_surface(self, layout='grid', inflate=False):
+    def plot_surface(self, layout='grid', inflate=True):
         """
-        Plots the first `n_gradients` of `gradient_file`
-        Note: It is computationally intensive (too many vertices)
+        Plots the gradients on the surface
         """
         for gradient_num in range(1, self._n_components_report+1):
             helpers.plot_on_bigbrain_nl(
@@ -252,6 +237,8 @@ class MicrostructuralCovarianceGradients(ContCorticalSurface):
                 filename=os.path.join(self.dir_path, f'surface_{layout}_G{gradient_num}.png'),
                 layout=layout,
                 inflate=inflate,
+                plot_downsampled=True,
+                #TODO: use different colors for each gradient
             )
 
     def plot_scatter(self, remove_ticks=True):
@@ -328,13 +315,6 @@ class MicrostructuralCovarianceGradients(ContCorticalSurface):
         """
         Plot the input matrix reordered by gradient values
         """
-        #> use different colors for different input types
-        if self.matrix_obj.input_type == 'thickness':
-            cmap = sns.color_palette("RdBu_r", as_cmap=True)
-        elif self.matrix_obj.input_type == 'density':
-            cmap = sns.color_palette("rocket", as_cmap=True)
-        else:
-            cmap = sns.color_palette("RdBu_r", as_cmap=True)
         if self.n_matrices == 1:
             #> in unimodal case add ordered matrices by the first 3 gradients
             for g_idx in range(self._n_components_report):
@@ -345,7 +325,7 @@ class MicrostructuralCovarianceGradients(ContCorticalSurface):
                 helpers.plot_matrix(
                     reordered_matrix,
                     os.path.join(self.dir_path, f'matrix_order-G{g_idx+1}'),
-                    cmap=cmap,
+                    cmap=self.matrix_obj.cmap,
                     )
         else:
             for g_idx in range(self._n_components_report):
@@ -362,8 +342,31 @@ class MicrostructuralCovarianceGradients(ContCorticalSurface):
                 helpers.plot_matrix(
                     reordered_split_matrices,
                     os.path.join(self.dir_path, f'matrix_order-G{g_idx+1}'),
-                    cmap=cmap,
+                    cmap=self.matrix_obj.cmap,
                     )
+
+class MicrostructuralCovarianceGradients(Gradients):
+    """
+    Creates and plots gradients of microstructural covariance
+    """
+    def __init__(self, *args, **kwargs):
+        """
+        Initializes laminar similarity gradients based on LaminarSimilarityMatrix objects
+        and the gradients fitting parameters
+
+        Parameters
+        ---------
+        matrix: (MicrostructuralCovarianceMatrix)
+        n_components_create: (int) number of components to calculate
+        n_components_report: (int) number of first n components to report / plot / associate
+        approach: (str) dimensionality reduction approach
+        kernel: (str) affinity matrix calculation kernel
+        sparsity: (int) proportion of smallest elements to zero-out for each row.
+        fair_sparsity: (bool) whether to make joined matrices sparse fairly
+        plot_surface: (bool) Default: False
+        """
+        super().__init__(*args, **kwargs)
+        self.plot_binned_profile()
 
     def plot_binned_profile(self, n_bins=10, cmap='Blues'):
         """
@@ -420,12 +423,14 @@ class MicrostructuralCovarianceGradients(ContCorticalSurface):
                 bins=10, 
                 orientation='horizontal', figsize=(6,4))
             clfig.savefig(os.path.join(self.dir_path, f'binned_profile_G{gradient_num}_clbar.png'), dpi=192)
+    
 
 class StructuralFeatures(ContCorticalSurface):
     label = 'Structural features'
     def __init__(self, correct_curvature):
         """
-        Structural features including
+        Structural features including total/laminar thickness, laminar densities and
+        microstructural profile moments
         
         Parameters
         ----------
@@ -441,18 +446,6 @@ class StructuralFeatures(ContCorticalSurface):
         self.correct_curvature = correct_curvature
         self.dir_path = OUTPUT_DIR
         self._create()
-        # self.file_path = os.path.join(self.dir_path, 'structural_features.npz')
-        # if os.path.exists(self.file_path):
-        #     with np.load(self.file_path) as loaded_data:
-        #         self.surf_data = loaded_data['surface']
-        #         self.columns = loaded_data['columns']
-        # else:
-        #     self._create()
-        #     np.savez_compressed(
-        #         self.file_path,
-        #         surface=self.surf_data,
-        #         columns=self.columns
-        #     )     
     
     def _create(self):
         self.columns = []
@@ -511,6 +504,25 @@ class StructuralFeatures(ContCorticalSurface):
         self.columns += ['Density mean', 'Density std', 'Density skewness', 'Density kurtosis']
         #> concatenate all the features into a single array
         self.surf_data = np.hstack(features)
+
+class DiseaseMaps(ContCorticalSurface):
+    """
+    Maps of cortical thickness differences in disorders from ENIGMA 
+    mega-/meta-analyses. When different options are provided, adult
+    population, mega-analyses, and combined disorder subtypes are
+    loaded.
+    """
+    def __init__(self):
+        """
+        Loads disorder maps from ENIGMA toolbox and projects
+        them back to surface
+        """
+        #> load disorder maps from ENIGMA toolbox
+        # (in DK parcellation)
+        self.parcellated_disorder_maps = datasets.load_disease_maps()
+        #> project it back to surface
+        self.surf_data = helpers.deparcellate(self.parcellated_disorder_maps, 'aparc')
+        self.columns = self.parcellated_disorder_maps.columns
 
 class CatCorticalSurface:
     """
@@ -824,23 +836,3 @@ class YeoNetworks(CatCorticalSurface):
             )
         yeo_colors = [l.rgba[:-1] for l in yeo_giftii.labeltable.labels[1:]]
         return sns.color_palette(yeo_colors, as_cmap=True)
-
-
-class DisorderMaps(ContCorticalSurface):
-    """
-    Maps of cortical thickness differences in disorders from ENIGMA 
-    mega-/meta-analyses. When different options are provided, adult
-    population, mega-analyses, and combined disorder subtypes are
-    loaded.
-    """
-    def __init__(self):
-        """
-        Loads disorder maps from ENIGMA toolbox and projects
-        them back to surface
-        """
-        #> load disorder maps from ENIGMA toolbox
-        # (in DK parcellation)
-        self.parcellated_disorder_maps = datasets.load_disorder_maps()
-        #> project it back to surface
-        self.surf_data = helpers.deparcellate(self.parcellated_disorder_maps, 'aparc')
-        self.columns = self.parcellated_disorder_maps.columns

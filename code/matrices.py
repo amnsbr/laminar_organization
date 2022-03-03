@@ -7,7 +7,6 @@ import subprocess
 import nibabel
 import scipy.spatial.distance
 import pandas as pd
-import matplotlib.pyplot as plt
 import seaborn as sns
 import statsmodels.stats.multitest
 import cmcrameri.cm # color maps
@@ -71,7 +70,7 @@ class Matrix:
         parcels_to_include_idx = parcels_to_include[parcels_to_include.values].index
         return self.matrix.loc[parcels_to_include_idx, parcels_to_include_idx]
 
-    def plot(self):
+    def plot(self, vrange=(0.025, 0.975)):
         """
         Plot the matrix as heatmap
         """
@@ -80,7 +79,7 @@ class Matrix:
             self.matrix.values,
             os.path.join(self.file_path.replace('.csv','')),
             cmap=self.cmap,
-            vrange=(0.025, 0.975)
+            vrange=vrange
             )
 
     def correlate_edge_wise(self, other, test='pearson'):
@@ -630,7 +629,7 @@ class ConnectivityMatrix(Matrix):
             self._load()
         else:
             os.makedirs(self.dir_path, exist_ok=True)
-            self.matrix = datasets.load_conn_matrices(self.kind, self.parcellation_name)
+            self.matrix = datasets.load_conn_matrix(self.kind, self.parcellation_name)
             if (self.kind == 'structural') & self.sc_zero_contra:
                 split_hem_idx = helpers.get_split_hem_idx(self.parcellation_name, self.exc_adys)
                 self.matrix.iloc[:split_hem_idx, split_hem_idx:] = 0
@@ -692,12 +691,18 @@ class MicrostructuralCovarianceMatrix(Matrix):
         self.parcellation_name = parcellation_name
         self.exc_adys = exc_adys
         #> set the label based on input type
+        SHORT_LABELS = {
+            'thickness': 'LTC',
+            'density': 'MPC',
+            'thickness-density': 'Fused'
+        }
         LABELS = {
             'thickness': 'Laminar thickness covariance',
             'density': 'Microstructural profile covariance',
             'thickness-density': 'Laminar thickness and microstructural profile covariance'
         }
         self.label = LABELS[self.input_type]
+        self.short_label = SHORT_LABELS[self.input_type]
         #> set cmap
         if self.input_type == 'density':
             self.cmap = sns.color_palette("rocket", as_cmap=True)
@@ -1038,3 +1043,83 @@ class CorticalTypeSimilarityMatrix(Matrix):
             index=parcellated_cortical_types.index,
             columns=parcellated_cortical_types.index,
         )
+
+class DiseaseCovarianceMatrix(Matrix):
+    """
+    Cortical thickness co-alteration across disorders
+    using ENIGMA toolbox
+
+    Credit: Based on Hettwer 2022 medRxiv
+    """
+    label = "Disease co-alteration"
+    short_label = "DisCov"
+    cmap = 'Reds'
+    def __init__(self, parcellation_name='aparc', exc_adys=True, psych_only=False):
+        """
+        Initializes the disease covariance matrix
+        
+        Parameters
+        ----------
+        parcellation_name: (str)
+            the thickness data is only available in 'aparc' but
+            can be pseudo-reparcellated to other parcellations
+        psych_only: (bool)
+            only include psychiatric disorders similar to Hettwer 2022
+        """
+        self.parcellation_name = parcellation_name
+        self.exc_adys = exc_adys
+        self.psych_only = psych_only
+        self.dir_path = os.path.join(
+            OUTPUT_DIR, 'disease', 
+            f'covariance_parc-{self.parcellation_name}'\
+            + ('_exc-adys' if self.exc_adys else '')\
+            + ('_psych_only' if self.psych_only else '')
+            )
+        self.file_path = os.path.join(self.dir_path, 'matrix.csv')
+        if os.path.exists(self.file_path):
+            self._load()
+        else:
+            os.makedirs(self.dir_path, exist_ok=True)
+            self._create()
+            if self.exc_adys:
+                self.matrix = self._remove_parcels('adysgranular')
+            else:
+                self.matrix = self._remove_parcels('allocortex') 
+            self._save()
+            self.plot(vrange=(0, 1))
+    
+    def _create(self):
+        """
+        Creates disease cortical thickness co-alteration matrix by
+        taking the pairwise correlation coefficients across 6-/7-element
+        vectors of cortical thickness Cohen's d in each disorder between
+        pairs of parcels
+        """
+        #> load the original data from ENIGMA toolbox
+        aparc_disease_maps = datasets.load_disease_maps(self.psych_only)
+        #> reparcellated data to target parcellation
+        # Note: doing this also with 'aparc' as the target parcellation
+        # so the order of parcels is the same across all different types of
+        # matrices
+        self._input_data = helpers.deparcellate(aparc_disease_maps, 'aparc')
+        self._parcellated_input_data = helpers.parcellate(
+            self._input_data, self.parcellation_name,
+            averaging_method='mean')
+        #> calculate the correlation
+        matrix = np.corrcoef(self._parcellated_input_data.values)
+        #> zero out correlations of 1 (to avoid division by 0)
+        # Note: not zeroing out negative values in line with
+        # the original paper
+        # Note 2: in the original paper no Z-transformation
+        # was performed
+        matrix[np.isclose(matrix, 1)] = 0
+        #> Fisher's z-transformation
+        matrix = 0.5 * np.log((1 + matrix) /  (1 - matrix))
+        #> zero out NaNs and inf
+        matrix[np.isnan(matrix) | np.isinf(matrix)] = 0
+        #> convert to df
+        self.matrix = pd.DataFrame(
+            matrix, 
+            index=self._parcellated_input_data.index,
+            columns=self._parcellated_input_data.index
+            )

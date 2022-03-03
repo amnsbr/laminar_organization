@@ -578,15 +578,21 @@ def load_parcels_adys(parcellation_name, concat=True):
         parcels_adys = helpers.concat_hemispheres(parcels_adys, dropna=True)
     return parcels_adys
 
-def load_disorder_maps():
+def load_disease_maps(psych_only):
     """
     Loads maps of cortical thickness difference in disorders.
-    Adult popultation, mega-analyses, and more general categories
-    of disorders (e.g. all epliepsy vs TLE) are preferred
+    Adult popultation, more general categories
+    of disorders (e.g. all epliepsy vs TLE) and meta-analyses
+    (over mega-analyses) are preferred
+
+    Parameters
+    ---------
+    psych_only: (bool)
+        only include psychiatric disorders
 
     Returns
     -------
-    parcellated_disorder_maps (pd.DataFrame): 
+    parcellated_disorder_maps: (pd.DataFrame)
     """
     parcellated_disorder_maps = pd.DataFrame()
     for disorder in ['adhd', 'bipolar', 'depression', 'ocd']:
@@ -600,16 +606,17 @@ def load_disorder_maps():
         .set_index('Structure')['d_icv'])
     parcellated_disorder_maps['asd'] = (
         enigmatoolbox.datasets.load_summary_stats('asd')
-        ['CortThick_case_vs_controls_mega_analysis']
+        ['CortThick_case_vs_controls_meta_analysis']
         .set_index('Structure')['d_icv'])
-    parcellated_disorder_maps['epilepsy'] = (
-        enigmatoolbox.datasets.load_summary_stats('epilepsy')
-        ['CortThick_case_vs_controls_allepilepsy']
-        .set_index('Structure')['d_icv'])
+    if not psych_only:
+        parcellated_disorder_maps['epilepsy'] = (
+            enigmatoolbox.datasets.load_summary_stats('epilepsy')
+            ['CortThick_case_vs_controls_allepilepsy']
+            .set_index('Structure')['d_icv'])
     return parcellated_disorder_maps
 
 
-def load_conn_matrices(kind, parcellation_name='schaefer400'):
+def load_conn_matrix(kind, parcellation_name='schaefer400'):
     """
     Loads FC or SC matrices in Schaefer parcellation (400) from ENIGMA toolbox
     and reorders it according to `matrix_file`. For SC matrix also makes contralateral
