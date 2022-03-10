@@ -10,13 +10,14 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-import brainspace.mesh, brainspace.plotting
+import brainspace.mesh, brainspace.plotting, brainspace.null_models
 import nilearn.surface
 import nilearn.plotting
 import statsmodels.api as sm
 import scipy.io
 
 import datasets
+import matrices
 
 #> specify the data dir
 abspath = os.path.abspath(__file__)
@@ -25,7 +26,6 @@ OUTPUT_DIR = os.path.join(cwd, '..', 'output')
 SRC_DIR = os.path.join(cwd, '..', 'src')
 SPIN_BATCHES_DIR = os.path.join(SRC_DIR, 'spin_batches')
 os.makedirs(SPIN_BATCHES_DIR, exist_ok=True)
-
 
 MIDLINE_PARCELS = {
     'schaefer400': ['Background+FreeSurfer_Defined_Medial_Wall'],
@@ -244,9 +244,6 @@ def downsample(surface_data):
         return downsampled_surface_data
 
 
-
-    
-
 def regress_out_matrix_covariates(input_matrix, cov_matrices, pos_only=True):
     """
     Fits `cov_matrices` to `input_matrix` and return the residual. Before
@@ -392,16 +389,90 @@ def get_split_hem_idx(parcellation_name, exc_adys):
     exc_masks = datasets.load_exc_masks(exc_mask_type, parcellation_name)
     parcels_to_exclude = parcellate(exc_masks, parcellation_name)
     split_hem_idx = int(np.nansum(1-parcels_to_exclude['L'].values)) # number of non-exc-mask parcels in lh
-    # if exc_adys:
-    #     parcels_adys = datasets.load_parcels_adys(parcellation_name, concat=False)
-    #     split_hem_idx = int(np.nansum(1-parcels_adys['L'].values)) # number of non-adys parcels in lh
-    # else:
-    #     if parcellation_name == 'schaefer400':
-    #         split_hem_idx = 200 # TODO: this is specific for Schaefer parcellation
-    #     elif parcellation_name == 'sjh':
-    #         split_hem_idx = 505
     return split_hem_idx
 
+def get_parcel_center_indices(parcellation_name):
+    """
+    Gets the center of parcels and returns their index
+    in BigBrain ico7 surface
+
+    Based on "geoDistMapper.py" from micapipe/functions
+    Original Credit:
+    # Translated from matlab:
+    # Original script by Boris Bernhardt and modified by Casey Paquola
+    # Translated to python by Jessica Royer
+    """
+    centers = {}
+    for hem in ['L', 'R']:
+        out_path = os.path.join(
+            SRC_DIR,
+            f'tpl-bigbrain_hemi-{hem}_desc-{parcellation_name}_parcellation_centers.csv'
+            )
+        if os.path.exists(out_path):
+            centers[hem] = pd.read_csv(out_path, index_col='parcel').iloc[:, 0]
+            continue
+        #> load surf
+        surf_path = os.path.join(
+            SRC_DIR, 
+            f'tpl-bigbrain_hemi-L_desc-mid.surf.gii'
+            )
+        vertices = nilearn.surface.load_surf_mesh(surf_path).coordinates           
+        parc = datasets.load_parcellation_map(parcellation_name, False)[hem]
+
+        centers[hem] = pd.Series(0, index=np.unique(parc))        
+        for parcel_name in centers[hem].index:
+            this_parc = np.where(parc == parcel_name)[0]
+            if this_parc.size == 1: # e.g. L_unknown in aparc
+                centers[hem].loc[parcel_name] = this_parc[0]
+            else:
+                distances = scipy.spatial.distance.pdist(np.squeeze(vertices[this_parc,:]), 'euclidean') # Returns condensed matrix of distances
+                distancesSq = scipy.spatial.distance.squareform(distances) # convert to square form
+                sumDist = np.sum(distancesSq, axis = 1) # sum distance across columns
+                index = np.where(sumDist == np.min(sumDist)) # minimum sum distance index
+                centers[hem].loc[parcel_name] = this_parc[index[0][0]]
+        centers[hem].to_csv(out_path, index_label='parcel')
+    return centers
+
+def get_neighbors_mask(parcellation_name, proportion=0.2, exc_adys=True, keep_allo=False):
+    """
+    Returns a matrix with each row indicating neighbors to any given parcel,
+    which are among the `proportion` closest parcel to the seed parcel in
+    the same hemisphere. Neighbors also include the seed. This can then be
+    used in spatial leave one-out cross-validation
+
+    Parameters
+    ----------
+    parcellation_name: (str)
+    proportion: (float)
+        proportion of parcels assigned to the train set for each parcel.
+    exc_adys: (bool) 
+        exclude adysgranular regions
+    keep_allo: (bool) 
+        keep allocortical regions. Only used if exc_adys=False.
+
+    Returns
+    -------
+    neighbors: (pd.DataFrame) 
+        n_parc x n_parc with each row representing the neighbors
+        of a given parcel
+    """
+    gd = matrices.DistanceMatrix(
+        parcellation_name=parcellation_name, 
+        kind='geodesic', 
+        exc_adys=exc_adys, 
+        keep_allo=keep_allo)
+    neighbors = (
+        gd.matrix
+        #> remove seed and contralateral parcels
+        .replace(0, np.NaN)
+        #> select 20% closest parcels (in the same hemisphere)
+        .apply(lambda row: row < row.quantile(proportion), axis=1)
+        #> add the seed parcel to the neighbors
+        + np.eye(gd.matrix.shape[0]) 
+        #> convert to bool
+        .astype('bool')
+    )
+    return neighbors
 
 ###### Plotting ######
 def make_colorbar(vmin, vmax, cmap=None, bins=None, orientation='vertical', figsize=None):

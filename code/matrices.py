@@ -454,28 +454,33 @@ class CurvatureSimilarityMatrix(Matrix):
         curv_similarity_matrix.values[i_upper] = curv_similarity_matrix.T.values[i_upper]
         return curv_similarity_matrix
 
-class GeodesicDistanceMatrix(Matrix):
+class DistanceMatrix(Matrix):
     """
-    Matrix of geodesic distance between centroids of parcels
+    Matrix of geodesic/Euclidean distance between centroids of parcels
     """
-    label = "Geodesic distance"
-    dir_path = os.path.join(OUTPUT_DIR, 'geodesic_distance')
+    dir_path = os.path.join(OUTPUT_DIR, 'distance')
     split_hem = True
     cmap = sns.color_palette("viridis", as_cmap=True)
-    def __init__(self, parcellation_name, approach='center-to-center', exc_adys=True):
+    def __init__(self, parcellation_name, kind='geodesic', 
+                 approach='center-to-center', 
+                 exc_adys=True, keep_allo=False):
         """
-        Creates parcel-to-parcel geodesic distance matrix based on the
-        parcellation ("parcellation_name") or loads it if it already exists
+        Initializes geodesic distance matrix for `parcellation_name` and
+        creates or loads it
 
         Parameters
         ----------
         parcellation_name: (str) name of the parcellation (must be stored in data/parcellations)
-        approach: (str)
+        kind: (str)
+            - geodesic (Default)
+            - euclidean
+        approach: (str) only used for geodesic distance
             - center-to-center: calculate pair-wise distance between centroids of parcels. Results in symmetric matrix.
             - center-to-parcel: calculates distance between centroid of one parcel to all vertices
                                 in the other parcel, taking the mean distance. Can result in asymmetric matrix.
                                 (this is "geoDistMapper.py" behavior)
         exc_adys: (bool) Exclude adysgranular parcels from the matrix
+        keep_allo: (bool) Keep allocortical regions. Only used if exc_adys=False.
         Based on "geoDistMapper.py" from micapipe/functions
         Original Credit:
         # Translated from matlab:
@@ -483,28 +488,34 @@ class GeodesicDistanceMatrix(Matrix):
         # Translated to python by Jessica Royer
         """
         self.parcellation_name = parcellation_name
+        self.kind = kind
         self.approach = approach
+        print(self.approach)
         self.exc_adys = exc_adys
+        self.label = f"{self.kind.title()} distance"
         self.file_path = os.path.join(
             self.dir_path,
-            f'geodesic_distance_matrix_parc-{parcellation_name}_approach-{approach}.csv'
+            f'{self.kind}_distance_matrix_parc-{self.parcellation_name}_approach-{self.approach}.csv'
             )
         if os.path.exists(self.file_path):
             self._load()
         else:
             os.makedirs(self.dir_path, exist_ok=True)
-            self.matrix = self._create()
+            if self.kind == 'geodesic':
+                self.matrix = self._create_geodesic()
+            else:
+                self.matrix = self._create_euclidean()
             self._save()
+            self.plot()
         #> remove the adysgranular parcels after the matrix is created
         #  to avoid unncessary waste of computational resources
-        #  note this is not saved
+        #  note this is not saved or plotted
         if self.exc_adys:
             self.matrix = self._remove_parcels('adysgranular')
-        else:
+        elif not keep_allo:
             self.matrix = self._remove_parcels('allocortex') 
-        self.plot()
 
-    def _create(self):
+    def _create_geodesic(self):
         """
         Creates center-to-parcel or center-to-center geodesic distance matrix
         between pairs  of parcels
@@ -514,44 +525,27 @@ class GeodesicDistanceMatrix(Matrix):
             #> load surf
             surf_path = os.path.join(
                 SRC_DIR, 
-                f'tpl-bigbrain_hemi-L_desc-mid.surf.gii'
+                f'tpl-bigbrain_hemi-{hem}_desc-mid.surf.gii'
                 )
             surf = nibabel.load(surf_path)
-            vertices = surf.agg_data('NIFTI_INTENT_POINTSET')
-            
-            #> load parcellation map
-            labels = nilearn.surface.load_surf_data(
-                os.path.join(
-                    SRC_DIR, 
-                    f'tpl-bigbrain_hemi-{hem}_desc-{self.parcellation_name}_parcellation.label.gii')
-                )
-            #> label parcellation map
-            _, _, names = nibabel.freesurfer.io.read_annot(
-                os.path.join(
-                    SRC_DIR, 
-                    f'{hem.lower()}h_{self.parcellation_name}.annot')
-            )
-            if self.parcellation_name == 'sjh':
-                names = list(map(lambda l: int(l.decode().replace('sjh_','')), names))
-            elif self.parcellation_name == 'aparc':
-                names = list(map(lambda l: f'{hem}_{l.decode()}', names)) # so that it matches ENIGMA toolbox dataset
-            elif self.parcellation_name in ['schaefer400', 'economo']:
-                names = list(map(lambda l: l.decode(), names)) # b'name' => 'name'
-            transdict = dict(enumerate(names))
-            parc = np.vectorize(transdict.get)(labels)
+            vertices = surf.agg_data('NIFTI_INTENT_POINTSET')            
+            parc = datasets.load_parcellation_map(self.parcellation_name, False)[hem]
             # find centre vertices
             uparcel = np.unique(parc)
             voi = np.zeros([1, len(uparcel)])
             
             print(f"[ INFO ]..... Finings centre vertex for each parcel in hemisphere {hem}")
+            # TODO: use helpers.get_parcel_centers instead
             for (i, parcel_name) in enumerate(uparcel):
                 this_parc = np.where(parc == parcel_name)[0]
-                distances = scipy.spatial.distance.pdist(np.squeeze(vertices[this_parc,:]), 'euclidean') # Returns condensed matrix of distances
-                distancesSq = scipy.spatial.distance.squareform(distances) # convert to square form
-                sumDist = np.sum(distancesSq, axis = 1) # sum distance across columns
-                index = np.where(sumDist == np.min(sumDist)) # minimum sum distance index
-                voi[0, i] = this_parc[index[0][0]]
-                
+                if this_parc.size == 1: # e.g. L_unknown in aparc
+                    voi[0, i] = this_parc[0]
+                else:
+                    distances = scipy.spatial.distance.pdist(np.squeeze(vertices[this_parc,:]), 'euclidean') # Returns condensed matrix of distances
+                    distancesSq = scipy.spatial.distance.squareform(distances) # convert to square form
+                    sumDist = np.sum(distancesSq, axis = 1) # sum distance across columns
+                    index = np.where(sumDist == np.min(sumDist)) # minimum sum distance index
+                    voi[0, i] = this_parc[index[0][0]]                
             # Initialize distance matrix
             GDs[hem] = np.zeros((uparcel.shape[0], uparcel.shape[0]))
 
@@ -588,6 +582,22 @@ class GeodesicDistanceMatrix(Matrix):
                 .set_index('index')
                 .fillna(0))
         return GD_full
+
+    def _create_euclidean(self):
+        center_indices = helpers.get_parcel_center_indices(self.parcellation_name)
+        center_coords = {}
+        for hem in ['L', 'R']:
+            surf_path = os.path.join(
+                SRC_DIR, 
+                f'tpl-bigbrain_hemi-{hem}_desc-mid.surf.gii'
+                )
+            coords = nilearn.surface.load_surf_mesh(surf_path).coordinates
+            center_coords[hem] = coords[center_indices[hem].values]
+        center_coords = np.vstack([center_coords['L'], center_coords['R']])
+        ED_matrix = scipy.spatial.distance_matrix(center_coords, center_coords)
+        parcels = center_indices['L'].index.to_list() + center_indices['R'].index.to_list()
+        ED_matrix = pd.DataFrame(ED_matrix, columns=parcels, index=parcels)
+        return ED_matrix
 
 class ConnectivityMatrix(Matrix):
     """
@@ -1054,7 +1064,8 @@ class DiseaseCovarianceMatrix(Matrix):
     label = "Disease co-alteration"
     short_label = "DisCov"
     cmap = 'Reds'
-    def __init__(self, parcellation_name='aparc', exc_adys=True, psych_only=False):
+    def __init__(self, parcellation_name='aparc', exc_regions='adys', 
+                 psych_only=False):
         """
         Initializes the disease covariance matrix
         
@@ -1063,16 +1074,20 @@ class DiseaseCovarianceMatrix(Matrix):
         parcellation_name: (str)
             the thickness data is only available in 'aparc' but
             can be pseudo-reparcellated to other parcellations
+        exc_regions: (str)
+            - 'adys': exclude allocortical and adysgranular regions
+            - 'allo': exclude allocortical regions
+            - None: exclude only the midline
         psych_only: (bool)
             only include psychiatric disorders similar to Hettwer 2022
         """
         self.parcellation_name = parcellation_name
-        self.exc_adys = exc_adys
+        self.exc_regions = exc_regions
         self.psych_only = psych_only
         self.dir_path = os.path.join(
             OUTPUT_DIR, 'disease', 
             f'covariance_parc-{self.parcellation_name}'\
-            + ('_exc-adys' if self.exc_adys else '')\
+            + (f'_exc-{self.exc_regions}' if self.exc_regions else '')\
             + ('_psych_only' if self.psych_only else '')
             )
         self.file_path = os.path.join(self.dir_path, 'matrix.csv')
@@ -1080,10 +1095,10 @@ class DiseaseCovarianceMatrix(Matrix):
             self._load()
         else:
             os.makedirs(self.dir_path, exist_ok=True)
-            self._create()
-            if self.exc_adys:
+            self.matrix = self._create()
+            if self.exc_regions == 'adys':
                 self.matrix = self._remove_parcels('adysgranular')
-            else:
+            elif self.exc_regions == 'allo':
                 self.matrix = self._remove_parcels('allocortex') 
             self._save()
             self.plot(vrange=(0, 1))
@@ -1118,8 +1133,14 @@ class DiseaseCovarianceMatrix(Matrix):
         #> zero out NaNs and inf
         matrix[np.isnan(matrix) | np.isinf(matrix)] = 0
         #> convert to df
-        self.matrix = pd.DataFrame(
+        matrix = pd.DataFrame(
             matrix, 
             index=self._parcellated_input_data.index,
             columns=self._parcellated_input_data.index
             )
+        #> remove midline parcels in the case of exc_regions=None
+        # they will cause problems for gradients because
+        # all cells in their rows is zero
+        midline = matrix.index.isin(helpers.MIDLINE_PARCELS[self.parcellation_name])
+        matrix = matrix.loc[~midline, ~midline]
+        return matrix
