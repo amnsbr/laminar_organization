@@ -9,6 +9,7 @@ import enigmatoolbox.datasets
 from cortex.polyutils import Surface
 import scipy.spatial.distance
 import scipy.io
+import abagen
 
 import helpers
 
@@ -557,6 +558,39 @@ def load_parcellation_map(parcellation_name, concatenate, downsampled=False):
     else:
         return labeled_parcellation_map
 
+def load_volumetric_parcel_labels(parcellation_name):
+    """
+    Loads the lables corresponding to the parcels in volumetric
+    space, except for the parcel ID 0, which corresponds to
+    background / midline
+
+    Parameter
+    --------
+    parcellation_name: (str)
+    """
+    if 'schaefer' in parcellation_name:
+        # For schaefer load the names from color tables
+        n_parcels = int(parcellation_name.replace('schaefer', ''))
+        url = ('https://github.com/ThomasYeoLab/CBIG/raw/master/'
+               'stable_projects/brain_parcellation/Schaefer2018_LocalGlobal/'
+               'Parcellations/MNI/freeview_lut/'
+               f'Schaefer2018_{n_parcels}Parcels_7Networks_order.txt')
+        labels = pd.read_csv(url, sep='\t', header=None)[1].values
+    elif parcellation_name == 'sjh':
+        # For SJH the volumetric parcel values are already
+        # parcel labels (i.e., 'sjh_{id}'), which also corresponds
+        # to the parcel ids from the surface, and simply getting
+        # the unique ids from surface parcellation would be the
+        # correct labels
+        labels = np.unique(load_parcellation_map('sjh', True))
+        labels = np.delete(labels, 0)
+    elif parcellation_name == 'aparc':
+        # Get the lables from abagen desikan killiany atlas and remove
+        # subcortical lables
+        dk_info = pd.read_csv(abagen.fetch_desikan_killiany()['info'])
+        dk_labels = dk_info['hemisphere'] + '_' + dk_info['label']
+        labels = dk_labels[dk_info['structure']=='cortex'].values
+    return labels
 
 def load_parcels_adys(parcellation_name, concat=True):
     """

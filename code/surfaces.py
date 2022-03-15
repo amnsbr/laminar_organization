@@ -1,4 +1,3 @@
-
 import os
 import itertools
 import numpy as np
@@ -14,6 +13,8 @@ import nibabel
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
 from dominance_analysis import Dominance
+from nilearn.input_data import NiftiLabelsMasker
+from nilearn.image import math_img
 
 import helpers
 import datasets
@@ -1042,3 +1043,97 @@ class YeoNetworks(CatCorticalSurface):
             )
         yeo_colors = [l.rgba[:-1] for l in yeo_giftii.labeltable.labels[1:]]
         return sns.color_palette(yeo_colors, as_cmap=True)
+
+class PETMaps(ContCorticalSurface):
+    """
+    Map of neurotransmitter receptors / transporters based
+    on PET data. Source: Hansen 2021
+    """
+    def __init__(self, parcellation_name):
+        """
+        Initializes PET maps
+
+        Parameters
+        ----------
+        parcellation_name: (str)
+            - schaefer400
+        """
+        self.parcellation_name = parcellation_name
+        self.dir_path = os.path.join(
+            OUTPUT_DIR, 'ei', 'pet',
+            f'parc-{parcellation_name}'
+        )
+        self.file_path = os.path.join(
+            self.dir_path, 'parcellated_density_zscore.csv'
+        )
+        if os.path.exists(self.file_path):
+            self.parcellated_data = pd.read_csv(self.file_path, index_col='parcel')
+        else:
+            os.makedirs(self.dir_path, exist_ok=True)
+            self.parcellated_data = self._create()
+            self.parcellated_data.to_csv(self.file_path, index_label='parcel')
+        # Pseudo-projection of volumetric data to surface via 
+        # parcellation for plotting etc.
+        self.surf_data = helpers.deparcellate(self.parcellated_data, self.parcellation_name)
+        self.columns = self.parcellated_data.columns.tolist()
+    
+    def _create(self):
+        """
+        Preprocesses PET maps by Z-scoring them and taking a
+        weighted average in case multiple maps exist for a given
+        receptor x tracer combination
+        """
+        # TODO: consider loading the data online from neuromaps
+        parcellated_data = pd.DataFrame()
+        #> load PET images metadata
+        metadata = pd.read_csv(
+            os.path.join(SRC_DIR, 'PET_nifti_images_metadata.csv'), 
+            index_col='filename')
+        #> group the images with the same recetpro-tracer
+        for group, group_df in metadata.groupby(['receptor', 'tracer']):
+            group_name = '_'.join(group)
+            print(group_name)
+            #> take a weighted average of PET value z-scores
+            # across images with the same receptor-tracer
+            # (weighted by N of subjects)
+            pet_parcellated_sum = {}
+            for filename, file_metadata in group_df.iterrows():
+                pet_img = os.path.join(SRC_DIR, 'PET_nifti_images', filename)
+                #>> prepare the parcellation masker
+                # Warning: Background label is by default set to
+                # 0. Make sure this is the case for all the parcellation
+                # maps and zero corresponds to background / midline
+                masker = NiftiLabelsMasker(
+                    os.path.join(
+                        SRC_DIR, 
+                        f'tpl-MNI152_desc-{self.parcellation_name}_parcellation.nii.gz'
+                        ), 
+                    strategy='sum',
+                    resampling_target='data',
+                    background_label=0)
+                #>> count the number of non-zero voxels per parcel so the average
+                # is calculated only among non-zero voxels (visualizing the PET map
+                # on volumetric parcellations, the parcels are usually much thicker
+                # than the PET map on the cortex, and there are a large number of 
+                # zero PET values in each parcel which can bias the parcelled values)
+                nonzero_mask = math_img('pet_img != 0', pet_img=pet_img)
+                nonzero_voxels_count_per_parcel = masker.fit_transform(nonzero_mask).flatten()
+                #>> take the average of PET values across non-zero voxels
+                pet_value_sum_per_parcel = masker.fit_transform(pet_img).flatten()
+                pet_parcellated = pet_value_sum_per_parcel / nonzero_voxels_count_per_parcel
+                # TODO: should I make any transformations in the negative PET images?
+                #>> get the PET intensity zscore weighted by N
+                pet_parcellated_sum[filename] = (
+                    scipy.stats.zscore(pet_parcellated)
+                    * file_metadata['N']
+                )
+            #> divide the sum of weighted Z-scores by total N
+            # Note that in the case of one file per group we can avoid
+            # multiplying by N and dividing by sum of N, but I've
+            # used this approach to have a shorter code which can
+            # also support the option of merging by receptor
+            # and not only (receptor, tracer) combinations
+            parcellated_data.loc[:, group_name] = sum(pet_parcellated_sum.values()) / group_df['N'].sum()
+            #> add labels of the parcels
+            parcellated_data.index = datasets.load_volumetric_parcel_labels(self.parcellation_name)
+        return parcellated_data
