@@ -1084,6 +1084,7 @@ class PETMaps(ContCorticalSurface):
         receptor x tracer combination
         """
         # TODO: consider loading the data online from neuromaps
+        # TODO: maybe move this to datasets.py
         parcellated_data = pd.DataFrame()
         #> load PET images metadata
         metadata = pd.read_csv(

@@ -13,7 +13,7 @@ if ! [ -f "${TOOLS_PATH}/bigbrainwarp.simg" ]; then
 fi
 
 
-fsaverage_to_bigbrain=('sjh.annot' 'economo.annot' 'schaefer400.annot' 'aparc.annot')
+fsaverage_to_bigbrain=('sjh.annot' 'economo.annot' 'schaefer400.annot' 'schaefer1000.annot' 'aparc.annot')
 for suffix in "${fsaverage_to_bigbrain[@]}"
 do
     if [ -f "${SRC_PATH}/tpl-bigbrain_hemi-L_desc-${suffix/.annot/_parcellation}.label.gii" ]; then

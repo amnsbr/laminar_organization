@@ -535,10 +535,12 @@ def load_parcellation_map(parcellation_name, concatenate, downsampled=False):
         )
         #> labels post-processing for each specific parcellation
         if parcellation_name == 'sjh':
+            # remove sjh_ from the lable
             sorted_labels = list(map(lambda l: int(l.decode().replace('sjh_','')), sorted_labels))
         elif parcellation_name == 'aparc':
-            sorted_labels = list(map(lambda l: f'{hem}_{l.decode()}', sorted_labels)) # so that it matches ENIGMA toolbox dataset
-        elif parcellation_name in ['schaefer400', 'economo']:
+            # add hemisphere to the lable so that it matches ENIGMA toolbox dataset
+            sorted_labels = list(map(lambda l: f'{hem}_{l.decode()}', sorted_labels))
+        elif parcellation_name in ['schaefer400', 'schaefer1000' 'economo']:
             sorted_labels = list(map(lambda l: l.decode(), sorted_labels)) # b'name' => 'name'
         transdict = dict(enumerate(sorted_labels))
         labeled_parcellation_map[hem] = np.vectorize(transdict.get)(parcellation_map)

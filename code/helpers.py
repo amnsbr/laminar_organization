@@ -29,6 +29,7 @@ os.makedirs(SPIN_BATCHES_DIR, exist_ok=True)
 
 MIDLINE_PARCELS = {
     'schaefer400': ['Background+FreeSurfer_Defined_Medial_Wall'],
+    'schaefer1000': ['Background+FreeSurfer_Defined_Medial_Wall'],
     'sjh': [0],
     'aparc': ['L_unknown', 'None']
 }
