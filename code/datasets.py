@@ -691,3 +691,46 @@ def load_conn_matrix(kind, parcellation_name='schaefer400'):
     #> reorder matrices downloaded from enigmaltoolbox
     reordered_conn_matrix = conn_matrix.loc[parcellated_dummy.index, parcellated_dummy.index]
     return reordered_conn_matrix
+
+def fetch_mean_gene_expression(genes_list, parcellation_name, discard_rh=True):
+    """
+    Gets the mean expression of genes in `gene_list`
+
+    Parameters
+    ---------
+    gene_list: (list of str)
+        Note: This will ignore genes that do not exist in the current
+        version of gene expression data
+    parcellation_name: (str)
+    discard_rh: (bool)
+        limit the map to the left hemisphere
+            Note: For consistency with other functions the right
+            hemisphere vertices/parcels are not removed but are set
+            to NaN
+    """
+    #> load parcellated AHBA data
+    ahba_data = np.load(
+        os.path.join(
+            SRC_DIR, 
+            f'ahba_parc-{parcellation_name}_frozen-20220316.npz'), 
+        allow_pickle=True)
+    ahba_df = pd.DataFrame(
+        ahba_data['data'], 
+        columns=ahba_data['columns'], 
+        index=ahba_data['index']
+        )
+    #> remove genes that do not exist in the
+    # current version of gene expression data
+    curr_genes_list = (set(genes_list) & set(ahba_df.columns))
+    print(f'{len(genes_list) - len(curr_genes_list)} of {len(genes_list)} genes do not exist')
+    #> get the average expression of the selected genes
+    mean_expression = (
+        ahba_df.loc[:, curr_genes_list]
+        .mean(axis=1)
+    )
+    if discard_rh:
+        #> remove right hem
+        split_hem_idx = helpers.get_split_hem_idx(parcellation_name, None)
+        mean_expression.iloc[split_hem_idx:] = np.NaN
+    return mean_expression
+

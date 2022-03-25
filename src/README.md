@@ -26,3 +26,4 @@ The `src` directory includes local and external input data used in the analyses.
 |`PET_nifti_images_metadata.csv`|Metdata for volumetric PET maps|Local|Created based on filenames and the information provided in Hansen et al. 2021 and the source papers for some|
 |`ahba_parc-*_frozen-*`|Expression of genes in each parcellation based on AHBA|Local|Created using `code/local/fetch_ahba.py` via [abagen](https://abagen.readthedocs.io/en/stable/)|
 |`celltypes_PSP.csv`|List of genes associated with each cell type|[jms290 / PolySyn_MSNs](https://raw.githubusercontent.com/jms290/PolySyn_MSNs/master/Data/AHBA/celltypes_PSP.csv)|Based on [Seidlitz 2020](https://www.nature.com/articles/s41467-020-17051-5)|
+|`neuronal_subtypes_genes.csv`|List of genes associated with excitatory and inhibitory neurons subtypes|Local|Based on Table S3 of [Lake 2018](https://www.nature.com/articles/nbt.4038)|

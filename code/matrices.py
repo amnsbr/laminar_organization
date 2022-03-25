@@ -27,7 +27,8 @@ class Matrix:
     Generic class for matrices
     """
     split_hem = False # set to False by default and only change for GD and SC
-    
+    cmap = 'viridis' # default cmap
+
     def _save(self):
         """
         Save the matrix to a .csv file
@@ -1150,3 +1151,121 @@ class DiseaseCovarianceMatrix(Matrix):
         midline = matrix.index.isin(helpers.MIDLINE_PARCELS[self.parcellation_name])
         matrix = matrix.loc[~midline, ~midline]
         return matrix
+
+class NeuronalSubtypesCovarianceMatrix(Matrix):
+    """
+    Matrix showing similarity of gene expression pattern 
+    of excitatory and inhibitory neuronal subtypes across
+    brain regions using AHBA data and based on gene lists
+    from Lake 2018 (10.1038/nbt.4038)
+    """
+    def __init__(self, neuron_type, parcellation_name, discard_rh=True):
+        """
+        Creates/loads the matrix
+
+        Parameters
+        ---------
+        neuron_type: (str)
+            - exc
+            - inh
+        parcellation_name: (str)
+        discard_rh: (bool)
+            limit the map to the left hemisphere
+            Note: For consistency with other functions the right
+            hemisphere vertices/parcels are not removed but are set
+            to NaN
+        """
+        self.neuron_type = neuron_type
+        self.parcellation_name = parcellation_name
+        self.discard_rh = discard_rh
+        LABELS = {
+            'exc': 'Excitatory neuron subtypes gene expression covariance',
+            'inh': 'Inhibitory neuron subtypes gene expression covariance',
+        }
+        SHORT_LABELS = {
+            'exc': 'ExSubCov',
+            'inh': 'InSubCov'
+        }
+        self.label = LABELS.get(self.neuron_type)
+        self.short_label = SHORT_LABELS.get(self.neuron_type)
+        self.dir_path = os.path.join(
+            OUTPUT_DIR, 'ei', 'gene_expression',
+            f'{neuron_type}_subtypes_covariance'\
+            + f'_parc-{self.parcellation_name}'\
+            + ('_rh_discarded' if discard_rh else '')
+            )
+        self.file_path = os.path.join(self.dir_path, 'matrix.csv')
+        if os.path.exists(self.file_path):
+            self._load()
+        else:
+            os.makedirs(self.dir_path, exist_ok=True)
+            self.matrix = self._create()
+            self._save()
+            self.plot(vrange=(0, 1))
+
+    def _create(self):
+        """
+        Creates the matrix of neuron-subtype-specific
+        gene expression covariance across regions by
+        taking pair-wise pearson correlation of 
+        mean gene expresion patterns
+
+        Returns
+        -------
+        matrix: (pd.DataFrame) n_parc x n_parc 
+        """
+        #> load mean gene expression of each parcel-subtype
+        self._parcellated_input_data = self._load_input_data()
+        #> create matrix of correlations
+        matrix = np.corrcoef(self._parcellated_input_data.values)
+        #> zero out negative correlations
+        matrix[matrix<0] = 0
+        #> zero out correlations of 1 (to avoid division by 0)
+        matrix[np.isclose(matrix, 1)] = 0
+        #> Fisher's z-transformation
+        matrix = 0.5 * np.log((1 + matrix) /  (1 - matrix))
+        #> zero out NaNs and inf
+        matrix[np.isnan(matrix) | np.isinf(matrix)] = 0
+        matrix = pd.DataFrame(
+            matrix, 
+            index=self._parcellated_input_data.index,
+            columns=self._parcellated_input_data.index
+            )
+        return matrix
+
+    def _load_input_data(self):
+        """
+        Loads the gene list associated with each subtype
+        and returns the average expression of genes associated
+        with each subtype at each parcel
+
+        Returns
+        -------
+        subtypes_mean_expression: (pd.DataFrame) n_parc x n_subtypes
+        """
+        if self.neuron_type == 'exc':
+            subtypes = [
+                'Ex1', 'Ex2', 'Ex3a', 'Ex3b', 'Ex3c', 
+                'Ex3d', 'Ex3e', 'Ex4', 'Ex5a', 'Ex5b', 
+                'Ex6a', 'Ex6b', 'Ex8'
+                ]
+        else:
+            subtypes = ['In1a', 'In1b', 'In1c', 'In2', 'In3', 'In4a', 'In4b', 'In6a', 'In6b', 'In7', 'In8']
+        subtypes_genes = pd.read_csv(
+            os.path.join(
+                SRC_DIR, 'neuronal_subtypes_genes.csv'
+            ), index_col=0
+            )['Cluster']
+        subtypes_mean_expression = pd.DataFrame()
+        for subtype in subtypes:
+            print(subtype)
+            #> get the genes list for the subtype
+            genes_list = subtypes_genes[subtypes_genes == subtype].index.tolist()
+            #> get their mean expression from ahba
+            subtypes_mean_expression.loc[:, subtype] = datasets.fetch_mean_gene_expression(
+                genes_list, 
+                self.parcellation_name, 
+                self.discard_rh
+                )
+            subtypes_mean_expression = subtypes_mean_expression.dropna()
+        return subtypes_mean_expression

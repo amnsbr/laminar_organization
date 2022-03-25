@@ -1166,7 +1166,7 @@ class NeuronTypeMaps(ContCorticalSurface):
 
     Reference: Seidlitz 2020 (https://www.nature.com/articles/s41467-020-17051-5)
     """
-    def __init__(self, neuron_type, parcellation_name, lh_only=True):
+    def __init__(self, neuron_type, parcellation_name, discard_rh=True):
         """
         Creates/loads the neuron type gene expression map
 
@@ -1176,7 +1176,7 @@ class NeuronTypeMaps(ContCorticalSurface):
             - Neuro-Ex
             - Neuro-In
         parcellation_name: (str)
-        lh_only: (bool)
+        discard_rh: (bool)
             limit the map to the left hemisphere
             Note: For consistency with other functions the right
             hemisphere vertices/parcels are not removed but are set
@@ -1184,9 +1184,11 @@ class NeuronTypeMaps(ContCorticalSurface):
         """
         self.neuron_type = neuron_type
         self.parcellation_name = parcellation_name
+        self.discard_rh = discard_rh
         self.dir_path = os.path.join(
-            OUTPUT_DIR, 'ei', 'gene',
-            f'{neuron_type.lower()}_parc-{parcellation_name}'
+            OUTPUT_DIR, 'ei', 'gene_expression',
+            f'{neuron_type.lower()}_parc-{parcellation_name}'\
+            + ('_rh_discarded' if discard_rh else '')
         )
         self.file_path = os.path.join(
             self.dir_path, f'parcellated_mean_expression.csv'
@@ -1202,9 +1204,6 @@ class NeuronTypeMaps(ContCorticalSurface):
             os.makedirs(self.dir_path, exist_ok=True)
             self.parcellated_data = self._create()
             self.parcellated_data.to_csv(self.file_path, index_label='parcel')
-        if lh_only:
-            split_hem_idx = helpers.get_split_hem_idx(self.parcellation_name, exc_regions=None)
-            self.parcellated_data.iloc[split_hem_idx:] = np.NaN
         self.surf_data = helpers.deparcellate(self.parcellated_data, self.parcellation_name)
         self.columns = self.parcellated_data.columns.tolist()
         helpers.plot_on_bigbrain_nl(
@@ -1219,35 +1218,19 @@ class NeuronTypeMaps(ContCorticalSurface):
         taking the average expression over all genes
         associated with the cell type
         """
-        #> load parcellated AHBA data
-        ahba_data = np.load(
-            os.path.join(
-                SRC_DIR, 
-                f'ahba_parc-{self.parcellation_name}_frozen-20220316.npz'), 
-            allow_pickle=True)
-        ahba_df = pd.DataFrame(
-            ahba_data['data'], 
-            columns=ahba_data['columns'], 
-            index=ahba_data['index']
-            )
         #> load cell type gene list from Seidlitz2020
         cell_type_genes = pd.read_csv(os.path.join(
             SRC_DIR, 'celltypes_PSP.csv'
         ))
-        gene_list = (
+        genes_list = (
             cell_type_genes
             .loc[cell_type_genes['class']==self.neuron_type, 'gene']
             .values
         )
-        #> remove genes that do not exist in the
-        # current version of gene expression data
-        gene_list = (set(gene_list) & set(ahba_df.columns))
-        #> get the average expression of the selected genes
-        cell_type_expression = (
-            ahba_df.loc[:, gene_list]
-            .mean(axis=1)
-            .rename(f'{self.neuron_type} gene expression')
-            .to_frame()
-        )
+        cell_type_expression = datasets.fetch_mean_gene_expression(
+            genes_list,
+            self.parcellation_name,
+            self.discard_rh
+        ).rename(f'{self.neuron_type} gene expression').to_frame()
         return cell_type_expression
         
