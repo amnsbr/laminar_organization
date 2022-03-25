@@ -99,7 +99,7 @@ class Matrix:
         # TODO: maybe move this to MicrostructuralCovarianceMatrix
         #> make sure they have the same parcellation and mask
         assert self.parcellation_name == other.parcellation_name
-        assert self.exc_adys == other.exc_adys
+        assert self.exc_regions == other.exc_regions
         #> match the matrices in the order and selection of parcels
         #  + convert them to np.ndarray
         shared_parcels = self.matrix.index & other.matrix.index # union of the two indices
@@ -112,10 +112,9 @@ class Matrix:
         # make interhemispheric pairs of the lower triangle
         # NaN so it could be then removed
         if self.split_hem or other.split_hem:
-            exc_regions = 'adysgranular' if self.exc_adys else 'allocortex'
             split_hem_idx = helpers.get_split_hem_idx(
                 self.parcellation_name, 
-                exc_regions
+                self.exc_regions
                 )
             X[split_hem_idx:, :split_hem_idx] = np.NaN
             Y[split_hem_idx:, :split_hem_idx] = np.NaN
@@ -200,7 +199,7 @@ class Matrix:
         """
         #> make sure they have the same parcellation and mask
         assert self.parcellation_name == other.parcellation_name
-        assert self.exc_adys == other.exc_adys
+        assert self.exc_regions == other.exc_regions
         #> match the matrices in the order and selection of parcels
         #  + convert them to np.ndarray
         shared_parcels = self.matrix.index & other.matrix.index # union of the two indices
@@ -210,10 +209,9 @@ class Matrix:
         # make interhemispheric pairs of the lower triangle
         # NaN so it could be then removed
         if self.split_hem or other.split_hem:
-            exc_regions = 'adysgranular' if self.exc_adys else 'allocortex'
             split_hem_idx = helpers.get_split_hem_idx(
                 self.parcellation_name, 
-                exc_regions
+                self.exc_regions
                 )
             X[split_hem_idx:, :split_hem_idx] = np.NaN
             Y[split_hem_idx:, :split_hem_idx] = np.NaN
@@ -275,12 +273,16 @@ class Matrix:
         parcellated_cortical_types = datasets.load_cortical_types(self.parcellation_name)
         parcellated_cortical_types = parcellated_cortical_types.loc[self.matrix.index]
         #> list the excluded types based on matrix path 
-        if self.exc_adys:
+        # TODO: clean
+        if self.exc_regions=='adysgranular':
             included_types = ['EU1', 'EU2', 'EU3', 'KO']
             excluded_types = [np.NaN, 'ALO', 'AG', 'DG']
-        else:
+        elif self.exc_regions=='allocortex':
             included_types = ['AG', 'DG', 'EU1', 'EU2', 'EU3', 'KO']
             excluded_types = [np.NaN, 'ALO']
+        else:
+            included_types = ['ALO', 'AG', 'DG', 'EU1', 'EU2', 'EU3', 'KO']
+            excluded_types = [np.NaN]
         n_types = len(included_types)
         matrix = self.matrix.loc[
             ~parcellated_cortical_types.isin(excluded_types), 
@@ -364,19 +366,21 @@ class CurvatureSimilarityMatrix(Matrix):
     label = "Curvature similarity"
     dir_path = os.path.join(OUTPUT_DIR, 'curvature')
     cmap = sns.color_palette("mako", as_cmap=True)
-    def __init__(self, parcellation_name, exc_adys=True):
+    def __init__(self, parcellation_name, exc_regions=None):
         """
         Creates curvature similarity matrix or loads it if it already exist
 
         Parameters
         ----------
         parcellation_name: (str)
-        exc_adys: (bool)
+        exc_regions: (str | None)
         """
         self.parcellation_name = parcellation_name
-        self.exc_adys = exc_adys
-        file_name =  f'curvature_similarity_matrix_parc-{parcellation_name}.csv'
-        self.file_path = os.path.join(self.dir_path, file_name)
+        self.exc_regions = exc_regions
+        self.file_path = os.path.join(
+            self.dir_path,
+            f'curvature_similarity_matrix_parc-{parcellation_name}.csv'
+            )
         if os.path.exists(self.file_path):
             self._load()
         else:
@@ -386,10 +390,8 @@ class CurvatureSimilarityMatrix(Matrix):
         #> remove the adysgranular parcels after the matrix is created
         #  to avoid unncessary waste of computational resources
         #  note this is not saved
-        if self.exc_adys:
-            self.matrix = self._remove_parcels('adysgranular')
-        else:
-            self.matrix = self._remove_parcels('allocortex')
+        if self.exc_regions:
+            self.matrix = self._remove_parcels(self.exc_regions)
         self.plot()
         
     def _create(self):
@@ -466,7 +468,7 @@ class DistanceMatrix(Matrix):
     cmap = sns.color_palette("viridis", as_cmap=True)
     def __init__(self, parcellation_name, kind='geodesic', 
                  approach='center-to-center', 
-                 exc_adys=True, keep_allo=False):
+                 exc_regions=None):
         """
         Initializes geodesic distance matrix for `parcellation_name` and
         creates or loads it
@@ -482,8 +484,8 @@ class DistanceMatrix(Matrix):
             - center-to-parcel: calculates distance between centroid of one parcel to all vertices
                                 in the other parcel, taking the mean distance. Can result in asymmetric matrix.
                                 (this is "geoDistMapper.py" behavior)
-        exc_adys: (bool) Exclude adysgranular parcels from the matrix
-        keep_allo: (bool) Keep allocortical regions. Only used if exc_adys=False.
+        exc_regions: (str | None)
+
         Based on "geoDistMapper.py" from micapipe/functions
         Original Credit:
         # Translated from matlab:
@@ -494,7 +496,7 @@ class DistanceMatrix(Matrix):
         self.kind = kind
         self.approach = approach
         print(self.approach)
-        self.exc_adys = exc_adys
+        self.exc_regions = exc_regions
         self.label = f"{self.kind.title()} distance"
         self.file_path = os.path.join(
             self.dir_path,
@@ -513,10 +515,8 @@ class DistanceMatrix(Matrix):
         #> remove the adysgranular parcels after the matrix is created
         #  to avoid unncessary waste of computational resources
         #  note this is not saved or plotted
-        if self.exc_adys:
-            self.matrix = self._remove_parcels('adysgranular')
-        elif not keep_allo:
-            self.matrix = self._remove_parcels('allocortex') 
+        if self.exc_regions:
+            self.matrix = self._remove_parcels(self.exc_regions)
 
     def _create_geodesic(self):
         """
@@ -606,7 +606,7 @@ class ConnectivityMatrix(Matrix):
     """
     Structural or functional connectivity matrix
     """
-    def __init__(self, kind, exc_adys=True, sc_zero_contra=True, parcellation_name='schaefer400'):
+    def __init__(self, kind, exc_regions=None, sc_zero_contra=True, parcellation_name='schaefer400'):
         """
         Initializes structural/functional connectivity matrix
 
@@ -615,13 +615,13 @@ class ConnectivityMatrix(Matrix):
         kind: (str)
             - structural
             - functional
-        exc_adys: (bool) exclude adysgranular parcels
+        exc_regions: (str | None)
         sc_zero_contra: (bool) zero out contralateral edges for the SC matrix
         parcellation_name: (str)
             - schaefer400 (currently only this is supported)
         """
         self.kind = kind
-        self.exc_adys = exc_adys
+        self.exc_regions = exc_regions
         self.sc_zero_contra = sc_zero_contra
         if self.kind == 'structural':
             self.cmap = cmcrameri.cm.davos
@@ -644,10 +644,9 @@ class ConnectivityMatrix(Matrix):
             os.makedirs(self.dir_path, exist_ok=True)
             self.matrix = datasets.load_conn_matrix(self.kind, self.parcellation_name)
             if (self.kind == 'structural') & self.sc_zero_contra:
-                exc_regions = 'adysgranular' if self.exc_adys else 'allocortex'
                 split_hem_idx = helpers.get_split_hem_idx(
                     self.parcellation_name, 
-                    exc_regions
+                    self.exc_regions
                     )
                 self.matrix.iloc[:split_hem_idx, split_hem_idx:] = 0
                 self.matrix.iloc[split_hem_idx:, :split_hem_idx] = 0
@@ -655,10 +654,8 @@ class ConnectivityMatrix(Matrix):
         #> remove the adysgranular parcels after the matrix is created
         #  to avoid unncessary waste of computational resources
         #  note this is not saved
-        if self.exc_adys:
-            self.matrix = self._remove_parcels('adysgranular')
-        else:
-            self.matrix = self._remove_parcels('allocortex') 
+        if self.exc_regions:
+            self.matrix = self._remove_parcels(self.exc_regions)
         self.plot()
 
 
@@ -668,7 +665,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
     thickness, relative laminar volume, density profiles (MPC), or their combination
     """
     def __init__(self, input_type, parcellation_name='sjh', 
-                 exc_adys=True, correct_curvature='volume', 
+                 exc_regions='adysgranular', correct_curvature='volume', 
                  similarity_metric = 'parcor', similarity_scale='parcel'):
         """
         Initializes laminar similarity matrix object
@@ -695,7 +692,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
             - 'parcel' [default]: similarity method is used between average laminar profile of parcels
             - 'vertex': similarity method is used between all pairs of vertices between two
                         parcels and then the similarity metric is averaged
-        exc_adys: (bool) Exclude a-/dysgranular regions
+        exc_regions: (str | None)
         parcellation_name: (str) Parcellation scheme
             - 'sjh'
             - 'schaefer400'
@@ -706,7 +703,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
         self.similarity_metric = similarity_metric
         self.similarity_scale = similarity_scale
         self.parcellation_name = parcellation_name
-        self.exc_adys = exc_adys
+        self.exc_regions = exc_regions
         #> set the label based on input type
         SHORT_LABELS = {
             'thickness': 'LTC',
@@ -745,7 +742,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
             - input_type: {self.input_type},
             - correct_curvature: {self.correct_curvature}
             - parcellation_name: {self.parcellation_name},
-            - exc_adys: {self.exc_adys}
+            - exc_regions: {self.exc_regions}
         """)
         if self.input_type == 'thickness-density':
             matrices = []
@@ -757,7 +754,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
                     correct_curvature=self.correct_curvature,
                     similarity_metric=self.similarity_metric,
                     similarity_scale=self.similarity_scale,
-                    exc_adys=self.exc_adys,
+                    exc_regions=self.exc_regions,
                     parcellation_name=self.parcellation_name
                 )
                 matrices.append(matrix_obj.matrix)
@@ -779,10 +776,10 @@ class MicrostructuralCovarianceMatrix(Matrix):
         Load input data
         """
         #> load exclusion masks for a-/dysgranular regions if needed
-        if self.exc_adys:
-            exc_masks = datasets.load_exc_masks('adysgranular', self.parcellation_name)
+        if self.exc_regions:
+            exc_masks = datasets.load_exc_masks(self.exc_regions, self.parcellation_name)
         else:
-            exc_masks = datasets.load_exc_masks('allocortex', self.parcellation_name)
+            raise NotImplementedError
         #> load the data
         if self.input_type == 'thickness':
             if self.correct_curvature == 'volume':
@@ -1003,8 +1000,8 @@ class MicrostructuralCovarianceMatrix(Matrix):
         sub_dir = f'parc-{self.parcellation_name}'
         if self.input_type != 'density':
             sub_dir += f'_curv-{str(self.correct_curvature).lower()}'
-        if self.exc_adys:
-            sub_dir += '_exc-adys'
+        if self.exc_regions:
+            sub_dir += f'_exc-{self.exc_regions}'
         sub_dir += f'_metric-{self.similarity_metric}'\
             + f'_scale-{self.similarity_scale}'
         return os.path.join(OUTPUT_DIR, main_dir, sub_dir)
@@ -1012,21 +1009,21 @@ class MicrostructuralCovarianceMatrix(Matrix):
 class CorticalTypeSimilarityMatrix(Matrix):
     label = "Cortical type similarity"
     cmap = 'YlOrRd'
-    def __init__(self, parcellation_name, exc_adys):
+    def __init__(self, parcellation_name, exc_regions):
         """
         Initializes cortical type similarity matrix object for the given `parcellation_name`
 
         Parameters
         ---------
         parcellation_name: (str)
-        exc_adys: (bool) exclude adysgranular+allocortical regions or only allocortex
+        exc_regions: (str | None)
         """
         self.parcellation_name = parcellation_name
-        self.exc_adys = exc_adys
+        self.exc_regions = exc_regions
         self.dir_path = os.path.join(
             OUTPUT_DIR, 'ctypes', 
             f'similarity_parc-{self.parcellation_name}'\
-            + ('_exc-adys' if self.exc_adys else '')
+            + (f'_exc-{self.exc_regions}' if self.exc_regions else '')
             )
         self.file_path = os.path.join(self.dir_path, 'matrix.csv')
         if os.path.exists(self.file_path):
@@ -1034,10 +1031,8 @@ class CorticalTypeSimilarityMatrix(Matrix):
         else:
             os.makedirs(self.dir_path, exist_ok=True)
             self._create()
-            if self.exc_adys:
-                self.matrix = self._remove_parcels('adysgranular')
-            else:
-                self.matrix = self._remove_parcels('allocortex') 
+            if self.exc_regions:
+                self.matrix = self._remove_parcels(self.exc_regions)
             self._save()
             self.plot()            
 
@@ -1071,7 +1066,7 @@ class DiseaseCovarianceMatrix(Matrix):
     label = "Disease co-alteration"
     short_label = "DisCov"
     cmap = 'Reds'
-    def __init__(self, parcellation_name='aparc', exc_regions='adys', 
+    def __init__(self, parcellation_name='aparc', exc_regions=None, 
                  psych_only=False):
         """
         Initializes the disease covariance matrix
@@ -1082,8 +1077,8 @@ class DiseaseCovarianceMatrix(Matrix):
             the thickness data is only available in 'aparc' but
             can be pseudo-reparcellated to other parcellations
         exc_regions: (str)
-            - 'adys': exclude allocortical and adysgranular regions
-            - 'allo': exclude allocortical regions
+            - 'adysgranular': exclude allocortical and adysgranular regions
+            - 'allocortex': exclude allocortical regions
             - None: exclude only the midline
         psych_only: (bool)
             only include psychiatric disorders similar to Hettwer 2022
@@ -1103,10 +1098,8 @@ class DiseaseCovarianceMatrix(Matrix):
         else:
             os.makedirs(self.dir_path, exist_ok=True)
             self.matrix = self._create()
-            if self.exc_regions == 'adys':
-                self.matrix = self._remove_parcels('adysgranular')
-            elif self.exc_regions == 'allo':
-                self.matrix = self._remove_parcels('allocortex') 
+            if self.exc_regions:
+                self.matrix = self._remove_parcels(self.exc_regions)
             self._save()
             self.plot(vrange=(0, 1))
     
@@ -1159,7 +1152,7 @@ class NeuronalSubtypesCovarianceMatrix(Matrix):
     brain regions using AHBA data and based on gene lists
     from Lake 2018 (10.1038/nbt.4038)
     """
-    def __init__(self, neuron_type, parcellation_name, discard_rh=True):
+    def __init__(self, neuron_type, parcellation_name, exc_regions=None, discard_rh=True):
         """
         Creates/loads the matrix
 
@@ -1169,6 +1162,7 @@ class NeuronalSubtypesCovarianceMatrix(Matrix):
             - exc
             - inh
         parcellation_name: (str)
+        exc_regions: (str | None)
         discard_rh: (bool)
             limit the map to the left hemisphere
             Note: For consistency with other functions the right
@@ -1177,6 +1171,7 @@ class NeuronalSubtypesCovarianceMatrix(Matrix):
         """
         self.neuron_type = neuron_type
         self.parcellation_name = parcellation_name
+        self.exc_regions = exc_regions
         self.discard_rh = discard_rh
         LABELS = {
             'exc': 'Excitatory neuron subtypes gene expression covariance',
@@ -1202,6 +1197,8 @@ class NeuronalSubtypesCovarianceMatrix(Matrix):
             self.matrix = self._create()
             self._save()
             self.plot(vrange=(0, 1))
+        if self.exc_regions:
+            self.matrix = self._remove_parcels(self.exc_regions)
 
     def _create(self):
         """

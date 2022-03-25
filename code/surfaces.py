@@ -112,7 +112,7 @@ class ContCorticalSurface:
                     dpi=192
                     )
     
-    def microstructure_spatial_cross_validation(self, col_idx=0, exc_adys=True):
+    def microstructure_spatial_cross_validation(self, col_idx=0, exc_regions='adysgranular'):
         """
         Caclulates R2 of predicting surf_data[:, col_idx] 
         based on LTC G1, MPC G1 and C.Types after doing spatial
@@ -120,9 +120,8 @@ class ContCorticalSurface:
 
         Parameters
         --------
-        exc_adys: (bool)
-            exclude adysgranular regions from the microstructure
-
+        exc_regions: (str | None) which regions to exclude from structural maps
+        
         Ref: https://arxiv.org/abs/2005.14263
         """
         # Make sure it's only called with surfaces other than
@@ -133,14 +132,14 @@ class ContCorticalSurface:
             matrices.MicrostructuralCovarianceMatrix(
                 'thickness', 
                 parcellation_name=self.parcellation_name,
-                exc_adys=exc_adys
+                exc_regions=exc_regions
                 )
             ).parcellated_data.iloc[:, 0].rename('LTC G1')
         mpcg1 = MicrostructuralCovarianceGradients(
             matrices.MicrostructuralCovarianceMatrix(
                 'density', 
                 parcellation_name=self.parcellation_name,
-                exc_adys=exc_adys
+                exc_regions=exc_regions
                 )
             ).parcellated_data.iloc[:, 0].rename('MPC G1')
         ctypes = (
@@ -170,8 +169,7 @@ class ContCorticalSurface:
         neighbors = helpers.get_neighbors_mask(
             'aparc', 
             proportion=0.2,
-            exc_adys=exc_adys,
-            keep_allo=False
+            exc_regions=exc_regions,
         )
         neighbors = neighbors.loc[neighbors.index, neighbors.index]
         res = pd.DataFrame()
@@ -200,7 +198,7 @@ class ContCorticalSurface:
                 )
             )
 
-    def microstructure_dominance_analysis(self, col_idx=0, n_perm=1000, exc_adys=True):
+    def microstructure_dominance_analysis(self, col_idx=0, n_perm=1000, exc_regions='adysgranular'):
         """
         Performs dominance analysis to compare the contribution
         of LTC G1, MPC G1 and C.Types in explaining the variance
@@ -213,8 +211,7 @@ class ContCorticalSurface:
         ----------
         col_idx: (int) column index to use as the dependent variable
         n_perm: (int) if zero spin permutation is not  performed
-        exc_adys: (bool)
-            exclude adysgranular regions from structural maps
+        exc_regions: (str | None) which regions to exclude from structural maps
         """
         # TODO: add the option for doing this on parcellated data
         # and using variogram permutation
@@ -226,7 +223,7 @@ class ContCorticalSurface:
             self.dir_path, 
             'microstructure_dominance_analysis' \
             + f'_col-{self.columns[col_idx]}' \
-            + ('_exc-adys' if exc_adys else '') \
+            + (f'_exc-{exc_regions}' if exc_regions else '') \
             + f'_nperm-{n_perm}'
             )
         os.makedirs(out_path, exist_ok=True)
@@ -243,7 +240,7 @@ class ContCorticalSurface:
             matrices.MicrostructuralCovarianceMatrix(
                 'thickness', 
                 parcellation_name=self.parcellation_name,
-                exc_adys=exc_adys
+                exc_regions=exc_regions
                 )
             )
         ltcg1_surf = helpers.downsample(ltcg.surf_data)[:, :1]
@@ -251,12 +248,12 @@ class ContCorticalSurface:
             matrices.MicrostructuralCovarianceMatrix(
                 'density', 
                 parcellation_name=self.parcellation_name,
-                exc_adys=exc_adys
+                exc_regions=exc_regions
                 )
             )
         mpcg1_surf = helpers.downsample(mpcg.surf_data)[:, :1]
         #> get the downsampled ctypes as float
-        ctypes_surf = CorticalTypes(exc_adys=exc_adys, downsampled=True).surf_data
+        ctypes_surf = CorticalTypes(exc_regions=exc_regions, downsampled=True).surf_data
         #> create dataframes
         predictors = pd.DataFrame(
             np.hstack([ltcg1_surf, mpcg1_surf, ctypes_surf]),
@@ -903,8 +900,6 @@ class CatCorticalSurface:
         ----------
         other: (ContCorticalSurface)
         parcellation_name: (str)
-        exc_adys: (bool)
-            exclude allocortical and a-/dysgranular regions
         nbins: (int)
             number of bins in the binned stacked bar plot
         """
@@ -991,19 +986,23 @@ class CorticalTypes(CatCorticalSurface):
     Map of cortical types
     """
     label = 'Cortical Type'
-    def __init__(self, exc_adys=True, downsampled=False):
+    def __init__(self, exc_regions='adysgranular', downsampled=False):
         """
         Loads the map of cortical types
         """
-        self.exc_adys = exc_adys
+        self.exc_regions = exc_regions
         self.colors = sns.color_palette("RdYlGn_r", 6)
-        if self.exc_adys:
+        if self.exc_regions == 'adysgranular':
             self.included_categories = ['EU1', 'EU2', 'EU3', 'KO']
             self.excluded_categories = [np.NaN, 'ALO', 'AG', 'DG']
             self.colors = self.colors[2:]
-        else:
+        elif self.exc_regions == 'allocortex':
             self.included_categories = ['AG', 'DG', 'EU1', 'EU2', 'EU3', 'KO']
             self.excluded_categories = [np.NaN, 'ALO']
+        else: # this will not happen normally
+            self.included_categories = ['ALO', 'AG', 'DG', 'EU1', 'EU2', 'EU3', 'KO']
+            self.excluded_categories = [np.NaN]
+            self.colors = sns.color_palette("RdYlGn_r", 7)
         self.n_categories = len(self.included_categories)
         # load unparcellated surface data
         cortical_types_map = datasets.load_cortical_types(downsampled=downsampled)

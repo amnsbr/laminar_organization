@@ -436,7 +436,7 @@ def get_parcel_center_indices(parcellation_name):
         centers[hem].to_csv(out_path, index_label='parcel')
     return centers
 
-def get_neighbors_mask(parcellation_name, proportion=0.2, exc_adys=True, keep_allo=False):
+def get_neighbors_mask(parcellation_name, proportion=0.2, exc_regions='adysgranular'):
     """
     Returns a matrix with each row indicating neighbors to any given parcel,
     which are among the `proportion` closest parcel to the seed parcel in
@@ -448,11 +448,8 @@ def get_neighbors_mask(parcellation_name, proportion=0.2, exc_adys=True, keep_al
     parcellation_name: (str)
     proportion: (float)
         proportion of parcels assigned to the train set for each parcel.
-    exc_adys: (bool) 
+    exc_regions: (str | None) 
         exclude adysgranular regions
-    keep_allo: (bool) 
-        keep allocortical regions. Only used if exc_adys=False.
-
     Returns
     -------
     neighbors: (pd.DataFrame) 
@@ -462,8 +459,7 @@ def get_neighbors_mask(parcellation_name, proportion=0.2, exc_adys=True, keep_al
     gd = matrices.DistanceMatrix(
         parcellation_name=parcellation_name, 
         kind='geodesic', 
-        exc_adys=exc_adys, 
-        keep_allo=keep_allo)
+        exc_regions=exc_regions)
     neighbors = (
         gd.matrix
         #> remove seed and contralateral parcels
