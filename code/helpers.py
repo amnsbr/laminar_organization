@@ -374,20 +374,22 @@ def deparcellate(parcellated_data, parcellation_name, downsampled=False):
     surface_map = labeled_parcellated_data.loc[concat_parcellation_map].values # shape: vertex X gradient
     return surface_map
 
-def get_split_hem_idx(parcellation_name, exc_adys):
+def get_split_hem_idx(parcellation_name, exc_regions):
     """
     Get the index of the first RH parcel to split hemispheres
 
     Parameters
     ----------
     parcellation_name: (str)
-    exc_adys: (bool)
+    exc_regions: (str or None)
+        - adysgranular
+        - allocortex
+        - None
     """
-    if exc_adys:
-        exc_mask_type = 'adysgranular'
+    if exc_regions is not None:
+        exc_masks = datasets.load_exc_masks(exc_regions, parcellation_name)
     else:
-        exc_mask_type = 'allocortex'
-    exc_masks = datasets.load_exc_masks(exc_mask_type, parcellation_name)
+        exc_masks = {hem:np.zeros(datasets.N_VERTICES_HEM_BB) for hem in ['L', 'R']}
     parcels_to_exclude = parcellate(exc_masks, parcellation_name)
     split_hem_idx = int(np.nansum(1-parcels_to_exclude['L'].values)) # number of non-exc-mask parcels in lh
     return split_hem_idx

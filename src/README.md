@@ -22,6 +22,7 @@ The `src` directory includes local and external input data used in the analyses.
 |`tpl-bigbrain_hemi_*_desc-{pial/white}.area.npy`|Pial/WM surface area of BigBrain|Local|Created using CIVET in `code/local/calculate_surface_area.py`|
 |`tpl-bigbrain_hemi-*_desc-Yeo2011_7Networks_N1000.label.gii`|Yeo 7 functional networks in BigBrain surface space|[caseypaquola / BigBrainWarp](https://github.com/caseypaquola/BigBrainWarp)| |
 |`spin_batches/`|BigBrain surface sphere spun for permutation testing|Local|Created in `code/helpers.py` > `create_bigbrain_spin_permutations`. Each batch includes 20 random spins.|
-|`PET_nifti_images`|Receptors/transporters volumetric PET maps|[netneurolab / hansen_receptors](https://github.com/netneurolab/hansen_receptors/tree/main/data/PET_nifti_images)| |
+|`PET_nifti_images`|Receptors volumetric PET maps|[netneurolab / hansen_receptors](https://github.com/netneurolab/hansen_receptors/tree/main/data/PET_nifti_images)| |
 |`PET_nifti_images_metadata.csv`|Metdata for volumetric PET maps|Local|Created based on filenames and the information provided in Hansen et al. 2021 and the source papers for some|
-|`ahba_parc-*_frozen-*`|Expression of genes in each parcellation based on AHBA|Local|Created using `code/local/fetch_abagen.sh` via [abagen](https://abagen.readthedocs.io/en/stable/)|
+|`ahba_parc-*_frozen-*`|Expression of genes in each parcellation based on AHBA|Local|Created using `code/local/fetch_ahba.py` via [abagen](https://abagen.readthedocs.io/en/stable/)|
+|`celltypes_PSP.csv`|List of genes associated with each cell type|[jms290 / PolySyn_MSNs](https://raw.githubusercontent.com/jms290/PolySyn_MSNs/master/Data/AHBA/celltypes_PSP.csv)|Based on [Seidlitz 2020](https://www.nature.com/articles/s41467-020-17051-5)|

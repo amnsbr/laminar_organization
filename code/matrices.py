@@ -111,9 +111,10 @@ class Matrix:
         # make interhemispheric pairs of the lower triangle
         # NaN so it could be then removed
         if self.split_hem or other.split_hem:
+            exc_regions = 'adysgranular' if self.exc_adys else 'allocortex'
             split_hem_idx = helpers.get_split_hem_idx(
                 self.parcellation_name, 
-                self.exc_adys
+                exc_regions
                 )
             X[split_hem_idx:, :split_hem_idx] = np.NaN
             Y[split_hem_idx:, :split_hem_idx] = np.NaN
@@ -208,9 +209,10 @@ class Matrix:
         # make interhemispheric pairs of the lower triangle
         # NaN so it could be then removed
         if self.split_hem or other.split_hem:
+            exc_regions = 'adysgranular' if self.exc_adys else 'allocortex'
             split_hem_idx = helpers.get_split_hem_idx(
                 self.parcellation_name, 
-                self.exc_adys
+                exc_regions
                 )
             X[split_hem_idx:, :split_hem_idx] = np.NaN
             Y[split_hem_idx:, :split_hem_idx] = np.NaN
@@ -641,7 +643,11 @@ class ConnectivityMatrix(Matrix):
             os.makedirs(self.dir_path, exist_ok=True)
             self.matrix = datasets.load_conn_matrix(self.kind, self.parcellation_name)
             if (self.kind == 'structural') & self.sc_zero_contra:
-                split_hem_idx = helpers.get_split_hem_idx(self.parcellation_name, self.exc_adys)
+                exc_regions = 'adysgranular' if self.exc_adys else 'allocortex'
+                split_hem_idx = helpers.get_split_hem_idx(
+                    self.parcellation_name, 
+                    exc_regions
+                    )
                 self.matrix.iloc[:split_hem_idx, split_hem_idx:] = 0
                 self.matrix.iloc[split_hem_idx:, :split_hem_idx] = 0
             self._save()

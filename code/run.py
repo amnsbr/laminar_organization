@@ -43,7 +43,7 @@ def create_matrices_and_gradients():
                     # TODO: add gradient associations
 
 
-def disease_gradients():
+def disease_gradients_analyses():
     for psych_only in [False, True]:
         #> create and plot the matrix
         dis_cov_matrix = matrices.DiseaseCovarianceMatrix(
@@ -52,17 +52,30 @@ def disease_gradients():
             psych_only=psych_only
         )
         #> create and plot the gradients
-        dis_cov_gradients = surfaces.DiseaseCovarianceGradients(dis_cov_matrix)
+        dis_cov_gradients = surfaces.Gradients(dis_cov_matrix)
         #> run the dominance analysis
-        dis_cov_gradients.microstructure_dominance_analysis(n_perm=20, exc_adys=True)
-        # TODO: maybe also repeat this without excluding adys from microstructural maps
-        #> run the cross-validation on the R2 of the combined model
-        dis_cov_gradients.microstructure_spatial_cross_validation()
+        dis_cov_gradients.microstructure_dominance_analysis(col_idx=0, n_perm=20, exc_adys=True)
+
+def ei_analyses():
+    for receptor in ['NMDA', 'GABAa']:
+        #> load the receptor map
+        receptor_map = surfaces.PETMaps(receptor, 'sjh')
+        #> plot it
+        helpers.plot_on_bigbrain_nl(
+            receptor_map.surf_data[:, 0],
+            receptor_map.file_path.replace('.csv','.png'),
+            inflate=True,
+            plot_downsampled=True,
+            # cmap=???
+        )
+        #> association with microstructure
+        receptor_map.microstructure_dominance_analysis(col_idx=0, n_perm=1000, exc_adys=True)
 
 
 def run():
     create_matrices_and_gradients()
-    disease_gradients()
+    disease_gradients_analyses()
+    ei_analyses()
 
 if __name__=='__main__':
     run()

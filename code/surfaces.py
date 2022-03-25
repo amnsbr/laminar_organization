@@ -31,6 +31,7 @@ class ContCorticalSurface:
     """
     Generic class for common functions on cortical surfaces with continuous data
     """
+    # TODO: specify required fields and methods
     def correlate(self, other, parcellation_name=None, n_perm=1000,
                  x_columns=None, y_columns=None):
         """
@@ -110,6 +111,215 @@ class ContCorticalSurface:
                         + f'{y_column.lower().replace(" ", "_")}.png'),
                     dpi=192
                     )
+    
+    def microstructure_spatial_cross_validation(self, col_idx=0, exc_adys=True):
+        """
+        Caclulates R2 of predicting surf_data[:, col_idx] 
+        based on LTC G1, MPC G1 and C.Types after doing spatial
+        leave one out cross-validation
+
+        Parameters
+        --------
+        exc_adys: (bool)
+            exclude adysgranular regions from the microstructure
+
+        Ref: https://arxiv.org/abs/2005.14263
+        """
+        # Make sure it's only called with surfaces other than
+        # microstructure gradients
+        assert not isinstance(self, MicrostructuralCovarianceGradients)
+        # Load parcellated predictors and outcome
+        ltcg1 = MicrostructuralCovarianceGradients(
+            matrices.MicrostructuralCovarianceMatrix(
+                'thickness', 
+                parcellation_name=self.parcellation_name,
+                exc_adys=exc_adys
+                )
+            ).parcellated_data.iloc[:, 0].rename('LTC G1')
+        mpcg1 = MicrostructuralCovarianceGradients(
+            matrices.MicrostructuralCovarianceMatrix(
+                'density', 
+                parcellation_name=self.parcellation_name,
+                exc_adys=exc_adys
+                )
+            ).parcellated_data.iloc[:, 0].rename('MPC G1')
+        ctypes = (
+            datasets.load_cortical_types('aparc')
+            .loc[ltcg1.index] # select valid parcels
+            .cat.codes # convert to int
+            .rename('Cortical Types')
+        )
+        Xs = {
+            'Combined': pd.concat(
+                [ltcg1, mpcg1, ctypes],
+                axis=1,
+                ),
+            'LTC G1': ltcg1.to_frame(),
+            'MPC G1': mpcg1.to_frame(),
+            'Cortical Types': ctypes.to_frame()
+        }
+        y = (
+            self.parcellated_data
+            .iloc[:, col_idx] # select the column
+            .loc[ltcg1.index] # select the same parcels as predictors
+            .rename('DV').to_frame()
+        )
+        #> get the neighbors of each parcel so that
+        # they can be removed from training dataset
+        # in each iteration
+        neighbors = helpers.get_neighbors_mask(
+            'aparc', 
+            proportion=0.2,
+            exc_adys=exc_adys,
+            keep_allo=False
+        )
+        neighbors = neighbors.loc[neighbors.index, neighbors.index]
+        res = pd.DataFrame()
+        for model_name, X in Xs.items():
+            #> get predicted y based on spatial leave-one-out CV
+            y_pred = pd.Series(index=y.index)
+            for parcel, parcel_neighbors in neighbors.iterrows():
+                #>> at each iteration select the seed
+                # parcel as the test data
+                X_test = X.loc[[parcel], :]
+                #>> and select the rest of the brain
+                # except seed and its neighbors as train
+                X_train = X.loc[~parcel_neighbors, :]
+                y_train = y.loc[~parcel_neighbors, :]
+                #>> run linear regression and predict y at
+                # seed
+                lr = LinearRegression().fit(X_train, y_train)
+                y_pred.loc[parcel] = lr.predict(X_test).flatten()[0]
+            #> calculate r2 and corr
+            res.loc[model_name, 'r2'] = r2_score(y.values.flatten(), y_pred.values.flatten())
+            res.loc[model_name, 'corr(pred,true)'] = np.corrcoef(y.values.flatten(), y_pred.values.flatten())[0, 1]
+        res.to_csv(
+            os.path.join(
+                self.dir_path, 
+                f'microstructure_cross_validation_res_col-{self.columns[col_idx]}.csv'
+                )
+            )
+
+    def microstructure_dominance_analysis(self, col_idx=0, n_perm=1000, exc_adys=True):
+        """
+        Performs dominance analysis to compare the contribution
+        of LTC G1, MPC G1 and C.Types in explaining the variance
+        of surf_data[:, col_idx], while testing the significance of contributions
+        using spin permutation if indicated
+        See https://github.com/dominance-analysis/dominance-analysis
+        and Hansen 2021 bioRxiv
+
+        Parameters
+        ----------
+        col_idx: (int) column index to use as the dependent variable
+        n_perm: (int) if zero spin permutation is not  performed
+        exc_adys: (bool)
+            exclude adysgranular regions from structural maps
+        """
+        # TODO: add the option for doing this on parcellated data
+        # and using variogram permutation
+        #> make sure it's only called with surfaces other than
+        # microstructure gradients
+        assert not isinstance(self, MicrostructuralCovarianceGradients)
+        #> specify output path
+        out_path = os.path.join(
+            self.dir_path, 
+            'microstructure_dominance_analysis' \
+            + f'_col-{self.columns[col_idx]}' \
+            + ('_exc-adys' if exc_adys else '') \
+            + f'_nperm-{n_perm}'
+            )
+        os.makedirs(out_path, exist_ok=True)
+        #> get and downsample the disease gradient
+        # Note: it is important not to exclude any regions from disease gradient,
+        # as it will get spun and disease g NaNs at the excluded regions move around
+        # but not the NaNs at the excluded regions in the microstructural data, and
+        # this can create up to two-fold points where either disease or microstructure
+        # is NaN
+        surf_data_downsampled = helpers.downsample(self.surf_data[:, :1])
+        outcome = pd.Series(surf_data_downsampled[:, 0], name='DV')
+        #> get the structural gradients and downsample them
+        ltcg = MicrostructuralCovarianceGradients(
+            matrices.MicrostructuralCovarianceMatrix(
+                'thickness', 
+                parcellation_name=self.parcellation_name,
+                exc_adys=exc_adys
+                )
+            )
+        ltcg1_surf = helpers.downsample(ltcg.surf_data)[:, :1]
+        mpcg = MicrostructuralCovarianceGradients(
+            matrices.MicrostructuralCovarianceMatrix(
+                'density', 
+                parcellation_name=self.parcellation_name,
+                exc_adys=exc_adys
+                )
+            )
+        mpcg1_surf = helpers.downsample(mpcg.surf_data)[:, :1]
+        #> get the downsampled ctypes as float
+        ctypes_surf = CorticalTypes(exc_adys=exc_adys, downsampled=True).surf_data
+        #> create dataframes
+        predictors = pd.DataFrame(
+            np.hstack([ltcg1_surf, mpcg1_surf, ctypes_surf]),
+            columns = ['LTC G1', 'MPC G1', 'Cortical Types']
+        )
+        data = pd.concat([predictors, outcome], axis=1).dropna()
+        #> dominance analysis on non-permutated data
+        test_dominance_analysis = Dominance(data,target='DV')
+        test_dominance_analysis.incremental_rsquare()
+        dominance_stats = test_dominance_analysis.dominance_stats()
+        if n_perm > 0:
+            #> create downsampled bigbrain spin permutations
+            assert n_perm <= 1000
+            helpers.create_bigbrain_spin_permutations(n_perm=n_perm, is_downsampled=True)
+            #> load the spin permutation indices
+            spin_indices = np.load(os.path.join(
+                SRC_DIR, f'tpl-bigbrain_desc-spin_indices_downsampled_n-{n_perm}.npz'
+                )) # n_perm * n_vert arrays for 'lh' and 'rh'
+            #> split the disease G1 in two hemispheres
+            outcome_split = {
+                'L': outcome.values[:outcome.shape[0]//2],
+                'R': outcome.values[outcome.shape[0]//2:]
+            }
+            #> create the lh and rh surrogates and concatenate them
+            perm_outcomes = np.concatenate([
+                outcome_split['L'][spin_indices['lh']], 
+                outcome_split['R'][spin_indices['rh']]
+                ], axis=1) # n_perm * n_vert * n_features
+            perm_dominance_stats = np.zeros((n_perm, *dominance_stats.shape))
+            for perm in range(n_perm):
+                print(perm)
+                #> do the dominance analysis in each spin
+                perm_outcome = pd.Series(perm_outcomes[perm, :], name='DV')
+                perm_data = pd.concat([predictors, perm_outcome], axis=1).dropna()
+                perm_dominance_analysis = Dominance(data=perm_data, target='DV')
+                perm_dominance_analysis.incremental_rsquare()
+                perm_dominance_stats[perm, :, :] = perm_dominance_analysis.dominance_stats().values
+            #> save null distribution for future reference
+            np.savez_compressed(
+                os.path.join(out_path, 'null.npz'),
+                perm_dominance_stats
+            )
+            #> calculate one-sided p-vals (all values are positive so no difference between one or two-sided)
+            dominance_pvals = (perm_dominance_stats > dominance_stats.values[np.newaxis, :, :]).mean(axis=0)
+            dominance_pvals = pd.DataFrame(
+                dominance_pvals,
+                columns=dominance_stats.columns,
+                index=dominance_stats.index
+                )
+            #> calculate p-value for the total variance explained
+            # by the model (which is the sum of 'Total Dominance' 
+            # for all variables)
+            perm_total_var = perm_dominance_stats[:, :, 3].sum(axis=1)
+            dominance_stats.loc['Sum', 'Total Dominance'] \
+                = dominance_stats.loc[:, 'Total Dominance'].sum()
+            dominance_pvals.loc['Sum', 'Total Dominance'] \
+                = (perm_total_var > dominance_stats.loc['Sum', 'Total Dominance']).mean()
+            dominance_pvals.to_csv(os.path.join(out_path, 'dominance_pvals.csv'))
+        else:
+            dominance_stats.loc['Sum', 'Total Dominance'] \
+                = dominance_stats.loc[:, 'Total Dominance'].sum()
+        dominance_stats.to_csv(os.path.join(out_path, 'dominance_stats.csv'))
+
 
 class Gradients(ContCorticalSurface):
     """
@@ -180,13 +390,13 @@ class Gradients(ContCorticalSurface):
         self.gm.fit(matrix, sparsity=sparsity)
         self.lambdas = self.gm.lambdas_
         #> add parcel labels
-        self.labeled_gradients = pd.DataFrame(
+        self.parcellated_data = pd.DataFrame(
             self.gm.gradients_,
             index=self.matrix_obj.matrix.index
             )
         #> project to surface
         self.surf_data = helpers.deparcellate(
-            self.labeled_gradients,
+            self.parcellated_data,
             self.matrix_obj.parcellation_name
             )
 
@@ -208,7 +418,7 @@ class Gradients(ContCorticalSurface):
         Save the labeled gradients as .csv, surface maps as .npz, and
         lambdas as .txt
         """
-        self.labeled_gradients.to_csv(
+        self.parcellated_data.to_csv(
             os.path.join(self.dir_path, 'gradients_parcels.csv'), 
             index_label='parcel'
             )
@@ -225,10 +435,10 @@ class Gradients(ContCorticalSurface):
         """
         Load labeled gradients, surface map
         """
-        self.labeled_gradients = pd.read_csv(
+        self.parcellated_data = pd.read_csv(
             os.path.join(self.dir_path, 'gradients_parcels.csv'),
             index_col='parcel')
-        self.labeled_gradients.columns = self.labeled_gradients.columns.map(int)
+        self.parcellated_data.columns = self.parcellated_data.columns.map(int)
         self.surf_data = np.load(os.path.join(self.dir_path, 'gradients_surface.npz'))['surface']
         self.lambdas = np.loadtxt(os.path.join(self.dir_path, 'lambdas.txt'))
 
@@ -257,7 +467,7 @@ class Gradients(ContCorticalSurface):
         """
         fig, ax = plt.subplots(figsize=(6,5))
         ax = sns.scatterplot(
-            data=self.labeled_gradients, 
+            data=self.parcellated_data, 
             x=0, # G1
             y=1, # G2
             hue=2, # G3
@@ -324,7 +534,7 @@ class Gradients(ContCorticalSurface):
             #> in unimodal case add ordered matrices by the first 3 gradients
             for g_idx in range(self._n_components_report):
                 #> sort parcels by gradient values
-                sorted_parcels = self.labeled_gradients.sort_values(by=g_idx).index
+                sorted_parcels = self.parcellated_data.sort_values(by=g_idx).index
                 #> reorder matrix by sorted parcels
                 reordered_matrix = self.matrix_obj.matrix.loc[sorted_parcels, sorted_parcels].values
                 helpers.plot_matrix(
@@ -335,7 +545,7 @@ class Gradients(ContCorticalSurface):
         else:
             for g_idx in range(self._n_components_report):
                 #> sort parcels by gradient values
-                sorted_parcels = self.labeled_gradients.sort_values(by=g_idx).index
+                sorted_parcels = self.parcellated_data.sort_values(by=g_idx).index
                 #> split the matrix to square matrices, reorder each square matrix
                 #  separately, and then hstack reordered square matrices and plot it
                 reordered_split_matrices = []
@@ -389,7 +599,7 @@ class MicrostructuralCovarianceGradients(Gradients):
         parcellated_laminar_thickness = parcellated_laminar_thickness.divide(parcellated_laminar_thickness.sum(axis=1), axis=0)
         for gradient_num in range(1, self._n_components_report+1):
             binned_parcels_laminar_thickness = parcellated_laminar_thickness.copy()
-            binned_parcels_laminar_thickness['bin'] = pd.cut(self.labeled_gradients[gradient_num-1], n_bins)
+            binned_parcels_laminar_thickness['bin'] = pd.cut(self.parcellated_data[gradient_num-1], n_bins)
             #> calculate average laminar thickness at each bin
             bins_laminar_thickness = binned_parcels_laminar_thickness.groupby('bin').mean().reset_index(drop=True)
             bins_laminar_thickness.columns = [f'Layer {idx+1}' for idx in range(6)]
@@ -424,213 +634,11 @@ class MicrostructuralCovarianceGradients(Gradients):
             fig.tight_layout()
             fig.savefig(os.path.join(self.dir_path, f'binned_profile_G{gradient_num}.png'), dpi=192)
             clfig = helpers.make_colorbar(
-                self.labeled_gradients[gradient_num-1].min(), 
-                self.labeled_gradients[gradient_num-1].max(),
+                self.parcellated_data[gradient_num-1].min(), 
+                self.parcellated_data[gradient_num-1].max(),
                 bins=10, 
                 orientation='horizontal', figsize=(6,4))
             clfig.savefig(os.path.join(self.dir_path, f'binned_profile_G{gradient_num}_clbar.png'), dpi=192)
-
-class DiseaseCovarianceGradients(Gradients):
-    """
-    Disease covariance gradients
-
-    Credit: Based on Hettwer 2022 medRxiv
-    """
-    def microstructure_spatial_cross_validation(self, exc_adys=True):
-        """
-        Caclulates R2 of predicting disease covariance gradient 1 
-        based on LTC G1, MPC G1 and C.Types after doing spatial
-        leave one out cross-validation
-
-        Parameters
-        --------
-        exc_adys: (bool)
-            exclude adysgranular regions from the microstructure
-
-        Ref: https://arxiv.org/abs/2005.14263
-        """
-        # Load parcellated predictors and outcome
-        ltcg1 = MicrostructuralCovarianceGradients(
-            matrices.MicrostructuralCovarianceMatrix(
-                'thickness', 
-                parcellation_name='aparc',
-                exc_adys=exc_adys
-                )
-            ).labeled_gradients.iloc[:, 0].rename('LTC G1')
-        mpcg1 = MicrostructuralCovarianceGradients(
-            matrices.MicrostructuralCovarianceMatrix(
-                'density', 
-                parcellation_name='aparc',
-                exc_adys=exc_adys
-                )
-            ).labeled_gradients.iloc[:, 0].rename('MPC G1')
-        ctypes = (
-            datasets.load_cortical_types('aparc')
-            .loc[ltcg1.index] # select valid parcels
-            .cat.codes # convert to int
-            .rename('Cortical Types')
-        )
-        Xs = {
-            'Combined': pd.concat(
-                [ltcg1, mpcg1, ctypes],
-                axis=1,
-                ),
-            'LTC G1': ltcg1.to_frame(),
-            'MPC G1': mpcg1.to_frame(),
-            'Cortical Types': ctypes.to_frame()
-        }
-        y = (
-            self.labeled_gradients
-            .iloc[:, 0] # select the first g
-            .loc[ltcg1.index] # select the same parcels as predictors
-            .rename('DisCov G1').to_frame()
-        )
-        #> get the neighbors of each parcel so that
-        # they can be removed from training dataset
-        # in each iteration
-        neighbors = helpers.get_neighbors_mask(
-            'aparc', 
-            proportion=0.2,
-            exc_adys=exc_adys,
-            keep_allo=False
-        )
-        neighbors = neighbors.loc[neighbors.index, neighbors.index]
-        res = pd.DataFrame()
-        for model_name, X in Xs.items():
-            #> get predicted y based on spatial leave-one-out CV
-            y_pred = pd.Series(index=y.index)
-            for parcel, parcel_neighbors in neighbors.iterrows():
-                #>> at each iteration select the seed
-                # parcel as the test data
-                X_test = X.loc[[parcel], :]
-                #>> and select the rest of the brain
-                # except seed and its neighbors as train
-                X_train = X.loc[~parcel_neighbors, :]
-                y_train = y.loc[~parcel_neighbors, :]
-                #>> run linear regression and predict y at
-                # seed
-                lr = LinearRegression().fit(X_train, y_train)
-                y_pred.loc[parcel] = lr.predict(X_test).flatten()[0]
-            #> calculate r2 and corr
-            res.loc[model_name, 'r2'] = r2_score(y.values.flatten(), y_pred.values.flatten())
-            res.loc[model_name, 'corr(pred,true)'] = np.corrcoef(y.values.flatten(), y_pred.values.flatten())[0, 1]
-        res.to_csv(os.path.join(self.dir_path, 'microstructure_cross_validation_res.csv'))
-
-    def microstructure_dominance_analysis(self, n_perm=1000, exc_adys=True):
-        """
-        Performs dominance analysis to compare the contribution
-        of LTC G1, MPC G1 and C.Types in explaining the variance
-        of Disease G1, while testing the significance of contributions
-        using spin permutation if indicated
-        See https://github.com/dominance-analysis/dominance-analysis
-        and Hansen 2021 bioRxiv
-
-        Parameters
-        ----------
-        n_perm: (int) if zero spin permutation is not  performed
-        exc_adys: (bool)
-            exclude adysgranular regions from structural maps
-        """
-
-        if self.matrix_obj.exc_regions is not None:
-            print("Only use this function with disease gradients without excluded regions")
-            return
-        out_path = os.path.join(
-            self.dir_path, 
-            'microstructure_dominance_analysis' \
-            + ('exc-adys' if exc_adys else '') \
-            + f'nperm-{n_perm}'
-            )
-        os.makedirs(out_path, exist_ok=True)
-        #> get and downsample the disease gradient
-        # Note: it is important not to exclude any regions from disease gradient,
-        # as it will get spun and disease g NaNs at the excluded regions move around
-        # but not the NaNs at the excluded regions in the microstructural data, and
-        # this can create up to two-fold points where either disease or microstructure
-        # is NaN
-        disg1_surf = helpers.downsample(self.surf_data[:, :1])
-        outcome = pd.Series(disg1_surf[:, 0], name='Dis G1')
-        #> get the structural gradients and downsample them
-        ltcg = MicrostructuralCovarianceGradients(
-            matrices.MicrostructuralCovarianceMatrix(
-                'thickness', 
-                parcellation_name='aparc',
-                exc_adys=exc_adys
-                )
-            )
-        ltcg1_surf = helpers.downsample(ltcg.surf_data)[:, :1]
-        mpcg = MicrostructuralCovarianceGradients(
-            matrices.MicrostructuralCovarianceMatrix(
-                'density', 
-                parcellation_name='aparc',
-                exc_adys=exc_adys
-                )
-            )
-        mpcg1_surf = helpers.downsample(mpcg.surf_data)[:, :1]
-        #> get the downsampled ctypes as float
-        ctypes_surf = CorticalTypes(exc_adys=exc_adys, downsampled=True).surf_data
-        #> create dataframes
-        predictors = pd.DataFrame(
-            np.hstack([ltcg1_surf, mpcg1_surf, ctypes_surf]),
-            columns = ['LTC G1', 'MPC G1', 'Cortical Types']
-        )
-        data = pd.concat([predictors, outcome], axis=1).dropna()
-        #> dominance analysis on non-permutated data
-        test_dominance_analysis = Dominance(data,target='Dis G1')
-        test_dominance_analysis.incremental_rsquare()
-        dominance_stats = test_dominance_analysis.dominance_stats()
-        if n_perm > 0:
-            #> create downsampled bigbrain spin permutations
-            assert n_perm <= 1000
-            helpers.create_bigbrain_spin_permutations(n_perm=n_perm, is_downsampled=True)
-            #> load the spin permutation indices
-            spin_indices = np.load(os.path.join(
-                SRC_DIR, f'tpl-bigbrain_desc-spin_indices_downsampled_n-{n_perm}.npz'
-                )) # n_perm * n_vert arrays for 'lh' and 'rh'
-            #> split the disease G1 in two hemispheres
-            outcome_split = {
-                'L': outcome.values[:outcome.shape[0]//2],
-                'R': outcome.values[outcome.shape[0]//2:]
-            }
-            #> create the lh and rh surrogates and concatenate them
-            perm_outcomes = np.concatenate([
-                outcome_split['L'][spin_indices['lh']], 
-                outcome_split['R'][spin_indices['rh']]
-                ], axis=1) # n_perm * n_vert * n_features
-            perm_dominance_stats = np.zeros((n_perm, *dominance_stats.shape))
-            for perm in range(n_perm):
-                print(perm)
-                #> do the dominance analysis in each spin
-                perm_outcome = pd.Series(perm_outcomes[perm, :], name='Dis G1')
-                perm_data = pd.concat([predictors, perm_outcome], axis=1).dropna()
-                perm_dominance_analysis = Dominance(data=perm_data, target='Dis G1')
-                perm_dominance_analysis.incremental_rsquare()
-                perm_dominance_stats[perm, :, :] = perm_dominance_analysis.dominance_stats().values
-            #> save null distribution for future reference
-            np.savez_compressed(
-                os.path.join(out_path, 'null.npz'),
-                perm_dominance_stats
-            )
-            #> calculate one-sided p-vals (all values are positive so no difference between one or two-sided)
-            dominance_pvals = (perm_dominance_stats > dominance_stats.values[np.newaxis, :, :]).mean(axis=0)
-            dominance_pvals = pd.DataFrame(
-                dominance_pvals,
-                columns=dominance_stats.columns,
-                index=dominance_stats.index
-                )
-            #> calculate p-value for the total variance explained
-            # by the model (which is the sum of 'Total Dominance' 
-            # for all variables)
-            perm_total_var = perm_dominance_stats[:, :, 3].sum(axis=1)
-            dominance_stats.loc['Sum', 'Total Dominance'] \
-                = dominance_stats.loc[:, 'Total Dominance'].sum()
-            dominance_pvals.loc['Sum', 'Total Dominance'] \
-                = (perm_total_var > dominance_stats.loc['Sum', 'Total Dominance']).mean()
-            dominance_pvals.to_csv(os.path.join(out_path, 'dominance_pvals.csv'))
-        else:
-            dominance_stats.loc['Sum', 'Total Dominance'] \
-                = dominance_stats.loc[:, 'Total Dominance'].sum()
-        dominance_stats.to_csv(os.path.join(out_path, 'dominance_stats.csv'))
 
 class StructuralFeatures(ContCorticalSurface):
     label = 'Structural features'
@@ -1049,23 +1057,28 @@ class PETMaps(ContCorticalSurface):
     Map of neurotransmitter receptors / transporters based
     on PET data. Source: Hansen 2021
     """
-    def __init__(self, parcellation_name):
+    def __init__(self, receptor, parcellation_name):
         """
         Initializes PET maps
 
         Parameters
         ----------
+        receptor: (str) name of the receptor
+            - NMDA
+            - GABAa
         parcellation_name: (str)
             - schaefer400
         """
+        self.receptor = receptor
         self.parcellation_name = parcellation_name
         self.dir_path = os.path.join(
             OUTPUT_DIR, 'ei', 'pet',
-            f'parc-{parcellation_name}'
+            f'{receptor}_parc-{parcellation_name}'
         )
         self.file_path = os.path.join(
-            self.dir_path, 'parcellated_density_zscore.csv'
+            self.dir_path, f'parcellated_density_zscore.csv'
         )
+        self.label = f'{receptor} density'
         if os.path.exists(self.file_path):
             self.parcellated_data = pd.read_csv(self.file_path, index_col='parcel')
         else:
@@ -1076,6 +1089,12 @@ class PETMaps(ContCorticalSurface):
         # parcellation for plotting etc.
         self.surf_data = helpers.deparcellate(self.parcellated_data, self.parcellation_name)
         self.columns = self.parcellated_data.columns.tolist()
+        helpers.plot_on_bigbrain_nl(
+            self.surf_data, 
+            self.file_path.replace('.csv','.png'), 
+            inflate=True
+        )
+
     
     def _create(self):
         """
@@ -1090,6 +1109,7 @@ class PETMaps(ContCorticalSurface):
         metadata = pd.read_csv(
             os.path.join(SRC_DIR, 'PET_nifti_images_metadata.csv'), 
             index_col='filename')
+        metadata = metadata.loc[metadata['receptor']==self.receptor]
         #> group the images with the same recetpro-tracer
         for group, group_df in metadata.groupby(['receptor', 'tracer']):
             group_name = '_'.join(group)
@@ -1138,3 +1158,96 @@ class PETMaps(ContCorticalSurface):
             #> add labels of the parcels
             parcellated_data.index = datasets.load_volumetric_parcel_labels(self.parcellation_name)
         return parcellated_data
+
+class NeuronTypeMaps(ContCorticalSurface):
+    """
+    Maps of aggregated expression of genes associated
+    with excitatory and inhibitory neuron
+
+    Reference: Seidlitz 2020 (https://www.nature.com/articles/s41467-020-17051-5)
+    """
+    def __init__(self, neuron_type, parcellation_name, lh_only=True):
+        """
+        Creates/loads the neuron type gene expression map
+
+        Parameters
+        ---------
+        neuron_type: (str)
+            - Neuro-Ex
+            - Neuro-In
+        parcellation_name: (str)
+        lh_only: (bool)
+            limit the map to the left hemisphere
+            Note: For consistency with other functions the right
+            hemisphere vertices/parcels are not removed but are set
+            to NaN
+        """
+        self.neuron_type = neuron_type
+        self.parcellation_name = parcellation_name
+        self.dir_path = os.path.join(
+            OUTPUT_DIR, 'ei', 'gene',
+            f'{neuron_type.lower()}_parc-{parcellation_name}'
+        )
+        self.file_path = os.path.join(
+            self.dir_path, f'parcellated_mean_expression.csv'
+        )
+        LABELS = {
+            'Neuro-Ex': 'Excitatory neurons gene expression',
+            'Neuro-In': 'Inhibitory neurons gene expression'
+        }
+        self.label = LABELS.get(self.neuron_type)
+        if os.path.exists(self.file_path):
+            self.parcellated_data = pd.read_csv(self.file_path, index_col='parcel')
+        else:
+            os.makedirs(self.dir_path, exist_ok=True)
+            self.parcellated_data = self._create()
+            self.parcellated_data.to_csv(self.file_path, index_label='parcel')
+        if lh_only:
+            split_hem_idx = helpers.get_split_hem_idx(self.parcellation_name, exc_regions=None)
+            self.parcellated_data.iloc[split_hem_idx:] = np.NaN
+        self.surf_data = helpers.deparcellate(self.parcellated_data, self.parcellation_name)
+        self.columns = self.parcellated_data.columns.tolist()
+        helpers.plot_on_bigbrain_nl(
+            self.surf_data, 
+            self.file_path.replace('.csv','.png'), 
+            inflate=True
+        )
+
+    def _create(self):
+        """
+        Creates the neuron type gene expression maps by
+        taking the average expression over all genes
+        associated with the cell type
+        """
+        #> load parcellated AHBA data
+        ahba_data = np.load(
+            os.path.join(
+                SRC_DIR, 
+                f'ahba_parc-{self.parcellation_name}_frozen-20220316.npz'), 
+            allow_pickle=True)
+        ahba_df = pd.DataFrame(
+            ahba_data['data'], 
+            columns=ahba_data['columns'], 
+            index=ahba_data['index']
+            )
+        #> load cell type gene list from Seidlitz2020
+        cell_type_genes = pd.read_csv(os.path.join(
+            SRC_DIR, 'celltypes_PSP.csv'
+        ))
+        gene_list = (
+            cell_type_genes
+            .loc[cell_type_genes['class']==self.neuron_type, 'gene']
+            .values
+        )
+        #> remove genes that do not exist in the
+        # current version of gene expression data
+        gene_list = (set(gene_list) & set(ahba_df.columns))
+        #> get the average expression of the selected genes
+        cell_type_expression = (
+            ahba_df.loc[:, gene_list]
+            .mean(axis=1)
+            .rename(f'{self.neuron_type} gene expression')
+            .to_frame()
+        )
+        return cell_type_expression
+        
