@@ -11,10 +11,13 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import brainspace.mesh, brainspace.plotting, brainspace.null_models
+import brainsmash.mapgen
 import nilearn.surface
 import nilearn.plotting
+import nibabel
 import statsmodels.api as sm
 import scipy.io
+import abagen
 
 import datasets
 import matrices
@@ -31,7 +34,9 @@ MIDLINE_PARCELS = {
     'schaefer400': ['Background+FreeSurfer_Defined_Medial_Wall'],
     'schaefer1000': ['Background+FreeSurfer_Defined_Medial_Wall'],
     'sjh': [0],
-    'aparc': ['L_unknown', 'None']
+    'aparc': ['L_unknown', 'None'],
+    'mmp1': ['???'],
+    'brodmann': ['???']
 }
 ###### Loading data ######
 def download(url, file_name=None, copy_to=None, overwrite=False):
@@ -372,6 +377,7 @@ def deparcellate(parcellated_data, parcellation_name, downsampled=False):
         ], axis=1).set_index('parcel')
     #> get the surface map by indexing the parcellated map at parcellation labels
     surface_map = labeled_parcellated_data.loc[concat_parcellation_map].values # shape: vertex X gradient
+    # TODO: convert it back to DataFrame or Series with original col names
     return surface_map
 
 def get_split_hem_idx(parcellation_name, exc_regions):
@@ -517,56 +523,30 @@ def plot_matrix(matrix, outpath, cmap="rocket", vrange=(0.025, 0.975), **kwargs)
         )
     clbar_fig.savefig(outpath+'_clbar', dpi=192)
 
-
-def plot_on_bigbrain_brainspace(surface_data_files, outfile=None):
+def plot_surface(surface_data, filename=None, space='bigbrain', inflate=False, 
+                 plot_downsampled=True, layout_style='horizontal', cmap='viridis',
+                 toolbox='brainspace'):
     """
-    Plots the `surface_data_files` on the bigbrain space and saves it in `outfile`
-    using brainsapce.
-
-    Note: Does not work in a remote server without proper X forwarding
+    Plots the surface data with medial and lateral views of both hemispheres
 
     Parameters
     ----------
-    surface_data_files: (dict of str) including paths to the surface file for 'L' and 'R' hemispheres
-    outfile: (str) path to output; default would be the same as surface file
-    """
-    #> load bigbrain surfaces
-    lh_surf = brainspace.mesh.mesh_io.read_surface(
-        os.path.join(SRC_DIR, 'tpl-bigbrain_hemi-L_desc-mid.surf.gii')
-        )
-    rh_surf = brainspace.mesh.mesh_io.read_surface(
-        os.path.join(SRC_DIR, 'tpl-bigbrain_hemi-R_desc-mid.surf.gii')
-        )
-    #> read surface data files and concatenate L and R
-    if surface_data_files[0].endswith('.npy'):
-        surface_data = np.concatenate([np.load(surface_data_files[0]), np.load(surface_data_files[1])])
-    elif surface_data_files[0].endswith('.txt'):
-        surface_data = np.concatenate([np.loadtxt(surface_data_files[0]), np.loadtxt(surface_data_files[1])])
-    else:
-        print("Surface data file not supported")
-        return
-    if not outfile:
-        outfile = surface_data_files[0]+'.png'
-    brainspace.plotting.surface_plotting.plot_hemispheres(lh_surf, rh_surf, surface_data,
-        color_bar=True, interactive=False, embed_nb=False, size=(1600, 400), zoom=1.2,
-        screenshot=True, filename=outfile, transparent_bg=True, offscreen=True)
-
-def plot_on_bigbrain_nl(surface_data, filename, inflate=False, plot_downsampled=True,
-                        layout='horizontal', cmap='viridis'):
-    """
-    Plots the `surface_data_files` on the bigbrain space and saves it in `outfile`
-    using nilearn
-
-    Parameters
-    ----------
-    surface_data: (np.ndarray or dict of np.ndarray) (n_vert,) surface data: concatenated or 'L' and 'R' hemispheres
-    filename: (str) path to output; default would be the same as surface file
-    inflate: (bool) whether to plot the inflated surface
-    plot_downsampled: (bool) whether to plot the ico5 vs ico7 surface
-    layout:
-        - horizontal: left-lateral, left-medial, right-medial, right-lateral
+    surface_data: (np.ndarray or dict of np.ndarray) (n_vert,) 
+    filename: (str | None) 
+        path to output without .png
+    space: (str)
+        - bigbrain
+    inflate: (bool) 
+        whether to plot the inflated surface
+    plot_downsampled: (bool) 
+        whether to plot the ico5 vs ico7 surface
+    layout_style:
+        - row: left-lateral, left-medial, right-medial, right-lateral
         - grid: lateral views on the top and medial views on the bottom
     cmap: (str)
+    toolbox: (str)
+        - brainspace
+        - nilearn
     """
     #> split surface if it has been concatenated (e.g. gradients)
     #  and make sure the shape is correct
@@ -577,35 +557,96 @@ def plot_on_bigbrain_nl(surface_data, filename, inflate=False, plot_downsampled=
         surface_data = {'L': lh_surface_data, 'R': rh_surface_data}
     else:
         assert surface_data['L'].shape[0] == datasets.N_VERTICES_HEM_BB
-    #> downsample the data if needed
+    #> specify the mesh and downsample the data if needed
     if plot_downsampled:
         if (surface_data['L'].shape[0] == datasets.N_VERTICES_HEM_BB):
             surface_data = downsample(surface_data)
+        if inflate:
+            mesh_paths = datasets.load_downsampled_surface_paths('inflated')
+        else:
+            mesh_paths = datasets.load_downsampled_surface_paths('orig')
+    else:
+        if inflate:
+            mesh_paths = {
+                'L': os.path.join(
+                    SRC_DIR, 'tpl-bigbrain_hemi-L_desc-mid.surf.inflate.gii'
+                    ),
+                'R': os.path.join(
+                    SRC_DIR, 'tpl-bigbrain_hemi-R_desc-mid.surf.inflate.gii'
+                    )
+            }
+        else:
+            mesh_paths = {
+                'L': os.path.join(
+                    SRC_DIR, 'tpl-bigbrain_hemi-L_desc-mid.surf.gii'
+                    ),
+                'R': os.path.join(
+                    SRC_DIR, 'tpl-bigbrain_hemi-R_desc-mid.surf.gii'
+                    )
+            }
+    if toolbox == 'brainspace':
+        _plot_brainspace(surface_data, mesh_paths, filename, layout_style, cmap)
+    else:
+        _plot_nilearn(surface_data, mesh_paths, filename, layout_style, cmap)
+    # TODO plot colorbar separately
+
+def _plot_brainspace(surface_data, mesh_paths, filename, layout_style, cmap):
+    """
+    Plots `surface_data` on `mesh_paths` using nilearn
+
+    Note: To run this on remote server vtk should be installed with
+    mesabuild as follows:
+    > conda config --add channels conda-forge
+    > conda install mesalib --channel conda-forge --override-channels -freeze-installed
+    > conda install vtk --channel conda-forge --override-channels -freeze-installed
+    # if conda tries to install a build of vtk that does not start with osmesa_* force this build using:
+    > conda install vtk==9.1.0=osmesa_py39h8ab48e2_107 --channel conda-forge --override-channels -freeze-installed
+    """
+    #> rejoin the hemispheres
+    surface_data = np.concatenate([surface_data['L'], surface_data['R']]).flatten()
+    #> load bigbrain surfaces
+    lh_surf = brainspace.mesh.mesh_io.read_surface(mesh_paths['L'])
+    rh_surf = brainspace.mesh.mesh_io.read_surface(mesh_paths['R'])
+    #> read surface data files and concatenate L and R
+    if filename:
+        screenshot = True
+        embed_nb = False
+        filename += '.png'
+    else: # TODO: this is not working
+        screenshot = False
+        embed_nb = True
+    if layout_style == 'row':
+        size = (1600, 400)
+        zoom = 1.2
+    else:
+        size = (900, 500)
+        zoom = 1.8
+    return brainspace.plotting.surface_plotting.plot_hemispheres(
+        lh_surf, rh_surf, 
+        surface_data,
+        layout_style = layout_style,
+        cmap = cmap, color_bar=False,
+        # TODO: change size and zoom based on layout 
+        size=size, zoom=zoom,
+        interactive=False, embed_nb=embed_nb,
+        screenshot=screenshot, filename=filename, 
+        transparent_bg=True)
+
+def _plot_nilearn(surface_data, mesh_paths, filename, layout_style, cmap):
+    """
+    Plots `surface_data` on `mesh_paths` using nilearn
+    """
     #> initialize the figures
-    if layout == 'horizontal':
+    if layout_style == 'horizontal':
         figure, axes = plt.subplots(1, 4, figsize=(24, 5), subplot_kw={'projection': '3d'})
-    elif layout == 'grid':
+    elif layout_style == 'grid':
         figure, axes = plt.subplots(2, 2, figsize=(12, 10), subplot_kw={'projection': '3d'})
         #> reorder axes so that lateral views are on top, matching the order of axes
         #  in the horizontal layout
         axes = np.array([axes[0, 0], axes[1, 0], axes[1, 1], axes[0, 1]])
     curr_ax_idx = 0
     for hemi in ['left', 'right']:
-        #> specify the mesh
-        if plot_downsampled:
-            if inflate:
-                mesh_path = datasets.load_downsampled_surface_paths('inflated')[hemi[0].upper()]
-            else:
-                mesh_path = datasets.load_downsampled_surface_paths('orig')[hemi[0].upper()]
-        else:
-            if inflate:
-                mesh_path = os.path.join(
-                    SRC_DIR, f'tpl-bigbrain_hemi-{hemi[0].upper()}_desc-mid.surf.inflate.gii'
-                    )
-            else:
-                mesh_path = os.path.join(
-                    SRC_DIR, f'tpl-bigbrain_hemi-{hemi[0].upper()}_desc-mid.surf.gii'
-                    )
+        mesh_path = mesh_paths[hemi[0].upper()]
         #> specify the view order
         if hemi == 'left':
             views_order = ['lateral', 'medial']
@@ -622,7 +663,11 @@ def plot_on_bigbrain_nl(surface_data, filename, inflate=False, plot_downsampled=
             curr_ax_idx += 1
     figure.subplots_adjust(wspace=0, hspace=0)
     figure.tight_layout()
-    figure.savefig(filename, dpi=192)
+    if filename:
+        figure.savefig(filename, dpi=192)
+    else:
+        return figure
+
 
 #### Spin permutation functions ####
 def create_bigbrain_spin_permutations(is_downsampled=True, n_perm=1000, batch_size=20):
@@ -684,7 +729,7 @@ def create_bigbrain_spin_permutations(is_downsampled=True, n_perm=1000, batch_si
 def spin_test(surface_data_to_spin, surface_data_target, n_perm, is_downsampled):
     """
     Performs spin test on the correlation between `surface_data_to_spin` and 
-    `surface_data_target` after parcellation, where `surface_data_to_spin` is spun
+    `surface_data_target`, where `surface_data_to_spin` is spun
 
     Parameters
     ----------
@@ -765,3 +810,143 @@ def spin_test(surface_data_to_spin, surface_data_target, n_perm, is_downsampled)
     #> reduce unnecessary dimension of test_r
     test_r = test_r[0, :, :]
     return test_r, p_val, null_distribution
+
+def variogram_test(X, Y, parcellation_name, exc_regions, n_perm=1000, surrogates_path=None):
+    """
+    Calculates non-parametric p-value of correlation between the columns in X and Y
+    by creating surrogates of X with their spatial autocorrelation preserved based
+    on variograms. Note that X and Y must be parcellated.
+
+    Parameters
+    ----------
+    X, Y: (pd.DataFrame) n_parcel x n_features
+    parcellation_name: (str)
+    exc_regions: (str)
+    n_perm: (int)
+    surrogates_path: (str | None)
+    """
+    if surrogates_path:
+        surrogates_path += f'_nperm-{n_perm}.npz'
+    if surrogates_path and os.path.exists(surrogates_path):
+        print("Surrogates already exist in", surrogates_path)
+        surrogates = np.load(surrogates_path)['surrogates']
+    else:
+        print(f"Creating {n_perm} surrogates based on variograms in {surrogates_path}")
+        GD = matrices.DistanceMatrix(parcellation_name, 'geodesic', exc_regions=exc_regions).matrix.values
+        split_hem_idx = get_split_hem_idx(parcellation_name, exc_regions)
+        GD_hems = {
+            'L': GD[:split_hem_idx, :split_hem_idx],
+            'R': GD[split_hem_idx:, split_hem_idx:]
+        }
+        X_hems = {
+            'L': X.values[:split_hem_idx, :],
+            'R': X.values[split_hem_idx:, :],
+        }
+        surrogates = {}
+        for hem in ['L', 'R']:
+            #> load geodesic distance matrices for each hemisphere
+            GD_hem = GD_hems[hem]
+            #> initialize the surrogates
+            surrogates[hem] = np.zeros((n_perm, X_hems[hem].shape[0], X_hems[hem].shape[1]))
+            for col_idx in range(X_hems[hem].shape[1]):
+                #> create surrogates
+                base = brainsmash.mapgen.base.Base(
+                    x = X_hems[hem][:,col_idx], 
+                    D = GD_hem,
+                    seed=921 # TODO: is it okay to have a fixed seed?
+                )
+                surrogates[hem][:, :, col_idx] = base(n=n_perm)
+        #> concatenate hemispheres
+        surrogates = np.concatenate([
+            surrogates['L'], 
+            surrogates['R'] 
+        ], axis=1) # axis 1 is the parcels
+        if surrogates_path:
+            np.savez_compressed(surrogates_path, surrogates=surrogates)
+    #> calculate test correlation coefficient between all pairs of columns between surface_data_to_spin and surface_data_target
+    test_r = (
+        pd.concat([X, Y], axis=1)
+        # calculate the correlation coefficient between all pairs of columns within and between X and Y
+        .corr() 
+        # select only the correlations we are interested in
+        .iloc[:X.shape[1], -Y.shape[1]:] 
+        # convert it to shape (1, n_features_Y, n_features_surface_X)
+        .T.values[np.newaxis, :] 
+    )
+    #> keep track of null distribution of correlation coefficients
+    null_distribution = test_r.copy() # will have the shape (n_perms, n_features_surface_data_target, n_features_surface_data_to_spin)
+    for surrogate_idx in range(n_perm):
+        curr_surrogate = pd.DataFrame(surrogates[surrogate_idx, :, :], index=X.index)
+        #> calculate null correlation coefficient between all pairs of columns between surface_data_to_spin and surface_data_target
+        null_r = (
+            pd.concat([curr_surrogate, Y], axis=1)
+            .corr()
+            .iloc[:curr_surrogate.shape[1], -Y.shape[1]:]
+            .T.values[np.newaxis, :]
+        )
+        #> add this to the null distribution
+        null_distribution = np.concatenate([null_distribution, null_r], axis=0)
+        #> free up memory
+        gc.collect()
+    #> remove the test_r from null_distribution
+    null_distribution = null_distribution[1:, :, :]
+    #> calculate p value
+    p_val = (np.abs(null_distribution) > np.abs(test_r)).mean(axis=0)
+    #> remove unnecessary dimension of test_r
+    test_r = test_r[0, :, :]
+    return test_r, p_val, null_distribution
+
+def fsa_annot_to_fsa5_gii(parcellation_name):
+    """
+    Converts a parcellation from fsaverage space to fsaverage5
+    simply by taking first 10242 vertices and saving it again
+    as .annot and .label.gii files
+    """
+    for hem in ['lh', 'rh']:
+        ico7_annot_path = os.path.join(SRC_DIR, f'{hem}_{parcellation_name}.annot')
+        labels_ico7, ctab, names = nibabel.freesurfer.io.read_annot(ico7_annot_path)
+        labels_ico5 = labels_ico7[:datasets.N_VERTICES_HEM_BB_ICO5]
+        nibabel.freesurfer.io.write_annot(
+            ico7_annot_path.replace('.annot', '_fsa5.annot'),
+            labels_ico5, ctab, names
+        )
+        gifti_img = abagen.images.annot_to_gifti(ico7_annot_path.replace('.annot', '_fsa5.annot'))
+        nibabel.save(
+            gifti_img,
+            ico7_annot_path.replace('.annot', '_fsa5.label.gii')
+            )
+
+def fix_brodmann_annot():
+    """
+    The original .annot file from FreeSurfer for Brodmann
+    includes non-brodmann regions as well. This function 
+    fixes this issue by replacing non-Brodmann parcels with
+    '???' (background)
+    """
+    for hem in ['lh', 'rh']:
+        annot_path = os.path.join(SRC_DIR, f'{hem}_brodmann_orig.annot')
+        labels, ctab, names = nibabel.freesurfer.io.read_annot(annot_path)
+        #> identify Brodmann parcels
+        brodmann_parcel_indices = []
+        for idx, name in enumerate(names):
+            if 'Brodmann.' in name.decode():
+                brodmann_parcel_indices.append(idx)
+        #> Convert parcel id of non-Brodmann areas to 0
+        brodmann_areas_mask = np.in1d(labels, np.array(brodmann_parcel_indices))
+        labels_brodmann_only = np.where(brodmann_areas_mask, labels, 0)
+        #> Change the parcel ids to range(0, n_Brodmann_parcels+1)
+        parcels_new_idx = {old_idx: new_idx for new_idx, old_idx in enumerate(np.unique(labels_brodmann_only))}
+        labels = np.vectorize(parcels_new_idx.get)(labels_brodmann_only)
+        #> Select ctab and names for the selected parcels (+ others: parcel id 0)
+        included_parcel_indices = [0] + brodmann_parcel_indices
+        ## parcel 93 (Brodmann.33) does not exist in the map => remove it
+        included_parcel_indices = list(
+            set(included_parcel_indices) \
+            - (set(brodmann_parcel_indices) - set(np.unique(labels_brodmann_only)))
+        )
+        ctab = ctab[included_parcel_indices]
+        names = np.array(names)[included_parcel_indices]
+        nibabel.freesurfer.io.write_annot(
+            annot_path.replace('_orig', ''),
+            labels, ctab, names
+        )

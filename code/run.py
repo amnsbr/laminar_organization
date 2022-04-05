@@ -6,25 +6,25 @@ import surfaces
 # in progress
 
 def create_matrices_and_gradients():
-    for parcellation_name in ['sjh', 'schaefer400']:
+    for parcellation_name in ['sjh', 'schaefer400', 'mmp1', 'aparc', 'schaefer1000']:
         print("Parcellation: ", parcellation_name)
-        for exc_adys in [True, False]:
+        for exc_regions in ['adysgranular', 'allocortex']:
             #> load/create curvature similarity matrix
             print("Loading/creating curvature similarity matrix")
             curvature_similarity_matrix_obj = matrices.CurvatureSimilarityMatrix(parcellation_name)
             #> load/create geodesic distance matrix
             print("Loading/creating geodesic distance matrix")
-            geodesic_distance_matrix_obj = matrices.GeodesicDistanceMatrix(parcellation_name)
+            geodesic_distance_matrix_obj = matrices.DistanceMatrix(parcellation_name)
             #> load connectivity matrices
-            if parcellation_name == 'schaefer400':
+            if 'schaefer' in parcellation_name:
                 sc_matrix_obj = matrices.ConnectivityMatrix(
                     'structural',
-                    exc_adys=exc_adys,
+                    exc_regions=exc_regions,
                     parcellation_name=parcellation_name
                     )
                 fc_matrix_obj = matrices.ConnectivityMatrix(
                     'functional',
-                    exc_adys=exc_adys,
+                    exc_regions=exc_regions,
                     parcellation_name=parcellation_name
                     )
             #> load/create microstructure similarity matrices and gradients based on different options
@@ -34,7 +34,7 @@ def create_matrices_and_gradients():
                     matrix_obj = matrices.MicrostructuralCovarianceMatrix(
                         input_type,
                         correct_curvature = correct_curvature,
-                        exc_adys = exc_adys,
+                        exc_regions = exc_regions,
                         parcellation_name = parcellation_name
                     )
                     # TODO: add matrix associations
@@ -42,6 +42,7 @@ def create_matrices_and_gradients():
                     gradients_obj = surfaces.MicrostructuralCovarianceGradients(
                         matrix_obj,
                     )
+                    gradients_obj.plot_surface()
                     # TODO: add gradient associations
 
 
@@ -76,8 +77,8 @@ def ei_analyses():
 
 def run():
     create_matrices_and_gradients()
-    disease_gradients_analyses()
-    ei_analyses()
+    # disease_gradients_analyses()
+    # ei_analyses()
 
 if __name__=='__main__':
     run()

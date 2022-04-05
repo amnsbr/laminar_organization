@@ -32,36 +32,68 @@ class ContCorticalSurface:
     Generic class for common functions on cortical surfaces with continuous data
     """
     # TODO: specify required fields and methods
-    def correlate(self, other, parcellation_name=None, n_perm=1000,
+    def correlate(self, other, parcellated=True, n_perm=1000,
                  x_columns=None, y_columns=None):
         """
-        Calculate the correlation of surface maps with spin test
-        and plot the scatter plots
+        Calculate the correlation of surface maps with permutation test
+        (with surrogates created using spins or variograms) and plot 
+        the scatter plots
 
         Parameters
         ---------
-        self, other (CorticalSurface): with surf_data fields which are n_vert x n_features np.ndarrays
-        parcellation_name (str): used for the regression plot
-        n_perm (int): number of permutations for spin test. Max: 1000
-        x_columns, y_columns (list of str): selected columns from self (x) and other (y)
+        self, other: (CorticalSurface) with surf_data fields which are n_vert x n_features np.ndarrays
+        parcellated: (bool)
+            - True: correlate across parcels (uses variograms for permutation)
+            - False: correlate across vertices (uses spin test for permutation)
+        n_perm: (int) number of permutations. Max: 1000
+        x_columns, y_columns: (list of str) selected columns from self (x) and other (y)
         """
-        out_dir = os.path.join(self.dir_path, f'correlation_{other.label.lower().replace(" ", "_")}')
+        if parcellated:
+            assert self.parcellation_name == other.parcellation_name
+        out_dir = os.path.join(
+            self.dir_path, 
+            'correlation_'\
+            +('parcellated_' if parcellated else '')\
+            + other.label.lower().replace(" ", "_"))
         os.makedirs(out_dir, exist_ok=True)
         #> select columns
         if not x_columns:
             x_columns = self.columns
         if not y_columns:
             y_columns = other.columns
-        x_data = pd.DataFrame(self.surf_data, columns=self.columns).loc[:, x_columns]
-        y_data = pd.DataFrame(other.surf_data, columns=other.columns).loc[:, y_columns]
-        #> spin test after downsampling
-        print("Calculating correlations with spin test")
-        coefs, pvals, coefs_null_dist =  helpers.spin_test(
-            surface_data_to_spin = helpers.downsample(x_data.values), 
-            surface_data_target = helpers.downsample(y_data.values),
-            n_perm=n_perm,
-            is_downsampled=True
-            )
+        # use parcellated or downsampled data of selected columns
+        if parcellated:
+            x_data = self.parcellated_data.loc[:, x_columns]
+            y_data = other.parcellated_data.loc[:, y_columns]
+        else:
+            x_data = pd.DataFrame(
+                helpers.downsample(self.surf_data), 
+                columns=self.columns
+                ).loc[:, x_columns]
+            y_data = pd.DataFrame(
+                helpers.downsample(other.surf_data), 
+                columns=other.columns
+                ).loc[:, y_columns]
+        if parcellated:
+            #> statistical test using variogram-based permutation
+            print("Calculating correlations using variogram-based permutation")
+            coefs, pvals, coefs_null_dist =  helpers.variogram_test(
+                surface_data_to_permutate = x_data, 
+                surface_data_target = y_data,
+                parcellation_name = self.parcellation_name,
+                exc_regions = self.exc_regions,
+                n_perm = n_perm,
+                surrogates_path = self.dir_path + f'surrogates_{"-".join(x_columns)}'
+                )
+        else:
+            #> statistical test using spin permutation
+            print("Calculating correlations with spin test")
+            coefs, pvals, coefs_null_dist =  helpers.spin_test(
+                surface_data_to_spin = x_data.values, 
+                surface_data_target = y_data.values,
+                n_perm=n_perm,
+                is_downsampled=True
+                )
         #> save null distribution for future reference
         np.savez_compressed(
             os.path.join(out_dir, 'coefs_null_dist.npz'),
@@ -75,20 +107,12 @@ class ContCorticalSurface:
         coefs.to_csv(os.path.join(out_dir, 'coefs.csv'))
         pvals.to_csv(os.path.join(out_dir, 'pvals.csv'))
         #> regression plots
-        if not parcellation_name:
-            x_parcellated = pd.DataFrame(helpers.downsample(x_data.values))
-            y_parcellated = pd.DataFrame(helpers.downsample(y_data.values))
-        else:
-            x_parcellated = helpers.parcellate(x_data.values, parcellation_name)
-            y_parcellated = helpers.parcellate(y_data.values, parcellation_name)
-        x_parcellated.columns = x_columns
-        y_parcellated.columns = y_columns
         for x_column in x_columns:
             for y_column in y_columns:
                 fig, ax = plt.subplots(figsize=(4, 4))
                 sns.regplot(
-                    x=x_parcellated.loc[:,x_column], 
-                    y=y_parcellated.loc[:,y_column],
+                    x=x_data.loc[:,x_column], 
+                    y=y_data.loc[:,y_column],
                     scatter_kws=dict(alpha=0.2, s=5, color='grey'),
                     line_kws=dict(color='red'),
                     ax=ax)
@@ -439,17 +463,16 @@ class Gradients(ContCorticalSurface):
         self.surf_data = np.load(os.path.join(self.dir_path, 'gradients_surface.npz'))['surface']
         self.lambdas = np.loadtxt(os.path.join(self.dir_path, 'lambdas.txt'))
 
-    def plot_surface(self, layout='grid', inflate=True):
+    def plot_surface(self, layout_style='grid', inflate=True):
         """
         Plots the gradients on the surface
         """
         for gradient_num in range(1, self._n_components_report+1):
-            helpers.plot_on_bigbrain_nl(
+            helpers.plot_surface(
                 self.surf_data[:, gradient_num-1],
-                filename=os.path.join(self.dir_path, f'surface_{layout}_G{gradient_num}.png'),
-                layout=layout,
+                filename=os.path.join(self.dir_path, f'surface_{layout_style}_G{gradient_num}'),
+                layout_style=layout_style,
                 inflate=inflate,
-                plot_downsampled=True,
                 #TODO: use different colors for each gradient
             )
 
@@ -1226,10 +1249,10 @@ class NeuronTypeMaps(ContCorticalSurface):
             .loc[cell_type_genes['class']==self.neuron_type, 'gene']
             .values
         )
-        cell_type_expression = datasets.fetch_mean_gene_expression(
+        cell_type_expression = datasets.fetch_aggregate_gene_expression(
             genes_list,
             self.parcellation_name,
-            self.discard_rh
+            discard_rh = self.discard_rh,
+            merge_donors = 'genes',
         ).rename(f'{self.neuron_type} gene expression').to_frame()
         return cell_type_expression
-        

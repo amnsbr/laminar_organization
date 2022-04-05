@@ -8,6 +8,7 @@ import nibabel
 import scipy.spatial.distance
 import pandas as pd
 import seaborn as sns
+import matplotlib.pyplot as plt
 import statsmodels.stats.multitest
 import cmcrameri.cm # color maps
 
@@ -254,7 +255,7 @@ class Matrix:
             index_label='parcel',
         )
         if plot:
-            helpers.plot_on_bigbrain_nl(
+            helpers.plot_surface(
                 node_coefs_sig_surface,
                 filename= out_path + '_nodewise_surface_sig.png'
             )
@@ -986,7 +987,6 @@ class MicrostructuralCovarianceMatrix(Matrix):
             split_matrices.append(split_matrix)
         return np.hstack(split_matrices)
 
-
     def _get_dir_path(self):
         """
         Get path for the matrix directory
@@ -1005,6 +1005,63 @@ class MicrostructuralCovarianceMatrix(Matrix):
         sub_dir += f'_metric-{self.similarity_metric}'\
             + f'_scale-{self.similarity_scale}'
         return os.path.join(OUTPUT_DIR, main_dir, sub_dir)
+
+    def plot_parcels_laminar_profile(self, palette='bigbrain'):
+        """
+        Plots the laminar profile of all parcels in a stacked bar plot
+
+        Parameters
+        ---------
+        parcellation_name: (str)
+        exc_regions: (str)
+        palette: (str)
+            - bigbrain: layer colors on BigBrain web viewer
+            - wagstyl: layer colors on Wagstyl 2020 paper
+        """
+        if not hasattr(self, '_concat_parcellated_input_data'):
+            # this is the case if the matrix is loaded from the
+            # one created before
+            self._input_data = self._load_input_data()
+            concat_input_data = np.concatenate([self._input_data['L'], self._input_data['R']], axis=0)
+            self._concat_parcellated_input_data = helpers.parcellate(
+                concat_input_data,
+                self.parcellation_name,
+                averaging_method='median'
+                )
+        #> remove NaNs and reindex and renormalize
+        parcellated_concat_laminar_data = self._concat_parcellated_input_data.dropna().reset_index(drop=True)
+        parcellated_concat_laminar_data = parcellated_concat_laminar_data.divide(
+            parcellated_concat_laminar_data.sum(axis=1),
+            axis=0
+            )
+        #> plot the relative thickness of layers 6 to 1
+        fig, ax = plt.subplots(figsize=(100, 20))
+        if palette == 'bigbrain':
+            colors = ['#abab6b', '#dabcbc', '#dfcbba', '#e1dec5', '#66a6a6','#d6c2e3'] # layer 1 to 6
+        elif palette == 'wagstyl':
+            colors = ['#3a6aa6ff', '#f8f198ff', '#f9bf87ff', '#beaed3ff', '#7fc47cff','#e31879ff'] # layer 1 to 6
+        ax.bar(
+            x = parcellated_concat_laminar_data.index,
+            height = parcellated_concat_laminar_data.iloc[:, 5],
+            width = 1,
+            color=colors[5]
+            )
+        for col_idx in range(4, -1, -1):
+            ax.bar(
+                x = parcellated_concat_laminar_data.index,
+                height = parcellated_concat_laminar_data.iloc[:, col_idx],
+                width = 1,
+                bottom = parcellated_concat_laminar_data.iloc[:, ::-1].cumsum(axis=1).loc[:, col_idx+1],
+                color=colors[col_idx]
+                )
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_xlabel('')
+        ax.set_ylabel('')
+        for _, spine in ax.spines.items():
+            spine.set_visible(False)
+        fig.tight_layout()
+        fig.savefig(os.path.join(self.dir_path,'parcels_profile'), dpi=192)
 
 class CorticalTypeSimilarityMatrix(Matrix):
     label = "Cortical type similarity"
@@ -1150,7 +1207,7 @@ class NeuronalSubtypesCovarianceMatrix(Matrix):
     Matrix showing similarity of gene expression pattern 
     of excitatory and inhibitory neuronal subtypes across
     brain regions using AHBA data and based on gene lists
-    from Lake 2018 (10.1038/nbt.4038)
+    from Lake 2016 (https://doi.org/10.1126/science.aaf1204)
     """
     def __init__(self, neuron_type, parcellation_name, exc_regions=None, discard_rh=True):
         """
@@ -1240,29 +1297,20 @@ class NeuronalSubtypesCovarianceMatrix(Matrix):
         -------
         subtypes_mean_expression: (pd.DataFrame) n_parc x n_subtypes
         """
-        if self.neuron_type == 'exc':
-            subtypes = [
-                'Ex1', 'Ex2', 'Ex3a', 'Ex3b', 'Ex3c', 
-                'Ex3d', 'Ex3e', 'Ex4', 'Ex5a', 'Ex5b', 
-                'Ex6a', 'Ex6b', 'Ex8'
-                ]
-        else:
-            subtypes = ['In1a', 'In1b', 'In1c', 'In2', 'In3', 'In4a', 'In4b', 'In6a', 'In6b', 'In7', 'In8']
         subtypes_genes = pd.read_csv(
             os.path.join(
-                SRC_DIR, 'neuronal_subtypes_genes.csv'
-            ), index_col=0
-            )['Cluster']
-        subtypes_mean_expression = pd.DataFrame()
-        for subtype in subtypes:
+                SRC_DIR, f'{self.neuron_type}_subtypes_genes_Lake2016.csv'
+            ), delimiter=";", decimal=",").dropna()
+        subtypes_expression = pd.DataFrame()
+        for subtype, subtype_df in subtypes_genes.groupby('cluster'):
             print(subtype)
-            #> get the genes list for the subtype
-            genes_list = subtypes_genes[subtypes_genes == subtype].index.tolist()
-            #> get their mean expression from ahba
-            subtypes_mean_expression.loc[:, subtype] = datasets.fetch_mean_gene_expression(
-                genes_list, 
-                self.parcellation_name, 
-                self.discard_rh
+            subtype_genes = subtype_df.set_index('Gene').loc[:, subtype]
+            print(subtype_genes)
+            subtypes_expression.loc[:, subtype] = datasets.fetch_aggregate_gene_expression(
+                subtype_genes,
+                parcellation_name = self.parcellation_name, 
+                discard_rh = self.discard_rh,
+                merge_donors = 'genes',
                 )
-            subtypes_mean_expression = subtypes_mean_expression.dropna()
-        return subtypes_mean_expression
+        subtypes_expression = subtypes_expression.dropna()
+        return subtypes_expression

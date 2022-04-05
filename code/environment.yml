@@ -1,0 +1,21 @@
+name: laminar_gradients
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - numpy
+  - scipy==1.7.2
+  - pandas==1.3.4
+  - statsmodels==0.13.1
+  - nilearn==0.8.1
+  - nibabel==3.2.1
+  - seaborn==0.11.2
+  - scikit-learn
+  - ptitprince
+  - cmcrameri
+  - pip
+  - pip:
+    - abagen==0.1.3
+    - brainsmash==0.11.0
+    - dominance-analysis==1.1.7
+    - pycortex==1.2.3

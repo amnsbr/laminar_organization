@@ -12,5 +12,6 @@ if ! [ -f "${TOOLS_PATH}/civet-2.1.1.simg" ]; then
     singularity pull docker://mcin/civet:2.1.1
     cd $SRC_PATH
 
-source ${HOME}/laminar_gradients/laminar_gradients_env/bin/activate & \
-${HOME}/laminar_gradients/laminar_gradients_env/bin/python ${HOME}/laminar_gradients/code/local/calculate_surface_area.py
+eval "$(conda shell.bash hook)" && \
+conda activate ${PROJECT_DIR}/laminar_gradients_conda && \
+${PROJECT_DIR}/laminar_gradients_conda/bin/python ${HOME}/laminar_gradients/code/local/calculate_surface_area.py

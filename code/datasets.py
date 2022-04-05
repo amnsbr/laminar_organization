@@ -19,6 +19,8 @@ abspath = os.path.abspath(__file__)
 cwd = os.path.dirname(abspath)
 OUTPUT_DIR = os.path.join(cwd, '..', 'output')
 SRC_DIR = os.path.join(cwd, '..', 'src')
+ABAGEN_DIR = '/data/group/cng/abagen-data'
+
 
 #> constants / configs
 N_VERTICES_HEM_BB = 163842
@@ -540,7 +542,7 @@ def load_parcellation_map(parcellation_name, concatenate, downsampled=False):
         elif parcellation_name == 'aparc':
             # add hemisphere to the lable so that it matches ENIGMA toolbox dataset
             sorted_labels = list(map(lambda l: f'{hem}_{l.decode()}', sorted_labels))
-        elif parcellation_name in ['schaefer400', 'schaefer1000' 'economo']:
+        else:
             sorted_labels = list(map(lambda l: l.decode(), sorted_labels)) # b'name' => 'name'
         transdict = dict(enumerate(sorted_labels))
         labeled_parcellation_map[hem] = np.vectorize(transdict.get)(parcellation_map)
@@ -692,13 +694,89 @@ def load_conn_matrix(kind, parcellation_name='schaefer400'):
     reordered_conn_matrix = conn_matrix.loc[parcellated_dummy.index, parcellated_dummy.index]
     return reordered_conn_matrix
 
-def fetch_mean_gene_expression(genes_list, parcellation_name, discard_rh=True):
+def fetch_ahba_data(parcellation_name, return_donors=False, ibf_threshold=0.25, discard_rh=True):
     """
-    Gets the mean expression of genes in `gene_list`
+    Gets the parcellated AHBA gene expression data using abagen. The
+    data is either an aggregated dataframe across all donors or is
+    a dictionary of dataframes with the data for each donor. The latter
+    is not be normalized across the regions as this normalization
+    will be done after aggregate gene expressions (e.g. for neuronal subtypes)
+    are calculated.
 
     Parameters
     ---------
-    gene_list: (list of str)
+    parcellation_name: (str)
+    return_donors: (bool)
+    ibf_threshold: (float)
+    discard_rh: (bool)
+
+    Returns
+    -------
+    ahba_data: (pd.DataFrame | dict) 
+    """
+    # TODO: this doesn't work with aparc parcellation
+    # specify the file path and load it if it exists
+    file_path = os.path.join(
+        SRC_DIR,
+        'ahba'\
+        + ('_donors' if return_donors else '')\
+        + f'_parc-{parcellation_name}'\
+        + ('_hemi-L' if discard_rh else '')\
+        + f'_ibfthr-{ibf_threshold}.npz'\
+    )
+    if os.path.exists(file_path):
+        return np.load(file_path, allow_pickle=True)['data'].tolist()
+    # otherwise load the data from abagen
+    # specify the config
+    if os.path.exists(ABAGEN_DIR):
+        data_dir = ABAGEN_DIR
+    else:
+        data_dir = None
+    atlas = (os.path.join(SRC_DIR, f'lh_{parcellation_name}_fsa5.label.gii'),
+            os.path.join(SRC_DIR, f'rh_{parcellation_name}_fsa5.label.gii'))
+    if return_donors:
+        # avoid normalizing across samples before aggregate for subtypes are calculated
+        gene_norm = None
+    else:
+        gene_norm = 'srs'
+    # get the data as dict
+    expression_data = abagen.get_expression_data(
+        atlas = atlas,
+        data_dir = data_dir,
+        ibf_threshold = ibf_threshold,
+        gene_norm = gene_norm, 
+        return_donors = return_donors,
+        verbose = 2,
+    )
+    if not return_donors:
+        expression_data = {'all': expression_data}
+    # replace the index with parcel labels and remove the
+    # midline and rename the parcels similar to load_parcellation_map if needed
+    _, atlas_info = abagen.images.check_surface(atlas)
+    if parcellation_name == 'sjh':
+        # remove sjh_ from the lable
+        atlas_info['label'] = atlas_info['label'].map(lambda l: int(l.replace('sjh_','')))
+    parcels_mask = ~(atlas_info['label'].isin(helpers.MIDLINE_PARCELS['sjh']))
+    if discard_rh:
+        parcels_mask = parcels_mask & (atlas_info['hemisphere']=='L')
+    for donor in expression_data.keys():
+        expression_data[donor] = expression_data[donor].loc[parcels_mask]
+        expression_data[donor].index = atlas_info.loc[parcels_mask, 'label']
+    # save
+    np.savez_compressed(file_path, 
+                        data=expression_data)
+    return expression_data
+
+def fetch_aggregate_gene_expression(gene_list, parcellation_name, discard_rh=True,
+                                    merge_donors='genes', avg_method='mean'):
+    """
+    Gets the aggregate expression of genes in `gene_list`
+
+    Parameters
+    ---------
+    gene_list: (list | pd.Series)
+        list of gene names or a series with names in the index
+        and weights in the values
         Note: This will ignore genes that do not exist in the current
         version of gene expression data
     parcellation_name: (str)
@@ -707,30 +785,62 @@ def fetch_mean_gene_expression(genes_list, parcellation_name, discard_rh=True):
             Note: For consistency with other functions the right
             hemisphere vertices/parcels are not removed but are set
             to NaN
+    merge_donors: (str | None)
+        - genes: merge donors at the level of individual genes (done in abagen)
+        - aggregates: merge donors after calculating aggregates separately in each donor
+        - None: do not merge donors
+    avg_method:
+        - mean
+        - median (ignores the weights in gene list)
     """
-    #> load parcellated AHBA data
-    ahba_data = np.load(
-        os.path.join(
-            SRC_DIR, 
-            f'ahba_parc-{parcellation_name}_frozen-20220316.npz'), 
-        allow_pickle=True)
-    ahba_df = pd.DataFrame(
-        ahba_data['data'], 
-        columns=ahba_data['columns'], 
-        index=ahba_data['index']
+    # get the ahba data
+    # do not return donor-specific data if 
+    # merging of donors should be done at
+    # genes level
+    ahba_data = fetch_ahba_data(
+        parcellation_name, 
+        return_donors = (merge_donors!='genes'),
+        discard_rh = discard_rh
         )
-    #> remove genes that do not exist in the
-    # current version of gene expression data
-    curr_genes_list = (set(genes_list) & set(ahba_df.columns))
-    print(f'{len(genes_list) - len(curr_genes_list)} of {len(genes_list)} genes do not exist')
-    #> get the average expression of the selected genes
-    mean_expression = (
-        ahba_df.loc[:, curr_genes_list]
-        .mean(axis=1)
-    )
-    if discard_rh:
-        #> remove right hem
-        split_hem_idx = helpers.get_split_hem_idx(parcellation_name, None)
-        mean_expression.iloc[split_hem_idx:] = np.NaN
-    return mean_expression
-
+    # get the gene list that exist in ahba data
+    ahba_genes = list(ahba_data.values())[0].columns
+    if isinstance(gene_list, list):
+        # if no weights are given set the weight
+        # of all genes to 1
+        gene_list = pd.Series(1, index=gene_list)
+    exist_gene_list = (set(gene_list.index) & set(ahba_genes))
+    print(f'{gene_list.shape[0] - len(exist_gene_list)} of {gene_list.shape[0]} genes do not exist')
+    gene_list = gene_list.loc[exist_gene_list]
+    # get the aggregate expression for each donor
+    # (in the case of return_donors==False there's
+    # only one donor named 'all')
+    aggregate_expressions = {}
+    for donor, donor_df in ahba_data.items():
+        if avg_method == 'mean':
+            aggregate_expressions[donor] = (
+                (
+                    donor_df.loc[:, gene_list.index] # gene expression
+                    @ gene_list.values # weights
+                )
+                / gene_list.sum()
+            )
+        elif avg_method == 'median':
+            aggregate_expressions[donor] = donor_df.loc[:, gene_list.index].median(axis=1)
+        if merge_donors!='genes':
+            # normalize the aggregate of genes if donor-specific
+            # expression are used, as the individual genes are 
+            # not already normalized. For the data that is already
+            # aggregated (donor == 'all') the normalization is already
+            # done at the level of individual genes
+            valid_parcels = aggregate_expressions[donor].dropna().index
+            aggregate_expressions[donor].loc[valid_parcels] = \
+                abagen.correct._srs(
+                    aggregate_expressions[donor].loc[valid_parcels]
+                    )
+    if merge_donors is not None:
+        return pd.DataFrame(
+            np.nanmean(np.array(list(aggregate_expressions.values())), axis=0),
+            index=aggregate_expressions[donor].index
+        )
+    else:
+        return aggregate_expressions
