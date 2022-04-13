@@ -7,8 +7,11 @@ The `src` directory includes local and external input data used in the analyses.
 |`economo_cortical_types.csv`|Cortical type of each von Economo region|Local|Created manually based on [García-Cabezas 2020](https://doi.org/10.3389/fnana.2020.576015). Labels correspond to `*h_economo.annot`|
 |`*h_schaefer*.annot`|Schaefer-N parcellation in fsaverage space|[ThomasYeoLab / CBIG](https://github.com/ThomasYeoLab/CBIG/tree/master/stable_projects/brain_parcellation/Schaefer2018_LocalGlobal/Parcellations/FreeSurfer5.3/fsaverage/label)|Originally named `*h.Schaefer2018_*Parcels_7Networks_order.annot`|
 |`*h_sjh.annot`|SJH parcellation in fsaverage space|[MICA-MNI / micaopen](https://github.com/MICA-MNI/micaopen/tree/master/MPC/maps)| |
+|`*h_brodmann_orig.annot`|Brodmann regions in fsaverage space|FreeSurfer|Located in `$SUBJECTS_DIR/fsaverage/label/&h.PALS_B12_Brodmann.annot`|
+|`*h_brodmann.annot`|Brodmann regions in fsaverage space fixed|Local|Created from `*h_brodmann_orig.annot` using `helpers.py` > `fix_brodmann_annot`|
 |`tpl-bigbrain_hemi-*_desc-*_parcellation.label.gii`|Parcellations in bigbrain surface space|Local|Created using `code/local/transform_to_bigbrain.sh`|
 |`tpl-bigbrain_hemi-*_desc-*_parcellation_centers.csv`|Center indices of each parcel in bigbrain surface|Local|Created using `code/helpers.py`:`get_parcel_center_indices`|
+|`*h_*_fsa5.label.gii`|Parcellations in fsaverage 5 space|Local|Created using `helpers.py` > `fsa_annot_to_fsa5_gii`|
 |`tpl-MNI152_desc-schaefer*_parcellation.nii.gz`|Schaefer-N parcellation in MNI space|[ThomasYeoLab / CBIG](https://github.com/ThomasYeoLab/CBIG/tree/master/stable_projects/brain_parcellation/Schaefer2018_LocalGlobal/Parcellations/MNI)|Original name: `Schaefer2018_*Parcels_7Networks_order_FSLMNI152_1mm.nii.gz`|
 |`tpl-MNI152_desc-sjh_parcellation.nii.gz`|SJH parcellation in MNI space|Local|Created using `code/local/sjh_to_mni.m`|
 |`tpl-MNI152_desc-aparc_parcellation.nii.gz`|DK parcellation in MNI space|Local|Created based on the DK parcellation in abagen after removing subcortex|
@@ -24,6 +27,6 @@ The `src` directory includes local and external input data used in the analyses.
 |`spin_batches/`|BigBrain surface sphere spun for permutation testing|Local|Created in `code/helpers.py` > `create_bigbrain_spin_permutations`. Each batch includes 20 random spins.|
 |`PET_nifti_images`|Receptors volumetric PET maps|[netneurolab / hansen_receptors](https://github.com/netneurolab/hansen_receptors/tree/main/data/PET_nifti_images)| |
 |`PET_nifti_images_metadata.csv`|Metdata for volumetric PET maps|Local|Created based on filenames and the information provided in Hansen et al. 2021 and the source papers for some|
-|`ahba_parc-*_frozen-*`|Expression of genes in each parcellation based on AHBA|Local|Created using `code/local/fetch_ahba.py` via [abagen](https://abagen.readthedocs.io/en/stable/)|
+|`ahba_*`|Expression of genes in each parcellation based on AHBA|Local|Created using `helpers.py` > `fetch_ahba_data` via [abagen](https://abagen.readthedocs.io/en/stable/)|
 |`celltypes_PSP.csv`|List of genes associated with each cell type|[jms290 / PolySyn_MSNs](https://raw.githubusercontent.com/jms290/PolySyn_MSNs/master/Data/AHBA/celltypes_PSP.csv)|Based on [Seidlitz 2020](https://www.nature.com/articles/s41467-020-17051-5)|
-|`neuronal_subtypes_genes.csv`|List of genes associated with excitatory and inhibitory neurons subtypes|Local|Based on Table S3 of [Lake 2018](https://www.nature.com/articles/nbt.4038)|
+|`{exc/inh}_subtypes_genes_Lake2016.csv`|List of genes associated with excitatory and inhibitory neuronal subtypes and their weights|Local|Based on Table S5 of [Lake 2016](https://doi.org/10.1126/science.aaf1204)|

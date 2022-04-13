@@ -32,8 +32,22 @@ class ContCorticalSurface:
     Generic class for common functions on cortical surfaces with continuous data
     """
     # TODO: specify required fields and methods
+    def __init__(self, surf_data, columns, label, dir_path=None):
+        """
+        Initialize object using n-d surf_data. This will be overwritten
+        by the sub-classes
+        """
+        self.surf_data = surf_data
+        if self.surf_data.ndim == 1:
+            self.surf_data = self.surf_data[:, np.newaxis]
+        self.columns = columns
+        self.label = label
+        self.dir_path = dir_path
+        if self.dir_path is None:
+            self.dir_path = OUTPUT_DIR
+
     def correlate(self, other, parcellated=True, n_perm=1000,
-                 x_columns=None, y_columns=None):
+                 x_columns=None, y_columns=None, axis_off=False):
         """
         Calculate the correlation of surface maps with permutation test
         (with surrogates created using spins or variograms) and plot 
@@ -47,6 +61,7 @@ class ContCorticalSurface:
             - False: correlate across vertices (uses spin test for permutation)
         n_perm: (int) number of permutations. Max: 1000
         x_columns, y_columns: (list of str) selected columns from self (x) and other (y)
+        axis_off: (bool) turn the axis off from the plot
         """
         if parcellated:
             assert self.parcellation_name == other.parcellation_name
@@ -63,8 +78,9 @@ class ContCorticalSurface:
             y_columns = other.columns
         # use parcellated or downsampled data of selected columns
         if parcellated:
-            x_data = self.parcellated_data.loc[:, x_columns]
-            y_data = other.parcellated_data.loc[:, y_columns]
+            shared_parcels = self.parcellated_data.index.intersection(other.parcellated_data.index)
+            x_data = self.parcellated_data.loc[shared_parcels, x_columns]
+            y_data = other.parcellated_data.loc[shared_parcels, y_columns]
         else:
             x_data = pd.DataFrame(
                 helpers.downsample(self.surf_data), 
@@ -78,12 +94,12 @@ class ContCorticalSurface:
             #> statistical test using variogram-based permutation
             print("Calculating correlations using variogram-based permutation")
             coefs, pvals, coefs_null_dist =  helpers.variogram_test(
-                surface_data_to_permutate = x_data, 
-                surface_data_target = y_data,
+                X = x_data, 
+                Y = y_data,
                 parcellation_name = self.parcellation_name,
-                exc_regions = self.exc_regions,
+                exc_regions = self.matrix_obj.exc_regions,
                 n_perm = n_perm,
-                surrogates_path = self.dir_path + f'surrogates_{"-".join(x_columns)}'
+                surrogates_path = os.path.join(self.dir_path, f'variogram_surrogates_{"-".join(x_columns)}')
                 )
         else:
             #> statistical test using spin permutation
@@ -125,8 +141,10 @@ class ContCorticalSurface:
                 ax.text(text_x, text_y, 
                         f'r = {coefs.loc[y_column, x_column]:.2f}; $\mathregular{{p_{{spin}}}}$ = {pvals.loc[y_column, x_column]:.2f}',
                         color='black',
-                        size=8,
+                        size=14,
                         multialignment='left')
+                if axis_off:
+                    ax.axis('off')
                 fig.tight_layout()
                 fig.savefig(
                     os.path.join(
@@ -348,7 +366,7 @@ class Gradients(ContCorticalSurface):
     """
     def __init__(self, matrix_obj, n_components_create=10, n_components_report=2,
                  approach='dm', kernel='normalized_angle', sparsity=0.9, fair_sparsity=True,
-                 plot_surface=True):
+                 create_plots=True):
         """
         Initializes laminar similarity gradients based on LaminarSimilarityMatrix objects
         and the gradients fitting parameters
@@ -362,9 +380,10 @@ class Gradients(ContCorticalSurface):
         kernel: (str) affinity matrix calculation kernel
         sparsity: (int) proportion of smallest elements to zero-out for each row.
         fair_sparsity: (bool) whether to make joined matrices sparse fairly
-        plot_surface: (bool) Default: False
+        create_plots: (bool) Default: False
         """
         self.matrix_obj = matrix_obj
+        self.parcellation_name = self.matrix_obj.parcellation_name
         self._n_components_create = n_components_create
         self._n_components_report = n_components_report #TODO: determine this programmatically based on scree plot
         self._approach = approach
@@ -385,11 +404,11 @@ class Gradients(ContCorticalSurface):
             print(f"Creating gradients in {self.dir_path}")
             self._create()
             self._save()
-            if plot_surface:
+            if create_plots:
                 self.plot_surface()
-            self.plot_scatter()
-            self.plot_scree()
-            self.plot_reordered_matrix()
+                self.plot_scatter()
+                self.plot_scree()
+                self.plot_reordered_matrix()
 
     def _create(self):
         """
@@ -413,12 +432,28 @@ class Gradients(ContCorticalSurface):
         #> add parcel labels
         self.parcellated_data = pd.DataFrame(
             self.gm.gradients_,
-            index=self.matrix_obj.matrix.index
+            index=self.matrix_obj.matrix.index,
+            columns=self.columns
             )
         #> project to surface
         self.surf_data = helpers.deparcellate(
             self.parcellated_data,
             self.matrix_obj.parcellation_name
+            )
+        # because in the downsampled data some parcels
+        # (e.g.g 550 and 727 in sjh) are missing
+        # and microstructural matrices are created
+        # using downsampled input data, we must plot
+        # the surface data which is deparcellated
+        # on downsampled surface, otherwise there will
+        # be holes in the place of those parcels
+        # TODO: make all the surface functions
+        # work with both downsampled and original
+        # surf data
+        self.surf_data_downsampled = helpers.deparcellate(
+            self.parcellated_data,
+            self.matrix_obj.parcellation_name,
+            downsampled=True
             )
 
     def _get_dir_path(self):
@@ -459,22 +494,45 @@ class Gradients(ContCorticalSurface):
         self.parcellated_data = pd.read_csv(
             os.path.join(self.dir_path, 'gradients_parcels.csv'),
             index_col='parcel')
-        self.parcellated_data.columns = self.parcellated_data.columns.map(int)
-        self.surf_data = np.load(os.path.join(self.dir_path, 'gradients_surface.npz'))['surface']
+        self.parcellated_data.columns = self.columns
+        # self.surf_data = np.load(os.path.join(self.dir_path, 'gradients_surface.npz'))['surface']
+        self.surf_data = helpers.deparcellate(
+            self.parcellated_data,
+            self.matrix_obj.parcellation_name
+            )
+        # because in the downsampled data some parcels
+        # (e.g.g 550 and 727 in sjh) are missing
+        # and microstructural matrices are created
+        # using downsampled input data, we must plot
+        # the surface data which is deparcellated
+        # on downsampled surface, otherwise there will
+        # be holes in the place of those parcels
+        # TODO: make all the surface functions
+        # work with both downsampled and original
+        # surf data
+        self.surf_data_downsampled = helpers.deparcellate(
+            self.parcellated_data,
+            self.matrix_obj.parcellation_name,
+            downsampled=True
+            )
         self.lambdas = np.loadtxt(os.path.join(self.dir_path, 'lambdas.txt'))
 
-    def plot_surface(self, layout_style='grid', inflate=True):
+    def plot_surface(self, layout_style='row', inflate=True):
         """
         Plots the gradients on the surface
         """
+        plots = []
         for gradient_num in range(1, self._n_components_report+1):
-            helpers.plot_surface(
-                self.surf_data[:, gradient_num-1],
+            plot = helpers.plot_surface(
+                self.surf_data_downsampled[:, gradient_num-1],
                 filename=os.path.join(self.dir_path, f'surface_{layout_style}_G{gradient_num}'),
                 layout_style=layout_style,
                 inflate=inflate,
-                #TODO: use different colors for each gradient
+                cmap=self.cmap,
+                cbar=True,
             )
+            plots.append(plot)
+        return plots
 
     def plot_scatter(self, remove_ticks=True):
         """
@@ -504,7 +562,7 @@ class Gradients(ContCorticalSurface):
             os.path.join(self.dir_path,f'scatter.png'), 
             dpi=192)
 
-    def plot_scree(self, normalize=False):
+    def plot_scree(self, normalize=False, mark_selected=True, cumulative=False):
         """
         Plot the lamdas
 
@@ -512,6 +570,7 @@ class Gradients(ContCorticalSurface):
         ---------
         normalize: (bool) normalize the lambdas by sum
         """
+        # plot the absolute/relative lambda values
         fig, ax = plt.subplots(figsize=(6, 4))
         x = np.arange(1, self.lambdas.shape[0]+1).astype('str')
         if normalize:
@@ -528,23 +587,28 @@ class Gradients(ContCorticalSurface):
             )
         ax.spines['right'].set_visible(False)
         ax.spines['top'].set_visible(False)
-        ax.set_xticks(range(1, 11))
+        if mark_selected:
+            # plot squares around the selected components
+            x_selected = x[:self._n_components_report]
+            y_selected = y[:self._n_components_report]
+            ax.scatter(x_selected, y_selected, marker='s', s=200, facecolors='none', edgecolors='r')
         fig.savefig(
             os.path.join(self.dir_path,f'scree{"_normalized" if normalize else ""}.png'),
             dpi=192
             )
-        #> cumulative variance explained
-        fig, ax = plt.subplots(figsize=(6,4))
-        y = (self.lambdas.cumsum() / self.lambdas.sum()) * 100
-        ax.plot(
-            x, y,
-            linewidth = 0.5,
-            color = 'grey',
-            )
-        fig.savefig(
-            os.path.join(self.dir_path,'scree_cum.png'),
-            dpi=192
-            )
+        if cumulative:
+            # plot the cumulative variance explained
+            fig, ax = plt.subplots(figsize=(6,4))
+            y = (self.lambdas.cumsum() / self.lambdas.sum()) * 100
+            ax.plot(
+                x, y,
+                linewidth = 0.5,
+                color = 'grey',
+                )
+            fig.savefig(
+                os.path.join(self.dir_path,'scree_cum.png'),
+                dpi=192
+                )
 
     def plot_reordered_matrix(self):
         """
@@ -554,7 +618,7 @@ class Gradients(ContCorticalSurface):
             #> in unimodal case add ordered matrices by the first 3 gradients
             for g_idx in range(self._n_components_report):
                 #> sort parcels by gradient values
-                sorted_parcels = self.parcellated_data.sort_values(by=g_idx).index
+                sorted_parcels = self.parcellated_data.sort_values(by=self.columns[g_idx]).index
                 #> reorder matrix by sorted parcels
                 reordered_matrix = self.matrix_obj.matrix.loc[sorted_parcels, sorted_parcels].values
                 helpers.plot_matrix(
@@ -565,7 +629,7 @@ class Gradients(ContCorticalSurface):
         else:
             for g_idx in range(self._n_components_report):
                 #> sort parcels by gradient values
-                sorted_parcels = self.parcellated_data.sort_values(by=g_idx).index
+                sorted_parcels = self.parcellated_data.sort_values(by=self.columns[g_idx]).index
                 #> split the matrix to square matrices, reorder each square matrix
                 #  separately, and then hstack reordered square matrices and plot it
                 reordered_split_matrices = []
@@ -601,16 +665,24 @@ class MicrostructuralCovarianceGradients(Gradients):
         plot_surface: (bool) Default: False
         """
         super().__init__(*args, **kwargs)
+        if 'thickness' in self.matrix_obj.input_type:
+            self.cmap = 'viridis'
+        else:
+            self.cmap = 'Spectral_r'
         if not os.path.exists(os.path.join(self.dir_path, 'gradients_surface.npz')):
             self.plot_binned_profile()
 
-    def plot_binned_profile(self, n_bins=10, cmap='Blues'):
+    def plot_binned_profile(self, n_bins=10, palette='bigbrain'):
         """
         Plots the relative laminar thickness (TODO: and density) of `n_bins` bins of the top gradients
         """
         if self.matrix_obj.input_type != 'thickness':
             print(f"Plotting binned profiles is not implemented for input {self.matrix_obj.input_type}")
             return
+        # specifiy the layer colors
+        colors = datasets.LAYERS_COLORS.get(palette)
+        if colors is None:
+            colors = plt.cm.get_cmap(palette, 6).colors
         #> loading and parcellating the laminar thickness
         laminar_thickness = self.matrix_obj._load_input_data()
         parcellated_laminar_thickness = helpers.parcellate(laminar_thickness, self.matrix_obj.parcellation_name)
@@ -619,7 +691,7 @@ class MicrostructuralCovarianceGradients(Gradients):
         parcellated_laminar_thickness = parcellated_laminar_thickness.divide(parcellated_laminar_thickness.sum(axis=1), axis=0)
         for gradient_num in range(1, self._n_components_report+1):
             binned_parcels_laminar_thickness = parcellated_laminar_thickness.copy()
-            binned_parcels_laminar_thickness['bin'] = pd.cut(self.parcellated_data[gradient_num-1], n_bins)
+            binned_parcels_laminar_thickness['bin'] = pd.qcut(self.parcellated_data.iloc[:, gradient_num-1], n_bins)
             #> calculate average laminar thickness at each bin
             bins_laminar_thickness = binned_parcels_laminar_thickness.groupby('bin').mean().reset_index(drop=True)
             bins_laminar_thickness.columns = [f'Layer {idx+1}' for idx in range(6)]
@@ -635,7 +707,7 @@ class MicrostructuralCovarianceGradients(Gradients):
                 x = bins_laminar_thickness.index,
                 height = bins_laminar_thickness['Layer 6'],
                 width = 0.95,
-                color=plt.cm.get_cmap(cmap)(6/6),
+                color=colors[-1],
                 )
             for layer_num in range(5, 0, -1):
                 ax.bar(
@@ -643,19 +715,21 @@ class MicrostructuralCovarianceGradients(Gradients):
                     height = bins_laminar_thickness[f'Layer {layer_num}'],
                     width = 0.95,
                     bottom = bins_laminar_thickness.cumsum(axis=1)[f'Layer {layer_num+1}'],
-                    color=plt.cm.get_cmap(cmap)(layer_num/6),
+                    color=colors[layer_num-1],
                     )
             ax.set_xticks([])
             ax.set_yticks([])
-            ax.set_xlabel(f'G{gradient_num} bins')
-            ax.set_ylabel('Relative laminar thickness')
+            # ax.set_xlabel(f'G{gradient_num} bins')
+            # ax.set_ylabel('Relative laminar thickness')
+            ax.set_xlabel('')
+            ax.set_ylabel('')
             for _, spine in ax.spines.items():
                 spine.set_visible(False)
             fig.tight_layout()
             fig.savefig(os.path.join(self.dir_path, f'binned_profile_G{gradient_num}.png'), dpi=192)
             clfig = helpers.make_colorbar(
-                self.parcellated_data[gradient_num-1].min(), 
-                self.parcellated_data[gradient_num-1].max(),
+                self.parcellated_data.iloc[:,gradient_num-1].min(), 
+                self.parcellated_data.iloc[:,gradient_num-1].max(),
                 bins=10, 
                 orientation='horizontal', figsize=(6,4))
             clfig.savefig(os.path.join(self.dir_path, f'binned_profile_G{gradient_num}_clbar.png'), dpi=192)
@@ -914,7 +988,7 @@ class CatCorticalSurface:
         else:
             return anova_res
 
-    def compare(self, other, parcellation_name, nbins=10):
+    def compare(self, other, other_columns=None, nbins=10):
         """
         Compares the difference of `other.surf_data` across `self.included_categories` and 
         plots it as raincloud or stacked bar plots
@@ -922,18 +996,23 @@ class CatCorticalSurface:
         Parameters
         ----------
         other: (ContCorticalSurface)
-        parcellation_name: (str)
+        other_columns: (list of str | None)
         nbins: (int)
             number of bins in the binned stacked bar plot
         """
+        if other_columns is None:
+            other_columns = other.columns
+            surf_data = other.surf_data
+        else:
+            surf_data = pd.DataFrame(other.surf_data, columns=other.columns).loc[:, other_columns].values
         #> parcellate data and specify cortical type of each parcel
-        parcellated_data = self._parcellate_and_categorize(other.surf_data, other.columns, parcellation_name)
+        parcellated_data = self._parcellate_and_categorize(surf_data, other_columns, other.parcellation_name)
         #> specify output dir
         out_dir = os.path.join(other.dir_path, f'association_{self.label.lower().replace(" ", "_")}')
         os.makedirs(out_dir, exist_ok=True)
         #> investigate the association of gradient values and cortical categories (visually and statistically)
         anova_res_str = "ANOVA Results\n--------\n"
-        for column in other.columns:
+        for column in other_columns:
             # 1) Raincloud plot
             self._plot_raincloud(parcellated_data, column, out_dir)
             #> 2) Binned stacked bar plot
@@ -1009,6 +1088,7 @@ class CorticalTypes(CatCorticalSurface):
     Map of cortical types
     """
     label = 'Cortical Type'
+    dir_path = os.path.join(OUTPUT_DIR, 'ctypes')
     def __init__(self, exc_regions='adysgranular', downsampled=False):
         """
         Loads the map of cortical types

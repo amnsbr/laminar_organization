@@ -140,6 +140,7 @@ cython_debug/
 # Project specific
 tools/
 laminar_gradients_env/
+laminar_gradients_conda/
 logs/
 # src will include files downloaded from the web or copied from src_local
 # since these files are sometimes very large (e.g. BigBrain files) I will
@@ -147,9 +148,8 @@ logs/
 src_local/
 _src_archive/
 src/tpl-fsaverage*
-code/Laminar Gradients Playground.ipynb
+code/playground*.ipynb
 code/Plotting_gradients.ipynb
-code/playground2.ipynb
 # also ignoring data and output for now; will un-ignore it in final release
 data/
 output/

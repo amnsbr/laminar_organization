@@ -10,9 +10,12 @@ from cortex.polyutils import Surface
 import scipy.spatial.distance
 import scipy.io
 import abagen
+import logging
+import sys
 
 import helpers
 
+logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 
 #> specify the data dir
 abspath = os.path.abspath(__file__)
@@ -21,10 +24,14 @@ OUTPUT_DIR = os.path.join(cwd, '..', 'output')
 SRC_DIR = os.path.join(cwd, '..', 'src')
 ABAGEN_DIR = '/data/group/cng/abagen-data'
 
-
 #> constants / configs
 N_VERTICES_HEM_BB = 163842
 N_VERTICES_HEM_BB_ICO5 = 10242
+
+LAYERS_COLORS = {
+    'bigbrain': ['#abab6b', '#dabcbc', '#dfcbba', '#e1dec5', '#66a6a6','#d6c2e3'], # layer 1 to 6
+    'wagstyl': ['#3a6aa6ff', '#f8f198ff', '#f9bf87ff', '#beaed3ff', '#7fc47cff','#e31879ff']
+}
 
 def load_downsampled_surface_paths(kind='orig'):
     """
@@ -260,75 +267,71 @@ def load_yeo_map(parcellation_name=None, downsampled=False):
         return yeo_map
 
 
-def load_exc_masks(exc_mask_type, parcellation_name=None):
+def load_exc_masks(exc_regions, concatenate=False, downsampled=False):
     """
     Create masks of bigbrain space including agranular and dysgranular region.
-    When the data is processed parcellated, these masks also take the parcellation
-    into account and include parcels in which the most common cortical type is 
-    non-cortical, allocortex, +/- a-/dysgranular regions
 
     Parameters
     ---------
-    exc_mask_type: (str)
+    exc_regions: (str | None)
         - allocortex: excludes allocortex
         - adysgranular: excludes allocortex + adysgranular regions
-    parcellation_name: (None or str) the parcellation should be saved in src folder
-                        with the name 'tpl-bigbrain_hemi-L_desc-{parcellation_name}_parcellation.label.gii'
+
+    concatenate: (bool)
 
     Returns
     -------
-    hem_exc_masks: (dict) boolean surface maps of exclusion masks for L and R hemispheres
+    exc_mask: (np.ndarray | dict) boolean surface maps of exclusion mask
     """
-    mask_filepath = os.path.join(
-        OUTPUT_DIR, 'masks',
-        f'tpl-bigbrain_desc-{exc_mask_type}_mask_parc-{parcellation_name}.npy'
-    )
-    if os.path.exists(mask_filepath):
-        exc_mask = np.load(mask_filepath)
+    #> load cortical types surface map after/without parcellation
+    cortical_types = load_cortical_types(downsampled=downsampled)
+    # #> if it's parcellated project back to surface
+    # #  Why? because parcellation_map and economo parcellation do
+    # #  not fully overlap and we need a mask that is aligned with the parcellation_map
+    # if parcellation_name: 
+    #     cortical_types = pd.Series(helpers.deparcellate(cortical_types, parcellation_name).flatten())
+    # #> match midlines of the `parcellation_name` and economo parcellation (sometimes e.g. in sjh
+    # #  they do not match) by makign their overlap NaN. The midline of `parcellation_name` is already
+    # #  NaN (from load_cortical_types). Therefore only load midline of economo and make it NaN
+    # economo_map = load_parcellation_map('economo', concatenate=True)
+    # economo_midline_mask = np.in1d(economo_map, ['unknown', 'corpuscallosum'])
+    # cortical_types[economo_midline_mask] = np.NaN
+    #> create a mask of excluded cortical types
+    if exc_regions == 'allocortex':
+        exc_cortical_types = [np.NaN, 'ALO']
+    elif exc_regions == 'adysgranular':
+        exc_cortical_types = [np.NaN, 'ALO', 'DG', 'AG']
+    exc_mask = cortical_types.isin(exc_cortical_types).values
+    if concatenate:
+        return exc_mask
     else:
-        #> load cortical types surface map after/without parcellation
-        cortical_types = load_cortical_types(parcellation_name)
-        #> if it's parcellated project back to surface
-        #  Why? because parcellation_map and economo parcellation do
-        #  not fully overlap and we need a mask that is aligned with the parcellation_map
-        if parcellation_name: 
-            cortical_types = pd.Series(helpers.deparcellate(cortical_types, parcellation_name).flatten())
-        #> match midlines of the `parcellation_name` and economo parcellation (sometimes e.g. in sjh
-        #  they do not match) by makign their overlap NaN. The midline of `parcellation_name` is already
-        #  NaN (from load_cortical_types). Therefore only load midline of economo and make it NaN
-        economo_map = load_parcellation_map('economo', concatenate=True)
-        economo_midline_mask = np.in1d(economo_map, ['unknown', 'corpuscallosum'])
-        cortical_types[economo_midline_mask] = np.NaN
-        #> create a mask of excluded cortical types
-        if exc_mask_type == 'allocortex':
-            exc_cortical_types = [np.NaN, 'ALO']
-        elif exc_mask_type == 'adysgranular':
-            exc_cortical_types = [np.NaN, 'ALO', 'DG', 'AG']
-        exc_mask = cortical_types.isin(exc_cortical_types).values
-        os.makedirs(os.path.join(OUTPUT_DIR, 'masks'), exist_ok=True)
-        np.save(mask_filepath, exc_mask)
-    #> for historical reasons split this into two hemispheres and return it
-    hem_exc_masks = {
-        'L': exc_mask[:N_VERTICES_HEM_BB],
-        'R': exc_mask[N_VERTICES_HEM_BB:]
-    }
-    return hem_exc_masks
+        return {
+            'L': exc_mask[:N_VERTICES_HEM_BB],
+            'R': exc_mask[N_VERTICES_HEM_BB:]
+        }
 
-def load_laminar_thickness(exc_masks=None, normalize_by_total_thickness=True, regress_out_curvature=False):
+def load_laminar_thickness(exc_masks=None, normalize_by_total_thickness=True, 
+                           regress_out_curvature=False, smooth_disc_radius=None):
     """
     Loads laminar thickness data from 'data' folder and after masking out
     `exc_mask` returns 6-d laminar thickness arrays for left and right hemispheres.
-    Also does normalization if `self.normalize_by_total_thickness` is True.
+    Also does normalization, regressing out of the curvature or disc smoothing
+    if indicated.
 
     Parameters
     --------
-    exc_masks: (dict of np.ndarray) The surface masks of vertices that should be excluded (L and R)
-    normalize_by_total_thickness: (bool) Normalize by total thickness. Default: True
-    regress_out_curvature: (bool) Regress out curvature. Default: False
+    exc_masks: (dict of np.ndarray) 
+        The surface masks of vertices that should be excluded (L and R)
+    normalize_by_total_thickness: (bool) 
+        Normalize by total thickness. Default: True
+    regress_out_curvature: (bool) 
+        Regress out curvature. Default: False
+    smooth_disc_radius: (int | None) 
+        Smooth the absolute thickness of each layer using a disc with the given radius.
 
     Retruns
     --------
-    laminar_thickness: (dict of np.ndarray) n_vertices x 6 for laminar thickness of L and R hemispheres
+    laminar_thickness: (dict of np.ndarray) n_vertices [ico7 or ico5] x 6 for laminar thickness of L and R hemispheres
     """
     laminar_thickness = {}
     for hem in ['L', 'R']:
@@ -343,16 +346,25 @@ def load_laminar_thickness(exc_masks=None, normalize_by_total_thickness=True, re
         #> remove the exc_mask
         if exc_masks:
             laminar_thickness[hem][exc_masks[hem], :] = np.NaN
+    if smooth_disc_radius:
+        # downsample it for better performance
+        laminar_thickness = helpers.downsample(laminar_thickness)
+        # smooth the laminar thickness using the disc approach
+        laminar_thickness, _ = helpers.disc_smooth(laminar_thickness, smooth_disc_radius)
+    for hem in ['L', 'R']:
         #> normalize by total thickness
         if normalize_by_total_thickness:
             laminar_thickness[hem] /= laminar_thickness[hem].sum(axis=1, keepdims=True)
         #> regress out curvature
         if regress_out_curvature:
-            cov_surf_data = load_curvature_maps()[hem]
-            laminar_thickness[hem] = helpers.regress_out_surf_covariates(
-                laminar_thickness[hem], cov_surf_data,
-                sig_only=False, renormalize=True
-                )
+            if smooth_disc_radius:
+                logging.warning("Skipping regressing out of the curvature as laminar thickness is smoothed")
+            else:
+                cov_surf_data = load_curvature_maps()[hem]
+                laminar_thickness[hem] = helpers.regress_out_surf_covariates(
+                    laminar_thickness[hem], cov_surf_data,
+                    sig_only=False, renormalize=True
+                    )
     return laminar_thickness
 
 def calculate_alphas(betas, aw, ap):
@@ -505,47 +517,48 @@ def load_laminar_density(exc_masks=None, method='mean'):
         # TODO: also normalize density?
     return laminar_density
 
-def load_parcellation_map(parcellation_name, concatenate, downsampled=False):
+def load_parcellation_map(parcellation_name, concatenate, downsampled=False, load_indices=False):
     """
     Loads parcellation maps of L and R hemispheres, correctly relabels them
     and concatenates them if `concatenate` is True
-    TODO: maybe add the option for loading only the parcel indices
 
     Parameters
     ----------
     parcellation_name: (str) Parcellation scheme
-    concatenate: (bool) whether to cocnatenate the hemispheres
-    downsampled: (bool) whether to load a downsampled version of parcellation map
+    concatenate: (bool) cocnatenate the hemispheres
+    downsampled: (bool) load a downsampled version of parcellation map
+    load_indices: (bool) return the parcel indices instead of their names
 
     Returns
     -------
-    labeled_parcellation_map: (np.ndarray or dict of np.ndarray) concatenated or unconcatenated labeled parcellation map
+    parcellation_map: (np.ndarray or dict of np.ndarray)
     """
-    labeled_parcellation_map = {}
+    parcellation_map = {}
     for hem in ['L', 'R']:
         #> load parcellation map
-        parcellation_map = nilearn.surface.load_surf_data(
+        parcellation_map[hem] = nilearn.surface.load_surf_data(
             os.path.join(
                 SRC_DIR, 
                 f'tpl-bigbrain_hemi-{hem}_desc-{parcellation_name}_parcellation.label.gii')
             )
-        #> label parcellation map
-        _, _, sorted_labels = nibabel.freesurfer.io.read_annot(
-            os.path.join(
-                SRC_DIR, 
-                f'{hem.lower()}h_{parcellation_name}.annot')
-        )
-        #> labels post-processing for each specific parcellation
-        if parcellation_name == 'sjh':
-            # remove sjh_ from the lable
-            sorted_labels = list(map(lambda l: int(l.decode().replace('sjh_','')), sorted_labels))
-        elif parcellation_name == 'aparc':
-            # add hemisphere to the lable so that it matches ENIGMA toolbox dataset
-            sorted_labels = list(map(lambda l: f'{hem}_{l.decode()}', sorted_labels))
-        else:
-            sorted_labels = list(map(lambda l: l.decode(), sorted_labels)) # b'name' => 'name'
-        transdict = dict(enumerate(sorted_labels))
-        labeled_parcellation_map[hem] = np.vectorize(transdict.get)(parcellation_map)
+        if not load_indices:
+            #> label parcellation map
+            _, _, sorted_labels = nibabel.freesurfer.io.read_annot(
+                os.path.join(
+                    SRC_DIR, 
+                    f'{hem.lower()}h_{parcellation_name}.annot')
+            )
+            #> labels post-processing for each specific parcellation
+            if parcellation_name == 'sjh':
+                # remove sjh_ from the lable
+                sorted_labels = list(map(lambda l: int(l.decode().replace('sjh_','')), sorted_labels))
+            elif parcellation_name == 'aparc':
+                # add hemisphere to the lable so that it matches ENIGMA toolbox dataset
+                sorted_labels = list(map(lambda l: f'{hem}_{l.decode()}', sorted_labels))
+            else:
+                sorted_labels = list(map(lambda l: l.decode(), sorted_labels)) # b'name' => 'name'
+            transdict = dict(enumerate(sorted_labels))
+            parcellation_map[hem] = np.vectorize(transdict.get)(parcellation_map[hem])
         if downsampled:
             #> select only the vertices corresponding to the downsampled ico5 surface
             # Warning: For fine grained parcels such as sjh this approach leads to
@@ -556,11 +569,11 @@ def load_parcellation_map(parcellation_name, concatenate, downsampled=False):
                 )
             )
             bb_downsample_indices = mat['bb_downsample'][:, 0]-1 #1-indexing to 0-indexing
-            labeled_parcellation_map[hem] = labeled_parcellation_map[hem][bb_downsample_indices]
+            parcellation_map[hem] = parcellation_map[hem][bb_downsample_indices]
     if concatenate:
-        return np.concatenate([labeled_parcellation_map['L'], labeled_parcellation_map['R']])
+        return np.concatenate([parcellation_map['L'], parcellation_map['R']])
     else:
-        return labeled_parcellation_map
+        return parcellation_map
 
 def load_volumetric_parcel_labels(parcellation_name):
     """
@@ -595,26 +608,6 @@ def load_volumetric_parcel_labels(parcellation_name):
         dk_labels = dk_info['hemisphere'] + '_' + dk_info['label']
         labels = dk_labels[dk_info['structure']=='cortex'].values
     return labels
-
-def load_parcels_adys(parcellation_name, concat=True):
-    """
-    Determines which parcels are in the adysgranular mask
-
-    Parameter
-    --------
-    parcellation_name: (str) parcellation name (must exists in data/parcellation)
-    concat: (bool) concatenate hemispheres
-
-    Returns
-    -------
-    parcels_adys: (pd.Series | dict of pd.Series) with n_parcels elements showing which parcels
-        are in the adysgranular mask
-    """
-    adysgranular_masks = load_exc_masks('adysgranular', parcellation_name)
-    parcels_adys = helpers.parcellate(adysgranular_masks, parcellation_name)
-    if concat:
-        parcels_adys = helpers.concat_hemispheres(parcels_adys, dropna=True)
-    return parcels_adys
 
 def load_disease_maps(psych_only):
     """

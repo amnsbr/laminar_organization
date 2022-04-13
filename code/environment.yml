@@ -19,3 +19,5 @@ dependencies:
     - brainsmash==0.11.0
     - dominance-analysis==1.1.7
     - pycortex==1.2.3
+    - palettable
+    - bctpy

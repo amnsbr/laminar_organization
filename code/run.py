@@ -74,11 +74,18 @@ def ei_analyses():
         #> association with microstructure
         receptor_map.microstructure_dominance_analysis(col_idx=0, n_perm=1000, exc_adys=True)
 
+def create_surrogates():
+    for parc in ['aparc', 'schaefer400', 'mmp1', 'sjh']:
+        print(parc)
+        ltc = matrices.MicrostructuralCovarianceMatrix('thickness', parc)
+        ltc.create_or_load_surrogates()
 
 def run():
     create_matrices_and_gradients()
     # disease_gradients_analyses()
     # ei_analyses()
+    # create_surrogates()
+
 
 if __name__=='__main__':
     run()

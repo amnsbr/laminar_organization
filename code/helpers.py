@@ -212,8 +212,8 @@ def downsample(surface_data):
     concat_output = False
     if isinstance(surface_data, np.ndarray):
         surface_data = {
-            'L': surface_data[:datasets.N_VERTICES_HEM_BB, :],
-            'R': surface_data[datasets.N_VERTICES_HEM_BB:, :],
+            'L': surface_data[:datasets.N_VERTICES_HEM_BB],
+            'R': surface_data[datasets.N_VERTICES_HEM_BB:],
         }
         concat_output = True
     downsampled_surface_data = {}
@@ -237,6 +237,17 @@ def downsample(surface_data):
             .groupby('index')
             .mean()
         )
+        #> if there is a single NaN value around a downsampled vertex
+        # set that vertex to NaN
+        any_nan = (
+            pd.DataFrame(surface_data[hem], index=downsample_parcellation)
+            .isna()
+            .reset_index(drop=False)
+            .groupby('index')
+            .sum()
+            .any(axis=1)
+        )
+        downsampled.loc[any_nan] = np.NaN
         #> load correctly ordered indices of center vertices
         #  and reorder downsampled data to the correct order alligned with ico5 surface
         bb_downsample_indices = mat['bb_downsample'][:, 0]-1 #1-indexing to 0-indexing
@@ -339,6 +350,40 @@ def regress_out_surf_covariates(input_surface_data, cov_surface_data, sig_only=F
         cleaned_surface_data /= cleaned_surface_data.sum(axis=1, keepdims=True)    
     return cleaned_surface_data
 
+def disc_smooth(surface_data, smooth_disc_radius):
+    """
+    Smoothes the surface data (in ico5) using discs created on the
+    inflated surface with `smooth_disc_radius` around each vertex.
+    The smoothing is done uniformly
+
+    Parameters
+    ----------
+    surface_data: (dict of np.ndarray) n_vert_ico5 x n_features
+    smooth_disc_radius: (int)
+
+    Returns
+    -------
+    smoothed_surface_data: (dict of np.ndarray) n_vert_ico5 x n_features
+    discs: (dict np.ndarray) n_vert_ico5 x n_vert_ico5
+    """
+    assert surface_data['L'].shape[0] == datasets.N_VERTICES_HEM_BB_ICO5
+    inflated_mesh_paths = datasets.load_downsampled_surface_paths('inflated')
+    discs = {}
+    smoothed_surface_data = {}
+    for hem in ['L', 'R']:
+        inflated_mesh = nilearn.surface.load_surf_mesh(inflated_mesh_paths[hem])
+        ed_matrix = scipy.spatial.distance_matrix(inflated_mesh.coordinates, inflated_mesh.coordinates)
+        discs[hem] = ed_matrix < smooth_disc_radius
+        smoothed_surface_data[hem] = np.zeros_like(surface_data[hem])
+        for vertex in range(datasets.N_VERTICES_HEM_BB_ICO5):
+            if np.isnan(surface_data[hem][vertex, :]).any():
+                # only do smoothing if the seed is not NaN
+                smoothed_surface_data[hem][vertex, :] = np.NaN
+            else:
+                disc = discs[hem][vertex, :].astype('bool')
+                smoothed_surface_data[hem][vertex, :] = np.nanmean(surface_data[hem][disc, :], axis=0)
+    return smoothed_surface_data, discs
+
 def deparcellate(parcellated_data, parcellation_name, downsampled=False):
     """
     Project the parcellated data to surface vertices while handling empty parcels
@@ -380,25 +425,54 @@ def deparcellate(parcellated_data, parcellation_name, downsampled=False):
     # TODO: convert it back to DataFrame or Series with original col names
     return surface_map
 
-def get_split_hem_idx(parcellation_name, exc_regions):
+def get_valid_parcels(parcellation_name, exc_regions, thr=0.5, downsampled=True):
     """
-    Get the index of the first RH parcel to split hemispheres
+    Get the valid parcels of `parcellation_name` that are 
+    not midline and have less than `thr` of their vertices 
+    in the `exc_regions`.
+    """
+    if exc_regions is None:
+        if downsampled:
+            exc_mask = np.zeros(datasets.N_VERTICES_HEM_BB_ICO5*2).astype('bool')
+        else:
+            exc_mask = np.zeros(datasets.N_VERTICES_HEM_BB*2).astype('bool')
+    else:
+        exc_mask = datasets.load_exc_masks(exc_regions, concatenate=True, downsampled=downsampled)
+    parcellated_exc_mask = (
+        # calculate the fraction of vertices in each parcel that
+        # are within the exc_mask
+        parcellate(exc_mask, parcellation_name, 'mean')[0]
+        # drop the midline and threshold
+        .dropna()
+        >= thr
+    )
+    return parcellated_exc_mask.loc[~parcellated_exc_mask].index
+
+def get_hem_parcels(parcellation_name, limit_to_parcels=None):
+    """
+    Get parcels belonging to each hemisphere from all the parcels
+    or the list `limit_to_parcels`
 
     Parameters
-    ----------
+    --------
     parcellation_name: (str)
-    exc_regions: (str or None)
-        - adysgranular
-        - allocortex
-        - None
+    limit_to_parcels: (list or None)
+        get the intersection of the parcels with this list of parcels in each
+        hemisphere. useful for splitting an existing matrix into hemispheres
     """
-    if exc_regions is not None:
-        exc_masks = datasets.load_exc_masks(exc_regions, parcellation_name)
-    else:
-        exc_masks = {hem:np.zeros(datasets.N_VERTICES_HEM_BB) for hem in ['L', 'R']}
-    parcels_to_exclude = parcellate(exc_masks, parcellation_name)
-    split_hem_idx = int(np.nansum(1-parcels_to_exclude['L'].values)) # number of non-exc-mask parcels in lh
-    return split_hem_idx
+    parcellated_dummy = parcellate(
+        {'L': np.zeros(datasets.N_VERTICES_HEM_BB),
+         'R': np.zeros(datasets.N_VERTICES_HEM_BB),},
+         parcellation_name)
+    parcels = {}
+    for hem in ['L', 'R']:
+        # get the index of parcels that are not NA (midline)
+        parcels[hem] = parcellated_dummy[hem].dropna().index.tolist()
+        if limit_to_parcels is not None:
+            # get its intersection with the list of parcels
+            parcels[hem] = list(set(limit_to_parcels) & set(parcels[hem]))
+    return parcels
+
 
 def get_parcel_center_indices(parcellation_name):
     """
@@ -506,8 +580,8 @@ def plot_matrix(matrix, outpath, cmap="rocket", vrange=(0.025, 0.975), **kwargs)
     vrange: (tuple of size 2) vmin and vmax as percentiles (for whole range put (0, 1))
     """
     n_square_matrices = matrix.shape[1] // matrix.shape[0]
-    vmin = np.quantile(matrix.flatten(),vrange[0])
-    vmax = np.quantile(matrix.flatten(),vrange[1])
+    vmin = np.nanquantile(matrix.flatten(),vrange[0])
+    vmax = np.nanquantile(matrix.flatten(),vrange[1])
     fig, ax = plt.subplots(figsize=(7 * n_square_matrices,7))
     sns.heatmap(
         matrix,
@@ -519,19 +593,19 @@ def plot_matrix(matrix, outpath, cmap="rocket", vrange=(0.025, 0.975), **kwargs)
     fig.savefig(outpath, dpi=192)
     clbar_fig = make_colorbar(
         vmin=vmin, vmax=vmax,
-        cmap=cmap, orientation='vertical'
+        cmap=cmap, orientation='horizontal'
         )
     clbar_fig.savefig(outpath+'_clbar', dpi=192)
 
-def plot_surface(surface_data, filename=None, space='bigbrain', inflate=False, 
-                 plot_downsampled=True, layout_style='horizontal', cmap='viridis',
-                 toolbox='brainspace'):
+def plot_surface(surface_data, filename=None, space='bigbrain', inflate=True, 
+                 plot_downsampled=True, layout_style='row', cmap='viridis',
+                 toolbox='brainspace', vrange=None, cbar=False, **plotter_kwargs):
     """
     Plots the surface data with medial and lateral views of both hemispheres
 
     Parameters
     ----------
-    surface_data: (np.ndarray or dict of np.ndarray) (n_vert,) 
+    surface_data: (np.ndarray) (n_vert,) 
     filename: (str | None) 
         path to output without .png
     space: (str)
@@ -547,16 +621,22 @@ def plot_surface(surface_data, filename=None, space='bigbrain', inflate=False,
     toolbox: (str)
         - brainspace
         - nilearn
+    Also accepts other keyword arguments specific to brainspace or nilearn plotter
+    functions
     """
-    #> split surface if it has been concatenated (e.g. gradients)
-    #  and make sure the shape is correct
-    if isinstance(surface_data, np.ndarray):
-        assert surface_data.shape[0] == datasets.N_VERTICES_HEM_BB * 2
+    if vrange is None:        
+        vrange = (np.nanmin(surface_data), np.nanmax(surface_data))
+    #> split surface to L and R and make sure the shape is correct
+    if surface_data.shape[0] == datasets.N_VERTICES_HEM_BB * 2:
         lh_surface_data = surface_data[:datasets.N_VERTICES_HEM_BB]
         rh_surface_data = surface_data[datasets.N_VERTICES_HEM_BB:]
-        surface_data = {'L': lh_surface_data, 'R': rh_surface_data}
+    elif surface_data.shape[0] == datasets.N_VERTICES_HEM_BB_ICO5 * 2:
+        lh_surface_data = surface_data[:datasets.N_VERTICES_HEM_BB_ICO5]
+        rh_surface_data = surface_data[datasets.N_VERTICES_HEM_BB_ICO5:]
+        plot_downsampled = True
     else:
-        assert surface_data['L'].shape[0] == datasets.N_VERTICES_HEM_BB
+        raise TypeError("Wrong surface data dimensions")
+    surface_data = {'L': lh_surface_data, 'R': rh_surface_data}
     #> specify the mesh and downsample the data if needed
     if plot_downsampled:
         if (surface_data['L'].shape[0] == datasets.N_VERTICES_HEM_BB):
@@ -584,13 +664,19 @@ def plot_surface(surface_data, filename=None, space='bigbrain', inflate=False,
                     SRC_DIR, 'tpl-bigbrain_hemi-R_desc-mid.surf.gii'
                     )
             }
+    # plot the colorbar
+    if cbar:
+        clbar_fig = make_colorbar(*vrange, cmap)
+        if filename:
+            clbar_fig.tight_layout()
+            clbar_fig.savefig(filename+'_clbar.png', dpi=192)
+    # plot the surfaces
     if toolbox == 'brainspace':
-        _plot_brainspace(surface_data, mesh_paths, filename, layout_style, cmap)
+        return _plot_brainspace(surface_data, mesh_paths, filename, layout_style, cmap, vrange, **plotter_kwargs)
     else:
-        _plot_nilearn(surface_data, mesh_paths, filename, layout_style, cmap)
-    # TODO plot colorbar separately
+        return _plot_nilearn(surface_data, mesh_paths, filename, layout_style, cmap, vrange, **plotter_kwargs)
 
-def _plot_brainspace(surface_data, mesh_paths, filename, layout_style, cmap):
+def _plot_brainspace(surface_data, mesh_paths, filename, layout_style, cmap, vrange, **plotter_kwargs):
     """
     Plots `surface_data` on `mesh_paths` using nilearn
 
@@ -625,19 +711,21 @@ def _plot_brainspace(surface_data, mesh_paths, filename, layout_style, cmap):
         lh_surf, rh_surf, 
         surface_data,
         layout_style = layout_style,
-        cmap = cmap, color_bar=False,
+        cmap = cmap, color_range=vrange,
         # TODO: change size and zoom based on layout 
         size=size, zoom=zoom,
         interactive=False, embed_nb=embed_nb,
         screenshot=screenshot, filename=filename, 
-        transparent_bg=True)
+        transparent_bg=True,
+        **plotter_kwargs
+        )
 
-def _plot_nilearn(surface_data, mesh_paths, filename, layout_style, cmap):
+def _plot_nilearn(surface_data, mesh_paths, filename, layout_style, cmap, vrange, **plotter_kwargs):
     """
     Plots `surface_data` on `mesh_paths` using nilearn
     """
     #> initialize the figures
-    if layout_style == 'horizontal':
+    if layout_style == 'row':
         figure, axes = plt.subplots(1, 4, figsize=(24, 5), subplot_kw={'projection': '3d'})
     elif layout_style == 'grid':
         figure, axes = plt.subplots(2, 2, figsize=(12, 10), subplot_kw={'projection': '3d'})
@@ -659,6 +747,9 @@ def _plot_nilearn(surface_data, mesh_paths, filename, layout_style, cmap):
                 surface_data[hemi[0].upper()],
                 hemi=hemi, view=view, axes=axes[curr_ax_idx],
                 cmap=cmap,
+                vmin=vrange[0],
+                vmax=vrange[1],
+                **plotter_kwargs,
                 )
             curr_ax_idx += 1
     figure.subplots_adjust(wspace=0, hspace=0)
@@ -816,6 +907,8 @@ def variogram_test(X, Y, parcellation_name, exc_regions, n_perm=1000, surrogates
     Calculates non-parametric p-value of correlation between the columns in X and Y
     by creating surrogates of X with their spatial autocorrelation preserved based
     on variograms. Note that X and Y must be parcellated.
+    This is a computationally intensive function and with a single core takes about 10
+    mins for 1000 permutations, if number of features in X and Y is limited to 1
 
     Parameters
     ----------
@@ -832,15 +925,15 @@ def variogram_test(X, Y, parcellation_name, exc_regions, n_perm=1000, surrogates
         surrogates = np.load(surrogates_path)['surrogates']
     else:
         print(f"Creating {n_perm} surrogates based on variograms in {surrogates_path}")
-        GD = matrices.DistanceMatrix(parcellation_name, 'geodesic', exc_regions=exc_regions).matrix.values
-        split_hem_idx = get_split_hem_idx(parcellation_name, exc_regions)
+        GD = matrices.DistanceMatrix(parcellation_name, 'geodesic', exc_regions=exc_regions).matrix
+        hem_parcels = get_hem_parcels(parcellation_name, limit_to_parcels=X.index.tolist())
         GD_hems = {
-            'L': GD[:split_hem_idx, :split_hem_idx],
-            'R': GD[split_hem_idx:, split_hem_idx:]
+            'L': GD.loc[hem_parcels['L'], hem_parcels['L']].values,
+            'R': GD.loc[hem_parcels['R'], hem_parcels['R']].values
         }
         X_hems = {
-            'L': X.values[:split_hem_idx, :],
-            'R': X.values[split_hem_idx:, :],
+            'L': X.loc[hem_parcels['L'], :].values,
+            'R': X.loc[hem_parcels['R'], :].values,
         }
         surrogates = {}
         for hem in ['L', 'R']:
