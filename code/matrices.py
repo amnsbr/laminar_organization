@@ -50,23 +50,42 @@ class Matrix:
         """
         Save the matrix to a .npz file
         """
+        # reducing the filesize by saving it as
+        # compressed and changing values type to float16
+        # Warning: this makes the matrix unsymmetric!
         np.savez_compressed(
             self.file_path+'.npz',
             matrix = self.matrix.values.astype('float16'),
             parcels = self.matrix.index.values
         )
 
-    def _load(self):
+    def _load(self, make_symmetric=True):
         """
         Loads a matrix created before
+
+        Parameters
+        ----------
+        make_symmetric: (bool)
+            because of the way matrices are saved
+            sometimes float values are slightly
+            modified and this makes the matrix
+            non-symmetric and can cause problems with
+            e.g., GD matrix in variogram surrogates
         """
         logging.info(f"Loading the matrix from {self.file_path}.npz")
         npz = np.load(self.file_path+'.npz', allow_pickle=True)
         parcels = npz['parcels']
         matrix = npz['matrix']
         n_sq_matrix = matrix.shape[1] // matrix.shape[0]
+        if make_symmetric:
+            matrices = []
+            for idx in range(n_sq_matrix):
+                curr_matrix = matrix[:, matrix.shape[0]*idx:matrix.shape[0]*(idx+1)]
+                curr_matrix = np.maximum(curr_matrix, curr_matrix.T)
+                matrices.append(curr_matrix)
+            matrix = np.hstack(matrices)
         self.matrix = pd.DataFrame(
-            npz['matrix'], 
+            matrix, 
             index=parcels, 
             columns=parcels * n_sq_matrix)
 
@@ -706,7 +725,7 @@ class ConnectivityMatrix(Matrix):
             )
         self.file_path = os.path.join(self.dir_path, 'matrix')
         if os.path.exists(self.file_path + '.npz'):
-            self._load()
+            self._load(make_symmetric=(self.kind != 'effective'))
         else:
             os.makedirs(self.dir_path, exist_ok=True)
             self.matrix = datasets.load_conn_matrix(self.kind, self.parcellation_name, dataset)

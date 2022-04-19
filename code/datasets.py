@@ -534,6 +534,47 @@ def load_laminar_density(exc_masks=None, method='mean'):
         # TODO: also normalize density?
     return laminar_density
 
+def load_hcp1200_myelin_map(exc_regions=None, downsampled=False):
+    """
+    Load HCP 1200 myelination map
+
+    Parameters
+    ---------
+    exc_regions: (str | None)
+    downsampled: (bool)
+    """
+    myelin_map = np.concatenate([
+        nilearn.surface.load_surf_data(
+            os.path.join(
+                SRC_DIR, 
+                'tpl-bigbrain_hemi-L_desc-hcp1200_myelinmap.shape.gii'
+                )),
+        nilearn.surface.load_surf_data(
+            os.path.join(
+                SRC_DIR, 
+                'tpl-bigbrain_hemi-R_desc-hcp1200_myelinmap.shape.gii'
+                ))
+    ])
+    if downsampled:
+        myelin_map = helpers.downsample(myelin_map)
+    if exc_regions is None:
+        # get a maks of midline (from sjh parcellation)
+        exc_mask = np.isnan(
+            helpers.deparcellate(
+                helpers.parcellate(myelin_map, 'sjh'), 
+                'sjh', 
+                downsampled=downsampled
+                )[:, 0])
+    else:
+        exc_mask = load_exc_masks(
+            exc_regions, 
+            concatenate=True, 
+            downsampled=downsampled
+            )
+    myelin_map[exc_mask] = np.NaN
+    return myelin_map
+
+
 def load_parcellation_map(parcellation_name, concatenate, downsampled=False, load_indices=False):
     """
     Loads parcellation maps of L and R hemispheres, correctly relabels them

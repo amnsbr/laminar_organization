@@ -13,8 +13,8 @@ if ! [ -f "${TOOLS_PATH}/bigbrainwarp.simg" ]; then
 fi
 
 
-fsaverage_to_bigbrain=('sjh.annot' 'economo.annot' 'schaefer400.annot' 'schaefer1000.annot' 'aparc.annot' 'mmp1.annot' 'brodmann.annot')
-for suffix in "${fsaverage_to_bigbrain[@]}"
+fsaverage_parcellations=('sjh.annot' 'economo.annot' 'schaefer400.annot' 'schaefer1000.annot' 'aparc.annot' 'mmp1.annot' 'brodmann.annot')
+for suffix in "${fsaverage_parcellations[@]}"
 do
     if [ -f "${SRC_PATH}/tpl-bigbrain_hemi-L_desc-${suffix/.annot/_parcellation}.label.gii" ]; then
         echo "${suffix} already transformed to bigbrain space"
@@ -39,3 +39,21 @@ do
         --wd ${SRC_PATH}"
     fi
 done
+
+if [ -f "${SRC_PATH}/tpl-bigbrain_hemi-L_desc-hcp1200_myelinmap.label.gii" ]; then
+    echo "HCP 1200 myelination map already transformed to bigbrain space"
+else
+    echo "Transforming HCP 1200 myelination map to bigbrain space (singularity)"
+    singularity exec --cleanenv "${TOOLS_PATH}/bigbrainwarp.simg" \
+    /bin/bash -c \
+    "source /BigBrainWarp/scripts/init.sh && \
+    cd ${SRC_PATH} && \
+    /BigBrainWarp/bigbrainwarp \
+    --in_lh 'source-hcps1200_desc-myelinmap_space-fsLR_den-32k_hemi-L_feature.func.gii' \
+    --in_rh 'source-hcps1200_desc-myelinmap_space-fsLR_den-32k_hemi-R_feature.func.gii' \
+    --in_space fs_LR \
+    --out_space bigbrain \
+    --interp nearest \
+    --desc hcp1200_myelinmap \
+    --wd ${SRC_PATH}"
+fi

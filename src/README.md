@@ -31,3 +31,5 @@ The `src` directory includes local and external input data used in the analyses.
 |`cell_types_genes_Seidlitz2020.csv.csv`|List of genes associated with each cell type|[Seidlitz 2020](https://www.nature.com/articles/s41467-020-17051-5)|Supplementary Table 5|
 |`{exc/inh}_subtypes_genes_Lake2016.csv`|List of genes associated with excitatory and inhibitory neuronal subtypes and their weights|Local|Based on Table S5 of [Lake 2016](https://doi.org/10.1126/science.aaf1204)|
 |`{misc/hcp}_rDCM_sch400.mat`|Effective connectivity matrices|[caseypaquola / DMN](https://github.com/caseypaquola/DMN/tree/main/data)|From [Paquola 2021](https://www.biorxiv.org/content/10.1101/2021.11.22.469533v1)|
+|`source-hcps1200_desc-myelinmap_space-fsLR_den-32k_hemi-*_feature.func.gii`|HCP S1200 group-averaged myelin map in fsLR space|[netneurolab / neuromaps](https://netneurolab.github.io/neuromaps)| |
+|`tpl-bigbrain_hemi-*_desc-hcp1200_myelinmap.shape.gii`|HCP S1200 group-averaged myelin map in bigbrain space|Local|Created using `code/local/transform_to_bigbrain.sh`|

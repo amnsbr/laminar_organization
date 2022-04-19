@@ -580,6 +580,9 @@ class Gradients(ContCorticalSurface):
         ----------
         remove_ticks: (bool) remove ticks so that colorbars can replace them (manually)
         """
+        if self.parcellation_name is None:
+            logging.warn('Aborted plotting unparcellated scatter plot')
+            return
         fig, ax = plt.subplots(figsize=(6,5))
         ax = sns.scatterplot(
             data=self.parcellated_data, 
@@ -649,6 +652,9 @@ class Gradients(ContCorticalSurface):
         """
         Plot the input matrix reordered by gradient values
         """
+        if self.parcellation_name is None:
+            logging.warn('Aborted plotting unparcellated reordered matrix')
+            return
         if self.n_matrices == 1:
             # in unimodal case add ordered matrices by the first 3 gradients
             for g_idx in range(self._n_components_report):
@@ -719,7 +725,9 @@ class MicrostructuralCovarianceGradients(Gradients):
         if colors is None:
             colors = plt.cm.get_cmap(palette, 6).colors
         # loading and parcellating the laminar thickness
-        laminar_thickness = self.matrix_obj._load_input_data()
+        if not hasattr(self.matrix_obj, '_input_data'):
+            self.matrix_obj._load_input_data()
+        laminar_thickness = self.matrix_obj._input_data
         parcellated_laminar_thickness = helpers.parcellate(laminar_thickness, self.matrix_obj.parcellation_name)
         parcellated_laminar_thickness = helpers.concat_hemispheres(parcellated_laminar_thickness, dropna=True)
         # re-normalize small deviations from sum=1 because of parcellation
@@ -848,6 +856,27 @@ class StructuralFeatures(ContCorticalSurface):
         self.columns += ['Density mean', 'Density std', 'Density skewness', 'Density kurtosis']
         # concatenate all the features into a single array
         self.surf_data = helpers.downsample(np.hstack(features))
+
+class MyelinMap(ContCorticalSurface):
+    """
+    HCP S1200 group-averaged myelin (T1/T2) map transformed
+    to bigbrain
+    """
+    def __init__(self, parcellation_name=None, exc_regions=None, downsampled=True):
+        """
+        Initializes the myelin map
+        """
+        self.parcellation_name = parcellation_name
+        self.exc_regions = exc_regions
+        self.surf_data = datasets.load_hcp1200_myelin_map(exc_regions, downsampled)
+        self.columns = ['Myelin']
+        self.label = 'HCP 1200 Myelin'
+        self.dir_path = os.path.join(OUTPUT_DIR, 'myelin')
+        os.makedirs(self.dir_path, exist_ok=True)
+        if self.parcellation_name:
+            self.parcellated_data = helpers.parcellate(self.surf_data, self.parcellation_name)
+            self.parcellated_data.columns = self.columns
+
 
 class DiseaseMaps(ContCorticalSurface):
     """
