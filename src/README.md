@@ -25,8 +25,9 @@ The `src` directory includes local and external input data used in the analyses.
 |`tpl-bigbrain_hemi_*_desc-{pial/white}.area.npy`|Pial/WM surface area of BigBrain|Local|Created using CIVET in `code/local/calculate_surface_area.py`|
 |`tpl-bigbrain_hemi-*_desc-Yeo2011_7Networks_N1000.label.gii`|Yeo 7 functional networks in BigBrain surface space|[caseypaquola / BigBrainWarp](https://github.com/caseypaquola/BigBrainWarp)| |
 |`spin_batches/`|BigBrain surface sphere spun for permutation testing|Local|Created in `code/helpers.py` > `create_bigbrain_spin_permutations`. Each batch includes 20 random spins.|
-|`PET_nifti_images`|Receptors volumetric PET maps|[netneurolab / hansen_receptors](https://github.com/netneurolab/hansen_receptors/tree/main/data/PET_nifti_images)| |
-|`PET_nifti_images_metadata.csv`|Metdata for volumetric PET maps|Local|Created based on filenames and the information provided in Hansen et al. 2021 and the source papers for some|
+|`PET`|Receptors volumetric PET maps|[netneurolab / hansen_receptors](https://github.com/netneurolab/hansen_receptors/tree/main/data/PET_nifti_images)| |
+|`PET_metadata.csv`|Metdata for volumetric PET maps|Local|Created based on filenames and the information provided in Hansen et al. 2021 and the source papers for some|
 |`ahba_*`|Expression of genes in each parcellation based on AHBA|Local|Created using `helpers.py` > `fetch_ahba_data` via [abagen](https://abagen.readthedocs.io/en/stable/)|
-|`celltypes_PSP.csv`|List of genes associated with each cell type|[jms290 / PolySyn_MSNs](https://raw.githubusercontent.com/jms290/PolySyn_MSNs/master/Data/AHBA/celltypes_PSP.csv)|Based on [Seidlitz 2020](https://www.nature.com/articles/s41467-020-17051-5)|
+|`cell_types_genes_Seidlitz2020.csv.csv`|List of genes associated with each cell type|[Seidlitz 2020](https://www.nature.com/articles/s41467-020-17051-5)|Supplementary Table 5|
 |`{exc/inh}_subtypes_genes_Lake2016.csv`|List of genes associated with excitatory and inhibitory neuronal subtypes and their weights|Local|Based on Table S5 of [Lake 2016](https://doi.org/10.1126/science.aaf1204)|
+|`{misc/hcp}_rDCM_sch400.mat`|Effective connectivity matrices|[caseypaquola / DMN](https://github.com/caseypaquola/DMN/tree/main/data)|From [Paquola 2021](https://www.biorxiv.org/content/10.1101/2021.11.22.469533v1)|

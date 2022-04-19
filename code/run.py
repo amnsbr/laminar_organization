@@ -2,8 +2,18 @@ import datasets
 import helpers
 import matrices
 import surfaces
+import os, glob, sys
+import logging
+
+logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 
 # in progress
+
+# specify the data dir
+abspath = os.path.abspath(__file__)
+cwd = os.path.dirname(abspath)
+OUTPUT_DIR = os.path.join(cwd, '..', 'output')
+SRC_DIR = os.path.join(cwd, '..', 'src')
 
 def create_matrices_and_gradients():
     for parcellation_name in ['sjh', 'schaefer400', 'mmp1', 'aparc', 'schaefer1000']:
@@ -81,11 +91,28 @@ def create_surrogates():
         ltc.create_or_load_surrogates()
 
 def run():
-    create_matrices_and_gradients()
+    # create_matrices_and_gradients()
     # disease_gradients_analyses()
     # ei_analyses()
     # create_surrogates()
+    for correct_curvature in ['smooth-10', None]:
+        ltc = matrices.MicrostructuralCovarianceMatrix('thickness', None, correct_curvature=correct_curvature)
+        ltcg = surfaces.MicrostructuralCovarianceGradients(ltc)
+    # mpc = matrices.MicrostructuralCovarianceMatrix('density', 'sjh')
+    # mpcg = surfaces.MicrostructuralCovarianceGradients(mpc)
+    # ltcg.correlate(mpcg, x_columns=['LTC G1'], y_columns=['MPC G1'])
+    # ec_maps = surfaces.EffectiveConnectivityMaps()
+    # ltcg = surfaces.MicrostructuralCovarianceGradients(
+    #     matrices.MicrostructuralCovarianceMatrix('thickness', 'schaefer400')
+    # )
+    # ltcg.correlate(ec_maps, x_columns=['LTC G1'])
+    # nmda = surfaces.PETMaps('NMDA', 'sjh')
+    # ltcg.correlate(nmda, x_columns=['LTC G1'], axis_off=True)
+    # gaba = surfaces.PETMaps('GABAa', 'sjh')
+    # ltcg.correlate(gaba, x_columns=['LTC G1'], axis_off=True)
 
+
+    
 
 if __name__=='__main__':
     run()

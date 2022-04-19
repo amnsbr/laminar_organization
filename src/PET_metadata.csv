@@ -1,0 +1,4 @@
+filename,receptor,tracer,N,author,comment
+GABAa-bz_flumazenil_hc16_norgaard.nii.gz,GABAa,flumazenil,16,norgaard,
+GABAa_flumazenil_hc6_dukart.nii.gz,GABAa,flumazenil,6,dukart,
+NMDA_ge179_hc29_galovic.nii.gz,NMDA,ge179,29,galovic,

@@ -1,4 +1,6 @@
 import os
+import logging
+import sys
 import numpy as np
 import pandas as pd
 import scipy.stats
@@ -10,21 +12,23 @@ from cortex.polyutils import Surface
 import scipy.spatial.distance
 import scipy.io
 import abagen
-import logging
-import sys
+from nilearn.input_data import NiftiLabelsMasker
+from nilearn.image import math_img
+import netneurotools.datasets
+
 
 import helpers
 
-logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
+logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 
-#> specify the data dir
+# specify the data dir
 abspath = os.path.abspath(__file__)
 cwd = os.path.dirname(abspath)
 OUTPUT_DIR = os.path.join(cwd, '..', 'output')
 SRC_DIR = os.path.join(cwd, '..', 'src')
 ABAGEN_DIR = '/data/group/cng/abagen-data'
 
-#> constants / configs
+# constants / configs
 N_VERTICES_HEM_BB = 163842
 N_VERTICES_HEM_BB_ICO5 = 10242
 
@@ -58,7 +62,7 @@ def load_downsampled_surface_paths(kind='orig'):
             )
         if os.path.exists(paths[hem]):
             continue
-        #> load the faces and coords of downsampled surface from matlab results
+        # load the faces and coords of downsampled surface from matlab results
         mat = scipy.io.loadmat(
             os.path.join(
                 SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-pial_downsampled.mat'
@@ -67,19 +71,19 @@ def load_downsampled_surface_paths(kind='orig'):
         faces = mat['BB10'][0,0][0]-1 # 1-indexing of matlab to 0-indexing of python
         coords = mat['BB10'][0,0][1].T
         if kind != 'orig':
-            #> load the sphere|inflated ico7 surface to use their coordinates
+            # load the sphere|inflated ico7 surface to use their coordinates
             if kind == 'sphere':
                 deformed_path = os.path.join(SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-sphere_rot_fsaverage.surf.gii')
             else:
                 deformed_path = os.path.join(SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-mid.surf.inflate.gii')
             deformed_ico7 = nilearn.surface.load_surf_mesh(deformed_path)
-            #> get the coordinates of central vertices which are in both ico7 and ico5.
+            # get the coordinates of central vertices which are in both ico7 and ico5.
             #  Note that for faces we will use the faces of non-deformed version of ico5
             #  surface, as it wouldn be the same regardless of the shape of surface (i.e.,
             #  the position of vertices)
             bb_downsample_indices = mat['bb_downsample'][:, 0]-1 #1-indexing to 0-indexing
             coords = deformed_ico7.coordinates[bb_downsample_indices]
-        #> save it as gifti
+        # save it as gifti
         bb10_gifti = nibabel.gifti.gifti.GiftiImage(
             darrays = [
                 nibabel.gifti.gifti.GiftiDataArray(
@@ -115,7 +119,7 @@ def load_curvature_maps(downsampled=False):
         if os.path.exists(curvature_filepath):
             curvature_maps[hem] = np.load(curvature_filepath)
             continue
-        #> load surface
+        # load surface
         if downsampled:
             mesh_path = load_downsampled_surface_paths('orig')[hem]
         else:
@@ -125,9 +129,9 @@ def load_curvature_maps(downsampled=False):
                 )
         vertices, faces = nilearn.surface.load_surf_mesh(mesh_path)
         surface = Surface(vertices, faces)
-        #> calculate mean curvature
+        # calculate mean curvature
         curvature = surface.mean_curvature()
-        #> save it
+        # save it
         os.makedirs(os.path.join(OUTPUT_DIR, 'curvature'), exist_ok=True)
         np.save(curvature_filepath, curvature)
         curvature_maps[hem] = curvature
@@ -148,51 +152,37 @@ def load_cortical_types(parcellation_name=None, downsampled=False):
     --------
     cortical_types_map (pd.DataFrame): with the length n_vertices|n_parcels
     """
-    #> load the economo map and concatenate left and right hemispheres
-    economo_maps = {}
-    for hem in ['L', 'R']:
-        economo_maps[hem] = nilearn.surface.load_surf_data(
-            os.path.join(
-                SRC_DIR,
-                f'tpl-bigbrain_hemi-{hem}_desc-economo_parcellation.label.gii'
-                )
-            )
-        if downsampled:
-            #> select only the vertices corresponding to the downsampled ico5 surface
-            mat = scipy.io.loadmat(
-                os.path.join(
-                    SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-pial_downsampled.mat'
-                )
-            )
-            bb_downsample_indices = mat['bb_downsample'][:, 0]-1 #1-indexing to 0-indexing
-            economo_maps[hem] = economo_maps[hem][bb_downsample_indices]
-    economo_map = np.concatenate([economo_maps['L'], economo_maps['R']])
-    #> load the cortical types for each economo parcel
+    # load the economo map
+    economo_map = load_parcellation_map('economo', True, downsampled=downsampled)
+    # load the cortical types for each economo parcel
     economo_cortical_types = pd.read_csv(
         os.path.join(
             SRC_DIR,
             'economo_cortical_types.csv'
-            )
-        )
-    economo_cortical_types.columns=['Label', 'Cortical Type']
-    #> create the cortical types surface map
-    cortical_types_map = economo_cortical_types.loc[economo_map, 'Cortical Type'].astype('category').reset_index(drop=True)
+            ))
+    # duplicate the economo parcel to cortical type mapping for each hemisphere
+    hemis = pd.Series(['L_']*economo_cortical_types.shape[0]+['R_']*economo_cortical_types.shape[0])
+    economo_cortical_types = pd.concat([economo_cortical_types]*2, axis=0).reset_index(drop=True)
+    economo_cortical_types['Label'] = hemis + economo_cortical_types['Label']
+    economo_cortical_types = economo_cortical_types.set_index('Label')
+    # create the cortical types surface map
+    cortical_types_map = economo_cortical_types.loc[economo_map, 'CorticalType'].astype('category').reset_index(drop=True)
     cortical_types_map = cortical_types_map.cat.reorder_categories(['ALO', 'AG', 'DG', 'EU1', 'EU2', 'EU3', 'KO'])
     if parcellation_name:
-        #> load parcellation map
+        # load parcellation map
         parcellation_map = load_parcellation_map(parcellation_name, concatenate=True, downsampled=downsampled)
         parcellated_cortical_types_map = (
-            #>> create a dataframe of surface map including both cortical type and parcel index
+            #> create a dataframe of surface map including both cortical type and parcel index
             pd.DataFrame({'Cortical Type': cortical_types_map, 'Parcel': pd.Series(parcellation_map)})
-            #>> group by parcel
+            #> group by parcel
             .groupby('Parcel')
-            #>> find the cortical types with the highest count (may also be non-cortex)
+            #> find the cortical types with the highest count (may also be non-cortex)
             ['Cortical Type'].value_counts(sort=True).unstack().idxmax(axis=1)
-            #>> convert it back to category
+            #> convert it back to category
             .astype('category')
             .cat.reorder_categories(['ALO', 'AG', 'DG', 'EU1', 'EU2', 'EU3', 'KO'])
         )
-        #> assign cortical types of midline parcels to NaN
+        # assign cortical types of midline parcels to NaN
         parcellated_cortical_types_map.loc[helpers.MIDLINE_PARCELS[parcellation_name]] = np.NaN
         return parcellated_cortical_types_map
     else:
@@ -224,7 +214,7 @@ def load_yeo_map(parcellation_name=None, downsampled=False):
             )
         yeo_maps[hem] = yeo_giftii.darrays[0].data
         if downsampled:
-            #> select only the vertices corresponding to the downsampled ico5 surface
+            # select only the vertices corresponding to the downsampled ico5 surface
             mat = scipy.io.loadmat(
                 os.path.join(
                     SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-pial_downsampled.mat'
@@ -232,7 +222,7 @@ def load_yeo_map(parcellation_name=None, downsampled=False):
             )
             bb_downsample_indices = mat['bb_downsample'][:, 0]-1 #1-indexing to 0-indexing
             yeo_maps[hem] = yeo_maps[hem][bb_downsample_indices]
-    #> concatenate the hemispheres and convert to pd category
+    # concatenate the hemispheres and convert to pd category
     yeo_names = [
         'None', 'Visual', 'Somatomotor', 'Dorsal attention', 
         'Ventral attention', 'Limbic', 'Frontoparietal', 'Default'
@@ -240,20 +230,20 @@ def load_yeo_map(parcellation_name=None, downsampled=False):
     yeo_map = np.concatenate([yeo_maps['L'], yeo_maps['R']])
     yeo_map = pd.Series(yeo_map).astype('category').cat.rename_categories(yeo_names)
     if parcellation_name:
-        #> load parcellation map
+        # load parcellation map
         parcellation_map = load_parcellation_map(parcellation_name, concatenate=True, downsampled=downsampled)
         parcellated_yeo_map = (
-            #>> create a dataframe of surface map including both cortical type and parcel index
-            pd.DataFrame({'Cortical Type': yeo_map, 'Parcel': pd.Series(parcellation_map)})
-            #>> group by parcel
+            #> create a dataframe of surface map including both cortical type and parcel index
+            pd.DataFrame({'Yeo Network': yeo_map, 'Parcel': pd.Series(parcellation_map)})
+            #> group by parcel
             .groupby('Parcel')
-            #>> find the cortical types with the highest count (may also be non-cortex)
-            ['Cortical Type'].value_counts(sort=True).unstack().idxmax(axis=1)
-            #>> convert it back to category
+            #> find the cortical types with the highest count (may also be non-cortex)
+            ['Yeo Network'].value_counts(sort=True).unstack().idxmax(axis=1)
+            #> convert it back to category
             .astype('category')
             .cat.reorder_categories(yeo_names)
         )
-        #> assign Yeo network of midline parcels to NaN
+        # assign Yeo network of midline parcels to NaN
         parcellated_yeo_map.loc[helpers.MIDLINE_PARCELS[parcellation_name]] = np.NaN
         # TODO: this parcellation approach does not work perfectly
         # e.g. for schaefer 400 the 7Networks_LH_Cont_PFCl_1 parcel
@@ -283,20 +273,20 @@ def load_exc_masks(exc_regions, concatenate=False, downsampled=False):
     -------
     exc_mask: (np.ndarray | dict) boolean surface maps of exclusion mask
     """
-    #> load cortical types surface map after/without parcellation
+    # load cortical types surface map after/without parcellation
     cortical_types = load_cortical_types(downsampled=downsampled)
-    # #> if it's parcellated project back to surface
+    # # if it's parcellated project back to surface
     # #  Why? because parcellation_map and economo parcellation do
     # #  not fully overlap and we need a mask that is aligned with the parcellation_map
     # if parcellation_name: 
     #     cortical_types = pd.Series(helpers.deparcellate(cortical_types, parcellation_name).flatten())
-    # #> match midlines of the `parcellation_name` and economo parcellation (sometimes e.g. in sjh
+    # # match midlines of the `parcellation_name` and economo parcellation (sometimes e.g. in sjh
     # #  they do not match) by makign their overlap NaN. The midline of `parcellation_name` is already
     # #  NaN (from load_cortical_types). Therefore only load midline of economo and make it NaN
     # economo_map = load_parcellation_map('economo', concatenate=True)
     # economo_midline_mask = np.in1d(economo_map, ['unknown', 'corpuscallosum'])
     # cortical_types[economo_midline_mask] = np.NaN
-    #> create a mask of excluded cortical types
+    # create a mask of excluded cortical types
     if exc_regions == 'allocortex':
         exc_cortical_types = [np.NaN, 'ALO']
     elif exc_regions == 'adysgranular':
@@ -335,7 +325,7 @@ def load_laminar_thickness(exc_masks=None, normalize_by_total_thickness=True,
     """
     laminar_thickness = {}
     for hem in ['L', 'R']:
-        #> read the laminar thickness data from bigbrainwrap .txt files
+        # read the laminar thickness data from bigbrainwrap .txt files
         laminar_thickness[hem] = np.empty((N_VERTICES_HEM_BB, 6))
         for layer_num in range(1, 7):
             laminar_thickness[hem][:, layer_num-1] = np.loadtxt(
@@ -343,7 +333,7 @@ def load_laminar_thickness(exc_masks=None, normalize_by_total_thickness=True,
                     SRC_DIR,
                     f'tpl-bigbrain_hemi-{hem}_desc-layer{layer_num}_thickness.txt'
                     ))
-        #> remove the exc_mask
+        # remove the exc_mask
         if exc_masks:
             laminar_thickness[hem][exc_masks[hem], :] = np.NaN
     if smooth_disc_radius:
@@ -352,10 +342,10 @@ def load_laminar_thickness(exc_masks=None, normalize_by_total_thickness=True,
         # smooth the laminar thickness using the disc approach
         laminar_thickness, _ = helpers.disc_smooth(laminar_thickness, smooth_disc_radius)
     for hem in ['L', 'R']:
-        #> normalize by total thickness
+        # normalize by total thickness
         if normalize_by_total_thickness:
             laminar_thickness[hem] /= laminar_thickness[hem].sum(axis=1, keepdims=True)
-        #> regress out curvature
+        # regress out curvature
         if regress_out_curvature:
             if smooth_disc_radius:
                 logging.warning("Skipping regressing out of the curvature as laminar thickness is smoothed")
@@ -366,6 +356,33 @@ def load_laminar_thickness(exc_masks=None, normalize_by_total_thickness=True,
                     sig_only=False, renormalize=True
                     )
     return laminar_thickness
+
+def load_economo_laminar_thickness(normalize_by_total_thickness=True):
+    """
+    Loads laminar thickness data from von Economo atlas in von Economo
+    parcellation
+
+    Parameters
+    --------
+    normalize_by_total_thickness: (bool) 
+        Normalize by total thickness. Default: True
+
+    Retruns
+    --------
+    parcellated_laminar_thickness: (pd.DataFrame) n_parc x 6 layers
+    """
+    parcellated_laminar_thickness = pd.read_csv(
+        os.path.join(
+            SRC_DIR, 
+            'von_economo_laminar_thickness.csv'
+            ), 
+        delimiter=";").set_index('area_name')
+    if normalize_by_total_thickness:
+        parcellated_laminar_thickness = parcellated_laminar_thickness.divide(
+            parcellated_laminar_thickness.sum(axis=1),
+            axis=0
+            )
+    return parcellated_laminar_thickness
 
 def calculate_alphas(betas, aw, ap):
     """
@@ -464,15 +481,15 @@ def load_total_depth_density(exc_masks=None):
     -------
     density_profiles (dict of np.ndarray) n_vert x 50 for L and R hemispheres
     """
-    #> load profiles and reshape to n_vert x 50
+    # load profiles and reshape to n_vert x 50
     density_profiles = np.loadtxt(os.path.join(SRC_DIR, 'tpl-bigbrain_desc-profiles.txt'))
     density_profiles = density_profiles.T
-    #> split hemispheres
+    # split hemispheres
     density_profiles = {
         'L': density_profiles[:density_profiles.shape[0]//2, :],
         'R': density_profiles[density_profiles.shape[0]//2:, :],
     }
-    #> remove the exc_mask
+    # remove the exc_mask
     if exc_masks:
         for hem in ['L', 'R']:
             density_profiles[hem][exc_masks[hem], :] = np.NaN
@@ -499,7 +516,7 @@ def load_laminar_density(exc_masks=None, method='mean'):
     """
     laminar_density = {}
     for hem in ['L', 'R']:
-        #> read the laminar thickness data from bigbrainwrap .txt files
+        # read the laminar thickness data from bigbrainwrap .txt files
         laminar_density[hem] = np.empty((N_VERTICES_HEM_BB, 6))
         for layer_num in range(1, 7):
             profiles = np.load(
@@ -511,7 +528,7 @@ def load_laminar_density(exc_masks=None, method='mean'):
                 laminar_density[hem][:, layer_num-1] = profiles.mean(axis=0)
             elif method == 'median':
                 laminar_density[hem][:, layer_num-1] = np.median(profiles, axis=0)
-        #> remove the exc_mask
+        # remove the exc_mask
         if exc_masks:
             laminar_density[hem][exc_masks[hem], :] = np.NaN
         # TODO: also normalize density?
@@ -535,32 +552,32 @@ def load_parcellation_map(parcellation_name, concatenate, downsampled=False, loa
     """
     parcellation_map = {}
     for hem in ['L', 'R']:
-        #> load parcellation map
+        # load parcellation map
         parcellation_map[hem] = nilearn.surface.load_surf_data(
             os.path.join(
                 SRC_DIR, 
                 f'tpl-bigbrain_hemi-{hem}_desc-{parcellation_name}_parcellation.label.gii')
             )
         if not load_indices:
-            #> label parcellation map
+            # label parcellation map
             _, _, sorted_labels = nibabel.freesurfer.io.read_annot(
                 os.path.join(
                     SRC_DIR, 
                     f'{hem.lower()}h_{parcellation_name}.annot')
             )
-            #> labels post-processing for each specific parcellation
+            # labels post-processing for each specific parcellation
             if parcellation_name == 'sjh':
-                # remove sjh_ from the lable
+                # remove sjh_ from the label
                 sorted_labels = list(map(lambda l: int(l.decode().replace('sjh_','')), sorted_labels))
-            elif parcellation_name == 'aparc':
-                # add hemisphere to the lable so that it matches ENIGMA toolbox dataset
+            elif parcellation_name in ['aparc', 'economo']:
+                # add hemisphere to the labels to have distinct parcel labels in each hemisphere
                 sorted_labels = list(map(lambda l: f'{hem}_{l.decode()}', sorted_labels))
             else:
                 sorted_labels = list(map(lambda l: l.decode(), sorted_labels)) # b'name' => 'name'
             transdict = dict(enumerate(sorted_labels))
             parcellation_map[hem] = np.vectorize(transdict.get)(parcellation_map[hem])
         if downsampled:
-            #> select only the vertices corresponding to the downsampled ico5 surface
+            # select only the vertices corresponding to the downsampled ico5 surface
             # Warning: For fine grained parcels such as sjh this approach leads to
             # a few parcels being removed
             mat = scipy.io.loadmat(
@@ -609,7 +626,7 @@ def load_volumetric_parcel_labels(parcellation_name):
         labels = dk_labels[dk_info['structure']=='cortex'].values
     return labels
 
-def load_disease_maps(psych_only):
+def load_disease_maps(psych_only, rename=False):
     """
     Loads maps of cortical thickness difference in disorders.
     Adult popultation, more general categories
@@ -620,6 +637,8 @@ def load_disease_maps(psych_only):
     ---------
     psych_only: (bool)
         only include psychiatric disorders
+    rename: (bool)
+        rename the disorders for publicationß
 
     Returns
     -------
@@ -644,10 +663,22 @@ def load_disease_maps(psych_only):
             enigmatoolbox.datasets.load_summary_stats('epilepsy')
             ['CortThick_case_vs_controls_allepilepsy']
             .set_index('Structure')['d_icv'])
+    if rename:
+        parcellated_disorder_maps = parcellated_disorder_maps.rename(
+            columns = {
+                'adhd': 'ADHD',
+                'bipolar': 'BD',
+                'depression': 'MDD',
+                'ocd': 'OCD',
+                'schizophrenia': 'SCZ',
+                'asd': 'ASD',
+                'epilepsy': 'Epilepsy'
+            }
+        )
     return parcellated_disorder_maps
 
 
-def load_conn_matrix(kind, parcellation_name='schaefer400'):
+def load_conn_matrix(kind, parcellation_name='schaefer400', dataset='hcp'):
     """
     Loads FC or SC matrices in Schaefer parcellation (400) from ENIGMA toolbox
     and reorders it according to `matrix_file`. For SC matrix also makes contralateral
@@ -658,36 +689,51 @@ def load_conn_matrix(kind, parcellation_name='schaefer400'):
     kind: (str)
         - structural
         - functional
-    
+        - effective
     parcellation_name: (str)
         - schaefer400 (currently only this is supported)
+    dataset: (str) for the effective connectivity
+        - hcp
+        - mics
 
     Returns
     ---------
     reordered_conn_matrix, (np.ndarray) (n_parc, n_parc) 
         reordered FC or SC matrices matching the original matrix
     """
-    #> match parcellation name with the enigmatoolbox
-    ENIGMATOOLBOX_PARC_NAMES = {
-        'schaefer400': 'schaefer_400'
-    }
-    enigma_parcellation_name = ENIGMATOOLBOX_PARC_NAMES.get(parcellation_name, None)
-    if enigma_parcellation_name == None:
-        raise Exception(f"ENIGMA Toolbox does not have connectivity data for the parcellation {parcellation_name}")
-    #> load data from enigma toolbox
-    if kind == 'structural':
-        conn_matrix, conn_matrix_labels, _, _ = enigmatoolbox.datasets.load_sc(enigma_parcellation_name)
+    if kind == 'effective':
+        # load the rDCM results from Paquola 2021
+        results = scipy.io.loadmat(
+            os.path.join(SRC_DIR, f'{dataset}_rDCM_sch400.mat'), 
+            mat_dtype=True, struct_as_record=False)['results'][0][0]
+        conn_matrix = results.mean_Amatrix_allSubjects
+        # get the absolute values and zero out the diagonal
+        conn_matrix = np.abs(conn_matrix)
+        conn_matrix[np.diag_indices_from(conn_matrix)] = 0
+        conn_matrix_labels = [a[0] for a in results.AllRegions[0]]
     else:
-        conn_matrix, conn_matrix_labels, _, _ = enigmatoolbox.datasets.load_fc(enigma_parcellation_name)
+        # match parcellation name with the enigmatoolbox
+        ENIGMATOOLBOX_PARC_NAMES = {
+            'schaefer400': 'schaefer_400'
+        }
+        enigma_parcellation_name = ENIGMATOOLBOX_PARC_NAMES.get(parcellation_name, None)
+        if enigma_parcellation_name == None:
+            raise Exception(f"ENIGMA Toolbox does not have connectivity data for the parcellation {parcellation_name}")
+        # load data from enigma toolbox
+        if kind == 'structural':
+            conn_matrix, conn_matrix_labels, _, _ = enigmatoolbox.datasets.load_sc(enigma_parcellation_name)
+        else:
+            conn_matrix, conn_matrix_labels, _, _ = enigmatoolbox.datasets.load_fc(enigma_parcellation_name)
     conn_matrix = pd.DataFrame(conn_matrix, columns=conn_matrix_labels, index=conn_matrix_labels)
-    #> parcellate dummy data to get the order of parcels in other matrices created locally
+    # parcellate dummy data to get the order of parcels in other matrices created locally
     dummy_surf_data = np.zeros(N_VERTICES_HEM_BB * 2)
     parcellated_dummy = helpers.parcellate(dummy_surf_data, parcellation_name).dropna()
-    #> reorder matrices downloaded from enigmaltoolbox
+    # reorder matrices downloaded from enigmaltoolbox
     reordered_conn_matrix = conn_matrix.loc[parcellated_dummy.index, parcellated_dummy.index]
     return reordered_conn_matrix
 
-def fetch_ahba_data(parcellation_name, return_donors=False, ibf_threshold=0.25, discard_rh=True):
+def fetch_ahba_data(parcellation_name, return_donors=False, 
+                    discard_rh=True, **abagen_kwargs):
     """
     Gets the parcellated AHBA gene expression data using abagen. The
     data is either an aggregated dataframe across all donors or is
@@ -700,8 +746,8 @@ def fetch_ahba_data(parcellation_name, return_donors=False, ibf_threshold=0.25, 
     ---------
     parcellation_name: (str)
     return_donors: (bool)
-    ibf_threshold: (float)
     discard_rh: (bool)
+    and other abagen.get_expression_data keyword arguments
 
     Returns
     -------
@@ -715,7 +761,8 @@ def fetch_ahba_data(parcellation_name, return_donors=False, ibf_threshold=0.25, 
         + ('_donors' if return_donors else '')\
         + f'_parc-{parcellation_name}'\
         + ('_hemi-L' if discard_rh else '')\
-        + f'_ibfthr-{ibf_threshold}.npz'\
+        + ''.join((f'_{k}-{v}' for k, v in abagen_kwargs.items()))\
+        + '.npz'
     )
     if os.path.exists(file_path):
         return np.load(file_path, allow_pickle=True)['data'].tolist()
@@ -736,10 +783,10 @@ def fetch_ahba_data(parcellation_name, return_donors=False, ibf_threshold=0.25, 
     expression_data = abagen.get_expression_data(
         atlas = atlas,
         data_dir = data_dir,
-        ibf_threshold = ibf_threshold,
         gene_norm = gene_norm, 
         return_donors = return_donors,
         verbose = 2,
+        **abagen_kwargs
     )
     if not return_donors:
         expression_data = {'all': expression_data}
@@ -761,7 +808,8 @@ def fetch_ahba_data(parcellation_name, return_donors=False, ibf_threshold=0.25, 
     return expression_data
 
 def fetch_aggregate_gene_expression(gene_list, parcellation_name, discard_rh=True,
-                                    merge_donors='genes', avg_method='mean'):
+                                    merge_donors='genes', avg_method='mean', missing='centroids',
+                                    ibf_threshold = 0.25, **abagen_kwargs):
     """
     Gets the aggregate expression of genes in `gene_list`
 
@@ -782,9 +830,15 @@ def fetch_aggregate_gene_expression(gene_list, parcellation_name, discard_rh=Tru
         - genes: merge donors at the level of individual genes (done in abagen)
         - aggregates: merge donors after calculating aggregates separately in each donor
         - None: do not merge donors
-    avg_method:
+    avg_method: (str)
         - mean
         - median (ignores the weights in gene list)
+    missing: (str) 
+        how to deal with parcels missing data
+            - None
+            - centroids
+            - interpolate
+    ibf_threshold: (float)
     """
     # get the ahba data
     # do not return donor-specific data if 
@@ -793,7 +847,10 @@ def fetch_aggregate_gene_expression(gene_list, parcellation_name, discard_rh=Tru
     ahba_data = fetch_ahba_data(
         parcellation_name, 
         return_donors = (merge_donors!='genes'),
-        discard_rh = discard_rh
+        discard_rh = discard_rh,
+        ibf_threshold = ibf_threshold,
+        missing = missing,
+        **abagen_kwargs
         )
     # get the gene list that exist in ahba data
     ahba_genes = list(ahba_data.values())[0].columns
@@ -802,7 +859,7 @@ def fetch_aggregate_gene_expression(gene_list, parcellation_name, discard_rh=Tru
         # of all genes to 1
         gene_list = pd.Series(1, index=gene_list)
     exist_gene_list = (set(gene_list.index) & set(ahba_genes))
-    print(f'{gene_list.shape[0] - len(exist_gene_list)} of {gene_list.shape[0]} genes do not exist')
+    logging.info(f'{gene_list.shape[0] - len(exist_gene_list)} of {gene_list.shape[0]} genes do not exist')
     gene_list = gene_list.loc[exist_gene_list]
     # get the aggregate expression for each donor
     # (in the case of return_donors==False there's
@@ -837,3 +894,149 @@ def fetch_aggregate_gene_expression(gene_list, parcellation_name, discard_rh=Tru
         )
     else:
         return aggregate_expressions
+
+def fetch_pet(parcellation_name, receptor):
+    """
+    Loads the parcellated PET map of receptor and Z-scores 
+    the maps and takes a weighted average in case multiple 
+    maps exist for a given receptor x tracer combination
+
+    Parameters
+    ----------
+    parcellation_name: (str)
+    receptor: (str)
+
+    Returns
+    ---------
+    parcellated_data: (pd.DataFrame) n_parcels x n_receptor_tracer_groups
+    """
+    # TODO: consider loading the data online from neuromaps
+    parcellated_data = pd.DataFrame()
+    # load PET images metadata
+    metadata = pd.read_csv(
+        os.path.join(SRC_DIR, 'PET_metadata.csv'), 
+        index_col='filename')
+    metadata = metadata.loc[metadata['receptor']==receptor]
+    # group the images with the same recetpro-tracer
+    for group, group_df in metadata.groupby(['receptor', 'tracer']):
+        group_name = '_'.join(group)
+        logging.info(group_name)
+        # take a weighted average of PET value z-scores
+        # across images with the same receptor-tracer
+        # (weighted by N of subjects)
+        pet_parcellated_sum = {}
+        for filename, file_metadata in group_df.iterrows():
+            pet_img = os.path.join(SRC_DIR, 'PET', filename)
+            #> prepare the parcellation masker
+            # Warning: Background label is by default set to
+            # 0. Make sure this is the case for all the parcellation
+            # maps and zero corresponds to background / midline
+            masker = NiftiLabelsMasker(
+                os.path.join(
+                    SRC_DIR, 
+                    f'tpl-MNI152_desc-{parcellation_name}_parcellation.nii.gz'
+                    ), 
+                strategy='sum',
+                resampling_target='data',
+                background_label=0)
+            #> count the number of non-zero voxels per parcel so the average
+            # is calculated only among non-zero voxels (visualizing the PET map
+            # on volumetric parcellations, the parcels are usually much thicker
+            # than the PET map on the cortex, and there are a large number of 
+            # zero PET values in each parcel which can bias the parcelled values)
+            nonzero_mask = math_img('pet_img != 0', pet_img=pet_img)
+            nonzero_voxels_count_per_parcel = masker.fit_transform(nonzero_mask).flatten()
+            #> take the average of PET values across non-zero voxels
+            pet_value_sum_per_parcel = masker.fit_transform(pet_img).flatten()
+            pet_parcellated = pet_value_sum_per_parcel / nonzero_voxels_count_per_parcel
+            # TODO: should I make any transformations in the negative PET images?
+            #> get the PET intensity zscore weighted by N
+            pet_parcellated_sum[filename] = (
+                scipy.stats.zscore(pet_parcellated)
+                * file_metadata['N']
+            )
+        # divide the sum of weighted Z-scores by total N
+        # Note that in the case of one file per group we can avoid
+        # multiplying by N and dividing by sum of N, but I've
+        # used this approach to have a shorter code which can
+        # also support the option of merging by receptor
+        # and not only (receptor, tracer) combinations
+        parcellated_data.loc[:, group_name] = sum(pet_parcellated_sum.values()) / group_df['N'].sum()
+        # add labels of the parcels
+        parcellated_data.index = load_volumetric_parcel_labels(parcellation_name)
+    return parcellated_data
+
+
+def fetch_autoradiography():
+    """
+    Loads the parcellated map of receptors based on autoradiography
+    
+    Credit
+    ------
+    Original data from Zilles 2017 (10.3389/fnana.2017.00078)
+    Saved in .npy format by Goulas 2021 (10.1073/pnas.2020574118)
+    Code and mapping for conversion from JuBrain/Brodmann to DK from
+    Hansen 2021 (https://www.biorxiv.org/content/10.1101/2021.11.30.469876v2;
+    https://github.com/netneurolab/hansen_gene-receptor/blob/main/code/main.py)
+    """
+    # load the receptor regions and create a mapping between
+    # them and DK parcels
+    receptor_regions = np.load(
+        os.path.join(SRC_DIR, 'autoradiography', 'RegionNames.npy')
+    )
+    receptor_regions_idx = np.arange(receptor_regions.size)
+    # some region indices are associated with more than one dk region
+    # the data for these regions should be duplicated
+    duplicate = [20, 21, 28, 29, 30, 32, 34, 39]
+    rep = np.ones((receptor_regions.shape[0], ), dtype=int) 
+    rep[duplicate] = 2
+    receptor_regions = np.repeat(receptor_regions, rep, 0)
+    receptor_regions_idx = np.repeat(receptor_regions_idx, rep, 0)
+    # mapping from 44 receptor regions + 7 duplicate regions to dk left hem
+    # manually done (by Hansen et al.), comparing anatomical regions to one another
+    mapping = np.array([57, 57, 57, 57, 63, 62, 65, 62, 64, 65, 64, 66, 66,
+                        66, 66, 66, 74, 74, 70, 71, 72, 73, 67, 68, 69, 52,
+                        52, 60, 60, 58, 58, 59, 53, 54, 53, 54, 55, 56, 61,
+                        51, 51, 50, 49, 49, 44, 44, 45, 42, 47, 46, 48, 43])
+    # get the labels of DK regions (== scale033 of Cammoun2012)
+    # based on IDs in `mapping` and create a dataframe for
+    # mapping between DK region labels and receptor regions
+    cammoun = netneurotools.datasets.fetch_cammoun2012()
+    info = pd.read_csv(cammoun['info'])
+    mapping_df = info[(info['scale']=='scale033')].set_index('id').loc[mapping, 'label'].to_frame()
+    ## make the lables consistent with the way load_parcellation_map renames DK parcels
+    mapping_df.loc[:, 'label'] = 'L_' + mapping_df.loc[:, 'label']
+    ## add receptor region label and indices corresponding to the DK parcels
+    ## as indicated in `mapping`
+    mapping_df.loc[:,'receptor_region'] = receptor_regions
+    mapping_df.loc[:,'receptor_region_idx'] = receptor_regions_idx
+    mapping_df = mapping_df.set_index('receptor_region_idx')
+    # load the original data and take average across 
+    # cortical depth before any normalization
+    autorad_data_orig = []
+    for depth in ['S', 'G', 'I']: # supragranular, granular, infragranular
+        autorad_data_orig.append(
+            np.load(os.path.join(
+                SRC_DIR, 'autoradiography', f'ReceptData_{depth}.npy' 
+            ))
+        )
+    autorad_data_orig = sum(autorad_data_orig) / 3
+    receptor_names = np.load(
+        os.path.join(SRC_DIR, 'autoradiography', 'ReceptorNames.npy')
+        ).tolist()
+    # create a dataframe of autoradiography data for DK regions
+    # based on the mapping between receptor data regions and DK regions
+    autorad_data = (
+        pd.DataFrame(
+            ## duplicate receptor data in receptor regions covering
+            ## multiple DK regions
+            autorad_data_orig[mapping_df.index],
+            index=mapping_df['label'],
+            columns=receptor_names)
+        ## take the average data for DK regions covering multiple
+        ## receptor regions
+        .reset_index(drop=False).groupby('label').mean()
+        ## normalize across regions
+        .apply(scipy.stats.zscore, axis=0)
+    )
+    return autorad_data

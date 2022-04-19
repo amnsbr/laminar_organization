@@ -13,11 +13,12 @@ import statsmodels.stats.multitest
 import cmcrameri.cm # color maps
 import bct
 import PIL
+import logging, sys
+logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 
-import helpers
-import datasets
+import helpers, datasets, surfaces
 
-#> specify directories
+# specify directories
 abspath = os.path.abspath(__file__)
 cwd = os.path.dirname(abspath)
 OUTPUT_DIR = os.path.join(cwd, '..', 'output')
@@ -30,30 +31,44 @@ class Matrix:
     Generic class for matrices
     """
     split_hem = False # set to False by default and only change for GD and SC
-    cmap = 'viridis' # default cmap
+    cmap = 'rocket' # default cmap
+    def __init__(self, matrix, parcellation_name, label, dir_path, cmap=None):
+        """
+        Initialize any custom matrix
+        """
+        self.matrix = matrix
+        self.parcellation_name = parcellation_name
+        self.label = label
+        self.dir_path = dir_path
+        if cmap is not None:
+            self.cmap = cmap
+        os.makedirs(self.dir_path, exist_ok=True)
+        self.file_path = os.path.join(self.dir_path, 'matrix')
+        self._save()
 
     def _save(self):
         """
-        Save the matrix to a .csv file
+        Save the matrix to a .npz file
         """
-        self.matrix.to_csv(
-            self.file_path, 
-            index_label='parcel'
+        np.savez_compressed(
+            self.file_path+'.npz',
+            matrix = self.matrix.values.astype('float16'),
+            parcels = self.matrix.index.values
         )
 
     def _load(self):
         """
         Loads a matrix created before
         """
-        self.matrix = pd.read_csv(
-            self.file_path,
-            index_col='parcel'
-        )
-        # for sjh parcellation index is read as 'int' but columns
-        # are read as str. Fix this by making columns similar to
-        # index * number of matrices
-        n_sq_matrix = self.matrix.shape[1] // self.matrix.shape[0]
-        self.matrix.columns = self.matrix.index.tolist() * n_sq_matrix
+        logging.info(f"Loading the matrix from {self.file_path}.npz")
+        npz = np.load(self.file_path+'.npz', allow_pickle=True)
+        parcels = npz['parcels']
+        matrix = npz['matrix']
+        n_sq_matrix = matrix.shape[1] // matrix.shape[0]
+        self.matrix = pd.DataFrame(
+            npz['matrix'], 
+            index=parcels, 
+            columns=parcels * n_sq_matrix)
 
     def _remove_parcels(self, exc_regions):
         """
@@ -77,15 +92,15 @@ class Matrix:
         """
         Plot the matrix as heatmap
         """
-        #> plot the matrix
+        # plot the matrix
         helpers.plot_matrix(
             self.matrix.values,
-            os.path.join(self.file_path.replace('.csv','')),
+            self.file_path,
             cmap=self.cmap,
             vrange=vrange
             )
 
-    def correlate_edge_wise(self, other, test='pearson'):
+    def correlate_edge_wise(self, other, test='pearson', plot_half_matrices=False):
         """
         Calculates and plots the correlation between the edges of two matrices
         self and other which are assumed to be square and symmetric. The correlation
@@ -97,21 +112,21 @@ class Matrix:
         test: (str)
             - pearson
             - spearman
+        plot_half_matrices: (bool) plot upper/lower half of each matrix for using in the paper
         """
         # TODO: maybe move this to MicrostructuralCovarianceMatrix
         # TODO: add the option of correlating non-transformed matrices
-        #> make sure they have the same parcellation and mask
+        # make sure they have the same parcellation and mask
         assert self.parcellation_name == other.parcellation_name
-        assert self.exc_regions == other.exc_regions
-        #> match the matrices in the order and selection of parcels
-        #  + convert them to np.ndarray
-        shared_parcels = self.matrix.index & other.matrix.index # union of the two indices
+        # match the matrices in the order and selection of parcels
+        # + convert them to np.ndarray
+        shared_parcels = self.matrix.index.intersection(other.matrix.index)
         X = self.matrix.loc[shared_parcels, shared_parcels]
         Y = other.matrix.loc[shared_parcels, shared_parcels]
-        # #> make NaNs zero so NaN can be assigned to L-R edges
+        # # make NaNs zero so NaN can be assigned to L-R edges
         # X[np.isnan(X)] = 0 # TODO: make sure this is okay for all the matrices
         # Y[np.isnan(Y)] = 0
-        #> if L and R should be investigated separately
+        # if L and R should be investigated separately
         # make interhemispheric pairs of the lower triangle
         # NaN so it could be then removed
         if self.split_hem or other.split_hem:
@@ -121,18 +136,18 @@ class Matrix:
                 )
             X.loc[hem_parcels['R'], hem_parcels['L']] = np.NaN
             Y.loc[hem_parcels['R'], hem_parcels['L']] = np.NaN
-        #> get the index for lower triangle
+        # get the index for lower triangle
         tril_index = np.tril_indices_from(X.values, -1)
         x = X.values[tril_index]
         y = Y.values[tril_index]
-        #> remove NaNs (e.g. interhemispheric pairs) and 0s
-        #  as the Y matrix is often zeroed out and 0
-        #  has lost its meaning and there's a lot of zeros which
-        #  have been actually the negative values
+        # remove NaNs (e.g. interhemispheric pairs) and 0s
+        # as the Y matrix is often zeroed out and 0
+        # has lost its meaning and there's a lot of zeros which
+        # have been actually the negative values
         mask = ~((x==0) | np.isnan(x) | (y==0) | np.isnan(y)) 
         x = x[mask]
         y = y[mask]
-        #> correlation
+        # correlation
         if test == 'pearson':
             coef, p_val = scipy.stats.pearsonr(x, y)
         else:
@@ -143,7 +158,7 @@ class Matrix:
         out_path = os.path.join(self.dir_path, f'correlation_{other.label.lower().replace(" ", "_")}')
         with open(out_path+'.txt', 'w') as res_file:
             res_file.write(res_str)
-        #> plotting
+        # plotting
         jp = sns.jointplot(
             x = x, y = y, kind = "hex", 
             color = "grey", height = 4,
@@ -158,7 +173,7 @@ class Matrix:
             ax=ax, ci=None, scatter=False, 
             color='red', line_kws=dict(alpha=0.6)
             )
-        #> add rho on the figure
+        # add rho on the figure
         text_x = ax.get_xlim()[0]+(ax.get_xlim()[1]-ax.get_xlim()[0])*0.05
         text_y = ax.get_ylim()[0]+(ax.get_ylim()[1]-ax.get_ylim()[0])*0.95
         if test == 'pearson':
@@ -172,21 +187,25 @@ class Matrix:
         ax.set_ylabel(other.label)
         jp.fig.tight_layout()
         jp.fig.savefig(out_path+'.png', dpi=192)
-        # #> plotting half-half matrix
-        # uhalf_X = X.copy()
-        # uhalf_X[np.tril_indices_from(X, 0)] = np.NaN
-        # lhalf_Y = Y.copy()
-        # lhalf_Y[np.triu_indices_from(Y, 0)] = np.NaN
-        # fig, ax = plt.subplots(figsize=(7,7))
-        # sns.heatmap(
-        #     uhalf_X,
-        #     vmin=np.quantile(uhalf_X.flatten(),0.05),
-        #     vmax=np.quantile(uhalf_X.flatten(),0.95),
-        #     cbar=False,
-        #     ax=ax)
-        # ax.axis('off')
+        if plot_half_matrices:
+            # plotting half-half matrix
+            uhalf_X = X.copy().values
+            uhalf_X[np.tril_indices_from(X, 0)] = np.NaN
+            lhalf_Y = Y.copy().values
+            lhalf_Y[np.triu_indices_from(Y, 0)] = np.NaN
+            helpers.plot_matrix(
+                uhalf_X, 
+                os.path.join(f'{out_path}_{self.label}_uhalf'),
+                cmap = self.cmap
+                )
+            helpers.plot_matrix(
+                lhalf_Y, 
+                os.path.join(f'{out_path}_{other.label}_lhalf'),
+                cmap = other.cmap
+                )        
 
-    def correlate_node_wise(self, other, test='pearson', plot=False, plot_layout='grid'):
+    def correlate_node_wise(self, other, test='pearson', plot=True, 
+                            plot_sig=False, plot_layout='grid'):
         """
         Calculates the correlation of matrix with another matrix at each row (node),
         projects the node-wise Spearman's rho values to the surface and saves and plots it. 
@@ -199,17 +218,20 @@ class Matrix:
             - pearson
             - spearman
         plot: (bool) plot the surface map of FDR-corrected correlation coefficients
+        plot_sig: (bool) only include correlation of parcels which are significantly
+                        correlated after FDR correction.
+                        Set to False by default as the significance is highly dependent
+                        on the number of parcels
         plot_layout: (str) 'grid' or 'row'
         """
-        #> make sure they have the same parcellation and mask
+        # make sure they have the same parcellation and mask
         assert self.parcellation_name == other.parcellation_name
-        assert self.exc_regions == other.exc_regions
-        #> match the matrices in the order and selection of parcels
-        #  + convert them to np.ndarray
-        shared_parcels = self.matrix.index & other.matrix.index # union of the two indices
-        X = self.matrix.loc[shared_parcels, shared_parcels].values
-        Y = other.matrix.loc[shared_parcels, shared_parcels].values
-        #> if L and R should be investigated separately
+        # match the matrices in the order and selection of parcels
+        # + convert them to np.ndarray
+        shared_parcels = self.matrix.index.intersection(other.matrix.index)
+        X = self.matrix.loc[shared_parcels, shared_parcels]
+        Y = other.matrix.loc[shared_parcels, shared_parcels]
+        # if L and R should be investigated separately
         # make interhemispheric pairs of the lower triangle
         # NaN so it could be then removed
         if self.split_hem or other.split_hem:
@@ -219,30 +241,32 @@ class Matrix:
                 )
             X.loc[hem_parcels['R'], hem_parcels['L']] = np.NaN
             Y.loc[hem_parcels['R'], hem_parcels['L']] = np.NaN
-        #> calculate the correlation at each row (node)
+        X = X.values
+        Y = Y.values
+        # calculate the correlation at each row (node)
         node_coefs = pd.Series(np.empty(X.shape[0]), index=shared_parcels)
         node_pvals = pd.Series(np.empty(X.shape[0]), index=shared_parcels)
         for row_idx in range(X.shape[0]):
             row_x = X[row_idx, :]
             row_y = Y[row_idx, :]
-            #> remove NaNs and 0s
+            # remove NaNs and 0s
             row_mask = ~((row_x==0) | np.isnan(row_x) | (row_y==0) | np.isnan(row_y)) 
             row_x = row_x[row_mask]
             row_y = row_y[row_mask]
-            #> calculate correlation
+            # calculate correlation
             if test == 'pearson':
                 node_coefs.iloc[row_idx], node_pvals.iloc[row_idx] = scipy.stats.pearsonr(row_x, row_y)
             else:
                 node_coefs.iloc[row_idx], node_pvals.iloc[row_idx] = scipy.stats.spearmanr(row_x, row_y)
-        #> FDR correction
+        # FDR correction
         _, node_pvals_fdr = statsmodels.stats.multitest.fdrcorrection(node_pvals)
         node_pvals_fdr = pd.Series(node_pvals_fdr, index=shared_parcels)
         node_coefs_sig = node_coefs.copy()
         node_coefs_sig.loc[node_pvals_fdr >= 0.05] = 0
-        #> project to surface
+        # project to surface
         node_coefs_surface = helpers.deparcellate(node_coefs, self.parcellation_name)
         node_coefs_sig_surface = helpers.deparcellate(node_coefs_sig, self.parcellation_name)
-        #> save (and plot) surface maps
+        # save (and plot) surface maps
         out_path = os.path.join(self.dir_path, f'correlation_{other.label.lower().replace(" ", "_")}_{test}')
         np.savez_compressed(
             out_path + '_nodewise_surface.npz', 
@@ -258,13 +282,18 @@ class Matrix:
             index_label='parcel',
         )
         if plot:
+            if plot_sig:
+                surface = node_coefs_sig_surface
+                filename = out_path + '_nodewise_surface_sig'
+            else:
+                surface = node_coefs_surface
+                filename = out_path + '_nodewise_surface_all'
             vmin = min(
-                np.nanmin(node_coefs_sig_surface),
-                -np.nanmax(node_coefs_sig_surface)
+                np.nanmin(surface),
+                -np.nanmax(surface)
             )
             helpers.plot_surface(
-                node_coefs_sig_surface,
-                filename = out_path + '_nodewise_surface_sig.png',
+                surface, filename,
                 cmap ='vlag', 
                 vrange = (vmin , -vmin),
                 cbar = True,
@@ -289,10 +318,10 @@ class Matrix:
         ---------
         matrix_file: (str) path to matrix file    
         """
-        #> load cortical types and make it match matrix index
+        # load cortical types and make it match matrix index
         parcellated_cortical_types = datasets.load_cortical_types(self.parcellation_name)
         parcellated_cortical_types = parcellated_cortical_types.loc[self.matrix.index]
-        #> list the excluded types based on matrix path 
+        # list the excluded types based on matrix path 
         # TODO: clean
         if self.exc_regions=='adysgranular':
             included_types = ['EU1', 'EU2', 'EU3', 'KO']
@@ -313,7 +342,7 @@ class Matrix:
             .loc[~parcellated_cortical_types.isin(excluded_types)]
             .cat.remove_unused_categories()
             )
-        #> collapse matrix to mean values per cortical type
+        # collapse matrix to mean values per cortical type
         mean_matrix_by_cortical_type = pd.DataFrame(np.zeros((n_types, n_types)),
                                                     columns=included_types,
                                                     index=included_types)
@@ -323,14 +352,14 @@ class Matrix:
                 .T.groupby(parcellated_cortical_types) # group columns by cortical type
                 .mean() # take average of cortical types for each row (parcel)
                 .mean(axis=1)) # take the average of average of rows in each cortical type
-        #> plot it
+        # plot it
         helpers.plot_matrix(
             mean_matrix_by_cortical_type.values,
-            self.file_path.replace('.csv', '_averaged-ctypes'),
+            self.file_path + '_averaged-ctypes',
             vrange=(0, 1), cmap=self.cmap
             )
         if stats:
-            #> quantify intra and intertype similarity
+            # quantify intra and intertype similarity
             intra_intertype = pd.DataFrame(
                 np.zeros((n_types, 2)),
                 columns=['intra', 'inter'],
@@ -348,14 +377,14 @@ class Matrix:
                     .mean() # take average of cortical types for each row (parcel)
                     .drop(index=group_idx) # remove the same type
                     .values.mean()) # take the average of average of rows in each cortical type
-            #> test significance using permutation
+            # test significance using permutation
             null_dist_intra_intertype = np.zeros((1000, n_types, 2))
             if null_method == 'bct':
                 surrogates = self.create_or_load_surrogates()
-            print("Calculating p-value with permutation testing (1000 permutations)")
+            logging.info("Calculating p-value with permutation testing (1000 permutations)")
             for perm_idx in range(1000):
                 if perm_idx % 100 == 0:
-                    print("Perm", perm_idx)
+                    logging.info("Perm", perm_idx)
                 if null_method == 'bct':
                     surrogate = pd.DataFrame(surrogates[perm_idx])
                 elif null_method == 'shuffle':
@@ -384,7 +413,7 @@ class Matrix:
             null_dist_diff_intra_inter = null_dist_intra_intertype[:, :, 0] - null_dist_intra_intertype[:, :, 1]
             diff_intra_inter = (intra_intertype.iloc[:, 0] - intra_intertype.iloc[:, 1]).values.reshape(1, -1)
             intra_intertype['pvals'] = (null_dist_diff_intra_inter > diff_intra_inter).mean(axis=0)
-            intra_intertype.to_csv(self.file_path.replace('.csv', '_intra_intertype_diff.txt'))
+            intra_intertype.to_csv(self.file_path + '_intra_intertype_diff.txt')
 
 class CurvatureSimilarityMatrix(Matrix):
     """
@@ -407,17 +436,17 @@ class CurvatureSimilarityMatrix(Matrix):
         self.exc_regions = exc_regions
         self.file_path = os.path.join(
             self.dir_path,
-            f'curvature_similarity_matrix_parc-{parcellation_name}.csv'
+            f'curvature_similarity_matrix_parc-{parcellation_name}'
             )
-        if os.path.exists(self.file_path):
+        if os.path.exists(self.file_path + '.npz'):
             self._load()
         else:
             os.makedirs(self.dir_path, exist_ok=True)
             self.matrix = self._create()
             self._save()
-        #> remove the adysgranular parcels after the matrix is created
-        #  to avoid unncessary waste of computational resources
-        #  note this is not saved
+        # remove the adysgranular parcels after the matrix is created
+        # to avoid unncessary waste of computational resources
+        # note this is not saved
         if self.exc_regions:
             self.matrix = self._remove_parcels(self.exc_regions)
         self.plot()
@@ -427,16 +456,16 @@ class CurvatureSimilarityMatrix(Matrix):
         Create curvature similarity matrix by calculating Jansen-Shannon similarity of
         curvature distributions between pairs of parcels        
         """
-        #> load curvature maps
+        # load curvature maps
         curvature_maps = datasets.load_curvature_maps()
-        #> parcellate curvature
+        # parcellate curvature
         parcellated_curvature = helpers.parcellate(
             curvature_maps, 
             self.parcellation_name, 
             averaging_method=None,
             na_midline=False,
             )
-        #> create pdfs and store min and max curv at each parcel
+        # create pdfs and store min and max curv at each parcel
         pdfs = {}
         for hem in ['L', 'R']:
             pdfs[hem] = parcellated_curvature[hem].apply(
@@ -446,15 +475,15 @@ class CurvatureSimilarityMatrix(Matrix):
                     'max_curv': group_df[0].max(),
                 })
                 )
-        #> concatenate L and R hemisphere parcels,
-        #  dropping parcels duplicated in both hemispheres
+        # concatenate L and R hemisphere parcels,
+        # dropping parcels duplicated in both hemispheres
         pdfs = (pd.concat([pdfs['L'], pdfs['R']], axis=0)
                 .reset_index(drop=False)
                 .drop_duplicates('index')
                 .set_index('index')
         )
-        #> measure parcel-to-parcel similarity of curvature distributions
-        #  using Jensen-Shannon distance
+        # measure parcel-to-parcel similarity of curvature distributions
+        # using Jensen-Shannon distance
         js_distance_matrix = pd.DataFrame(
             np.zeros((pdfs.shape[0],pdfs.shape[0])),
             columns=pdfs.index,
@@ -465,24 +494,24 @@ class CurvatureSimilarityMatrix(Matrix):
                 if parc_i == parc_j:
                     js_distance_matrix.loc[parc_i, parc_j] = 0
                 elif parc_i > parc_j: # lower triangle only
-                    #> find the min and max curv across the pair of parcels and 
-                    #  create a linearly spaced discrete array [min, max]
-                    #  used for sampling PDFs of curvature in each parcel
+                    # find the min and max curv across the pair of parcels and 
+                    # create a linearly spaced discrete array [min, max]
+                    # used for sampling PDFs of curvature in each parcel
                     pair_min_curv = min(pdf_i['min_curv'], pdf_j['min_curv'])
                     pair_max_curv = min(pdf_i['max_curv'], pdf_j['max_curv'])
                     X_pair = np.linspace(pair_min_curv, pair_max_curv, 200)
-                    #> sample PDFi and PDFj at X_pair and convert it to discrete
-                    #  PDF via dividing by sum
+                    # sample PDFi and PDFj at X_pair and convert it to discrete
+                    # PDF via dividing by sum
                     Y_i = pdf_i['pdf'].evaluate(X_pair)
                     Y_j = pdf_j['pdf'].evaluate(X_pair)
                     Y_i /= Y_i.sum()
                     Y_j /= Y_j.sum()
-                    js_distance_matrix.loc[parc_i, parc_j] = scipy.spatial.distance.jensenshannon(Y_i, Y_j)    #> calcualte curvature similarity as 1 - distance (TODO: is this the best approach?)
-        #> make sure that there are no np.infs and the distance is bound by 0 and 1
+                    js_distance_matrix.loc[parc_i, parc_j] = scipy.spatial.distance.jensenshannon(Y_i, Y_j)    # calcualte curvature similarity as 1 - distance (TODO: is this the best approach?)
+        # make sure that there are no np.infs and the distance is bound by 0 and 1
         assert (js_distance_matrix.values.min() >= 0) and (js_distance_matrix.values.max() <= 1)
-        #> calcualate similarity as 1 - dintance
+        # calcualate similarity as 1 - dintance
         curv_similarity_matrix = 1 - js_distance_matrix
-        #> copy the lower triangle to the upper triangle
+        # copy the lower triangle to the upper triangle
         i_upper = np.triu_indices(curv_similarity_matrix.shape[0], 1)
         curv_similarity_matrix.values[i_upper] = curv_similarity_matrix.T.values[i_upper]
         return curv_similarity_matrix
@@ -523,14 +552,13 @@ class DistanceMatrix(Matrix):
         self.parcellation_name = parcellation_name
         self.kind = kind
         self.approach = approach
-        print(self.approach)
         self.exc_regions = exc_regions
         self.label = f"{self.kind.title()} distance"
         self.file_path = os.path.join(
             self.dir_path,
-            f'{self.kind}_distance_matrix_parc-{self.parcellation_name}_approach-{self.approach}.csv'
+            f'{self.kind}_distance_matrix_parc-{self.parcellation_name}_approach-{self.approach}'
             )
-        if os.path.exists(self.file_path):
+        if os.path.exists(self.file_path + '.npz'):
             self._load()
         else:
             os.makedirs(self.dir_path, exist_ok=True)
@@ -540,9 +568,9 @@ class DistanceMatrix(Matrix):
                 self.matrix = self._create_euclidean()
             self._save()
             self.plot(vrange=(0, 1))
-        #> remove the adysgranular parcels after the matrix is created
-        #  to avoid unncessary waste of computational resources
-        #  note this is not saved or plotted
+        # remove the adysgranular parcels after the matrix is created
+        # to avoid unncessary waste of computational resources
+        # note this is not saved or plotted
         if self.exc_regions:
             self.matrix = self._remove_parcels(self.exc_regions)
 
@@ -553,7 +581,7 @@ class DistanceMatrix(Matrix):
         """
         GDs = {}
         for hem in ['L', 'R']:
-            #> load surf
+            # load surf
             surf_path = os.path.join(
                 SRC_DIR, 
                 f'tpl-bigbrain_hemi-{hem}_desc-mid.surf.gii'
@@ -565,7 +593,7 @@ class DistanceMatrix(Matrix):
             uparcel = np.unique(parc)
             voi = np.zeros([1, len(uparcel)])
             
-            print(f"[ INFO ]..... Finings centre vertex for each parcel in hemisphere {hem}")
+            logging.info(f"Finings centre vertex for each parcel in hemisphere {hem}")
             # TODO: use helpers.get_parcel_centers instead
             for (i, parcel_name) in enumerate(uparcel):
                 this_parc = np.where(parc == parcel_name)[0]
@@ -580,9 +608,10 @@ class DistanceMatrix(Matrix):
             # Initialize distance matrix
             GDs[hem] = np.zeros((uparcel.shape[0], uparcel.shape[0]))
 
-            print(f"[ INFO ]..... Running geodesic distance in hemisphere {hem}")
+            logging.info(f"Running geodesic distance in hemisphere {hem}")
             for i in range(len(uparcel)):
-                print("Parcel: ", uparcel[i])
+                if (i+1) % 20 == 0:
+                    logging.info(f"Parcel: {i+1}")
                 center_vertex = int(voi[0,i])
                 cmdStr = f"{wbPath} -surface-geodesic-distance {surf_path} {center_vertex} {self.file_path}_this_voi.func.gii"
                 subprocess.run(cmdStr.split())
@@ -599,14 +628,14 @@ class DistanceMatrix(Matrix):
                         pairGD = tmp[other_center_vertex]
                     parcGD[0, n] = pairGD
                 GDs[hem][i,:] = parcGD
-            # #> save the GD for the current hemisphere
+            # # save the GD for the current hemisphere
             # np.savetxt(
-            #     self.file_path.replace('_parc', f'_hemi-{hem}_parc'),
-            #     GDs[hem],
-            #     fmt='%.12f')
-            #> convert it to dataframe so that joining hemispheres would be easier
+            #    self.file_path.replace('_parc', f'_hemi-{hem}_parc'),
+            #    GDs[hem],
+            #    fmt='%.12f')
+            # convert it to dataframe so that joining hemispheres would be easier
             GDs[hem] = pd.DataFrame(GDs[hem], index=uparcel, columns=uparcel)
-        #> join the GD matrices from left and right hemispheres
+        # join the GD matrices from left and right hemispheres
         GD_full = (pd.concat([GDs['L'], GDs['R']],axis=0)
                 .reset_index(drop=False)
                 .drop_duplicates('index')
@@ -634,7 +663,8 @@ class ConnectivityMatrix(Matrix):
     Structural or functional connectivity matrix
     """
     def __init__(self, kind, exc_regions=None, sc_zero_contra=True, 
-                 parcellation_name='schaefer400', create_plot=False):
+                 parcellation_name='schaefer400', dataset='hcp', 
+                 create_plot=False):
         """
         Initializes structural/functional connectivity matrix
 
@@ -643,10 +673,15 @@ class ConnectivityMatrix(Matrix):
         kind: (str)
             - structural
             - functional
+            - effective
         exc_regions: (str | None)
         sc_zero_contra: (bool) zero out contralateral edges for the SC matrix
         parcellation_name: (str)
             - schaefer400 (currently only this is supported)
+        dataset: (str)
+            - hcp
+            - mics (only for EC)
+        create_plot: (bool)
         """
         self.kind = kind
         self.exc_regions = exc_regions
@@ -655,22 +690,26 @@ class ConnectivityMatrix(Matrix):
             self.cmap = 'bone'
             if self.sc_zero_contra:
                 self.split_hem = True
-        else:
+        elif self.kind == 'functional':
             self.cmap = cmcrameri.cm.davos
+        else:
+            self.cmap = 'rocket'
         self.parcellation_name = parcellation_name
         self.label = f'{self.kind.title()} connectivity'
+        self.dataset = dataset
         self.dir_path = os.path.join(
             OUTPUT_DIR, 'connectivity',
             f'{self.kind[0]}c'\
             + f'_parc-{self.parcellation_name}' \
             + ('_split_hem' if self.split_hem else '')
+            + f'_data-{dataset}'
             )
-        self.file_path = os.path.join(self.dir_path, 'matrix.csv')
-        if os.path.exists(self.file_path):
+        self.file_path = os.path.join(self.dir_path, 'matrix')
+        if os.path.exists(self.file_path + '.npz'):
             self._load()
         else:
             os.makedirs(self.dir_path, exist_ok=True)
-            self.matrix = datasets.load_conn_matrix(self.kind, self.parcellation_name)
+            self.matrix = datasets.load_conn_matrix(self.kind, self.parcellation_name, dataset)
             if (self.kind == 'structural') & self.sc_zero_contra:
                 hem_parcels = helpers.get_hem_parcels(
                     self.parcellation_name, 
@@ -679,14 +718,74 @@ class ConnectivityMatrix(Matrix):
                 self.matrix.loc[hem_parcels['L'], hem_parcels['R']] = np.NaN
                 self.matrix.loc[hem_parcels['R'], hem_parcels['L']] = np.NaN
             self._save()
-        #> remove the adysgranular parcels after the matrix is created
-        #  to avoid unncessary waste of computational resources
-        #  note this is not saved
+        # remove the adysgranular parcels after the matrix is created
+        # to avoid unncessary waste of computational resources
+        # note this is not saved
         if self.exc_regions:
             self.matrix = self._remove_parcels(self.exc_regions)
         if create_plot:
             self.plot()
 
+    def associate_pairs_ec_diff_with_surf_diff(self, surf_obj, columns=None):
+        """
+        Calculates the association between the difference in
+        a given surface data (e.g., LTC G1) and the difference
+        between efferent and afferent connectivity for each pair
+        of parcels to see if higher values in the surface data indicate
+        a higher position in the hierarchy, i.e., having higher efferent
+        vs afferent connection strength
+
+        Parameters
+        ---------
+        surf_obj: (surfaces.ContCorticalSurface) 
+        columns: (list or None)
+            If provided the analysis will be limited to the columns
+        """
+        assert self.kind == 'effective'
+        assert surf_obj.parcellation_name == 'schaefer400'
+        if columns is None:
+            columns = surf_obj.columns
+        for column in columns:
+            # create a difference matrix where the lower triangle
+            # shows how higher the value of row parcel is compared
+            # to the column parcel
+            surf_diff_matrix = (
+                surf_obj.parcellated_data[column].values[np.newaxis, :]
+                - surf_obj.parcellated_data[column].values[:, np.newaxis]
+                )
+            surf_diff_matrix = pd.DataFrame(
+                surf_diff_matrix, 
+                index=surf_obj.parcellated_data.index, 
+                columns=surf_obj.parcellated_data.index
+                )
+            # create an EC difference matrix where the lower triangle
+            # shows how higher the efferent connectivity of row to column
+            # is compared to the afferent connectivity from column to row
+            # which can be a marker of relative hierarchy of any two parcels
+            ec_diff_matrix = self.matrix.values - self.matrix.values.T
+            ec_diff_matrix = pd.DataFrame(
+                ec_diff_matrix, 
+                index=self.matrix.index, columns=self.matrix.columns
+                )
+            # convert them to Matrix objects
+            surf_diff_matrix_obj = Matrix(
+                matrix = surf_diff_matrix,
+                parcellation_name = 'schaefer400',
+                label = f'{column} diff',
+                dir_path = os.path.join(
+                    surf_obj.dir_path, 
+                    f'{column.replace(" ", "_")}_diff_matrix'),
+                cmap = "YlGnBu_r",
+            )
+            ec_diff_matrix_obj = Matrix(
+                matrix = ec_diff_matrix,
+                parcellation_name = 'schaefer400',
+                label = f'EC diff ({self.dataset})',
+                dir_path = os.path.join(self.dir_path, 'diff_matrix'),
+                cmap = cmcrameri.cm.bamako
+            )
+            surf_diff_matrix_obj.correlate_edge_wise(ec_diff_matrix_obj)
+            surf_diff_matrix_obj.correlate_node_wise(ec_diff_matrix_obj)
 
 class MicrostructuralCovarianceMatrix(Matrix):
     """
@@ -696,19 +795,17 @@ class MicrostructuralCovarianceMatrix(Matrix):
     def __init__(self, input_type, parcellation_name='sjh', 
                  exc_regions='adysgranular', correct_curvature='smooth-10', 
                  similarity_metric='parcor', similarity_scale='parcel',
-                 zero_out_negative=False, create_plots=True):
+                 dataset='bigbrain', zero_out_negative=False, create_plots=True):
         """
         Initializes laminar similarity matrix object
 
         Parameters
         ---------
-        input_type: (str) Type of input data
-            - 'thickness' [default]: laminar thickness
-            - 'density': profile density
-            - 'thickness-density': fused laminar thickness and profile density
-        parcellation_name: (str) Parcellation scheme
-            - 'sjh'
-            - 'schaefer400'
+        input_type: (str)
+            - 'thickness' [default]: laminar thickness from BigBrain
+            - 'density': profile density from BigBrain
+            - 'thickness-density': fused laminar thickness and profile density from BigBrain
+        parcellation_name: (str) (only for bigbrain)
         exc_regions: (str | None)
         correct_curvature: (str or None) ignored for 'density'
             - 'smooth-{radius}' [Default]: smooth the thickness using a disc on the inflated surface
@@ -723,14 +820,17 @@ class MicrostructuralCovarianceMatrix(Matrix):
             - 'parcor': partial correlation with mean thickness pattern as covariate
             - 'euclidean': euclidean distance inverted and normalize to 0-1
             - 'pearson': Pearson's correlation coefficient
-        similarity_scale: (str) granularity of similarity measurement
+        similarity_scale: (str) granularity of similarity measurement (only for bigbrain)
             - 'parcel' [default]: similarity method is used between average laminar profile of parcels
             - 'vertex': similarity method is used between all pairs of vertices between two
                         parcels and then the similarity metric is averaged
+        dataset: (str)
+            - 'bigbrain': use map of BigBrain laminar thickness based on Wagstyl 2020
+            - 'economo': use laminar thickness of von Economo regions based on the book
         zero_out_negative: (bool)
             zero out negative values from the matrix
         """
-        #> save parameters as class fields
+        # save parameters as class fields
         self.input_type = input_type
         self.correct_curvature = correct_curvature
         self.similarity_metric = similarity_metric
@@ -738,7 +838,11 @@ class MicrostructuralCovarianceMatrix(Matrix):
         self.parcellation_name = parcellation_name
         self.exc_regions = exc_regions
         self.zero_out_negative = zero_out_negative
-        #> set the label based on input type
+        self.dataset = dataset
+        if self.dataset == 'economo':
+            self.parcellation_name = 'economo'
+            self.similarity_scale = 'parcel'
+        # set the label based on input type
         SHORT_LABELS = {
             'thickness': 'LTC',
             'density': 'MPC',
@@ -751,16 +855,16 @@ class MicrostructuralCovarianceMatrix(Matrix):
         }
         self.label = LABELS[self.input_type]
         self.short_label = SHORT_LABELS[self.input_type]
-        #> set cmap
+        # set cmap
         if self.input_type == 'density':
             self.cmap = sns.color_palette("rocket", as_cmap=True)
         else: # TODO: use different colors for each input type in the plot in thickness-density
             self.cmap = sns.color_palette("YlGnBu_r", as_cmap=True)
-        #> directory and filename (prefix which will be used for .npz and .jpg files)
+        # directory and filename (prefix which will be used for .npz and .jpg files)
         self.dir_path = self._get_dir_path()
         os.makedirs(self.dir_path, exist_ok=True)
-        self.file_path = os.path.join(self.dir_path, 'matrix.csv')
-        if os.path.exists(self.file_path):
+        self.file_path = os.path.join(self.dir_path, 'matrix')
+        if os.path.exists(self.file_path + '.npz'):
             self._load()
         else:
             self._create()
@@ -772,7 +876,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
         """
         Creates microstructural covariance matrix
         """
-        print(f"""
+        logging.info(f"""
         Creating microstructural covariance matrix:
             - input_type: {self.input_type},
             - correct_curvature: {self.correct_curvature}
@@ -782,8 +886,8 @@ class MicrostructuralCovarianceMatrix(Matrix):
         if self.input_type == 'thickness-density':
             matrices = []
             for input_type in ['thickness', 'density']:
-                #> create matrix_obj for each input_type
-                #  by calling the same class
+                # create matrix_obj for each input_type
+                # by calling the same class
                 matrix_obj = MicrostructuralCovarianceMatrix(
                     input_type = input_type,
                     correct_curvature=self.correct_curvature,
@@ -797,10 +901,9 @@ class MicrostructuralCovarianceMatrix(Matrix):
                 # in that case this code won't work properly
             self.matrix = self._fuse_matrices(matrices)
         else:
-            #> Load laminar thickness or density profiles
-            print("Reading input")
-            self._input_data = self._load_input_data()
-            #> create the similarity matrix
+            # Load laminar thickness or density profiles
+            self._load_input_data()
+            # create the similarity matrix
             if self.similarity_scale == 'parcel':
                 self.matrix = self._create_at_parcels()
             else:
@@ -810,49 +913,54 @@ class MicrostructuralCovarianceMatrix(Matrix):
         """
         Load input data
         """
-        #> load exclusion masks for a-/dysgranular regions if needed
+        # load exclusion masks for a-/dysgranular regions if needed
         if self.exc_regions:
             exc_masks = datasets.load_exc_masks(self.exc_regions)
         else:
             raise NotImplementedError
-        #> load the data
+        # load the data
         if self.input_type == 'thickness':
-            if self.correct_curvature is None:
-                input_data = datasets.load_laminar_thickness(
-                    exc_masks=exc_masks,
-                    regress_out_curvature=False,
-                    normalize_by_total_thickness=True,
+            if self.dataset == 'economo':
+                self._parcellated_input_data = datasets.load_economo_laminar_thickness(
+                    normalize_by_total_thickness=True
                 )
-            elif 'smooth' in self.correct_curvature:
-                smooth_disc_radius = int(self.correct_curvature.split('-')[1])
-                input_data = datasets.load_laminar_thickness(
-                    exc_masks=exc_masks,
-                    regress_out_curvature=False,
-                    normalize_by_total_thickness=True,
-                    smooth_disc_radius=smooth_disc_radius
-                )
-                # note that in this case the input data is in ico5 space
-                # which may lead to some missing parcels in e.g. sjh
-                # TODO: make sure this will not cause any problems
-            elif self.correct_curvature == 'volume':
-                input_data = datasets.load_laminar_volume(
-                    exc_masks=exc_masks,
-                )
-            elif self.correct_curvature == 'regress':
-                input_data = datasets.load_laminar_thickness(
-                    exc_masks=exc_masks,
-                    regress_out_curvature=True,
-                    normalize_by_total_thickness=True,
-                )
+            else:
+                if self.correct_curvature is None:
+                    self._input_data = datasets.load_laminar_thickness(
+                        exc_masks=exc_masks,
+                        regress_out_curvature=False,
+                        normalize_by_total_thickness=True,
+                    )
+                elif 'smooth' in self.correct_curvature:
+                    smooth_disc_radius = int(self.correct_curvature.split('-')[1])
+                    self._input_data = datasets.load_laminar_thickness(
+                        exc_masks=exc_masks,
+                        regress_out_curvature=False,
+                        normalize_by_total_thickness=True,
+                        smooth_disc_radius=smooth_disc_radius
+                    )
+                    # note that in this case the input data is in ico5 space
+                    # which may lead to some missing parcels in e.g. sjh
+                    # TODO: make sure this will not cause any problems
+                elif self.correct_curvature == 'volume':
+                    self._input_data = datasets.load_laminar_volume(
+                        exc_masks=exc_masks,
+                    )
+                elif self.correct_curvature == 'regress':
+                    self._input_data = datasets.load_laminar_thickness(
+                        exc_masks=exc_masks,
+                        regress_out_curvature=True,
+                        normalize_by_total_thickness=True,
+                    )
         elif self.input_type == 'density':
-            input_data = datasets.load_total_depth_density(
+            self._input_data = datasets.load_total_depth_density(
                 exc_masks=exc_masks
             )
         # downsample the data if it's not already downsampled
         # (for homogeneity of different types of matrices)
-        if input_data['L'].shape[0] == datasets.N_VERTICES_HEM_BB:
-            input_data = helpers.downsample(input_data)
-        return input_data
+        if self.dataset == 'bigbrain':
+            if self._input_data['L'].shape[0] == datasets.N_VERTICES_HEM_BB:
+                self._input_data = helpers.downsample(self._input_data)
 
 
     def _create_at_parcels(self, transform=True):
@@ -877,53 +985,70 @@ class MicrostructuralCovarianceMatrix(Matrix):
         matrix: (np.ndarray) n_parcels x n_parcels: how similar are each pair of parcels in their
                 microstructure (laminar thickness or density profiles)
         """
-        print("Concatenating and parcellating the data")
-        self._parcellated_input_data = helpers.parcellate(
-            self._input_data,
-            self.parcellation_name,
-            averaging_method='median' # TODO: try mean
-            )
-        # concatenate left and right hemispheres
-        self._concat_parcellated_input_data = helpers.concat_hemispheres(self._parcellated_input_data, dropna=True)
-        # get only the valid parcels outside of exc_regions or midline
-        valid_parcels = helpers.get_valid_parcels(self.parcellation_name, self.exc_regions, downsampled=True)
-        self._concat_parcellated_input_data = self._concat_parcellated_input_data.loc[valid_parcels]
-        # renormalize the parcellated relative laminar thickness
-        if self.input_type == 'thickness':
-            self._concat_parcellated_input_data = \
-                self._concat_parcellated_input_data.divide(
-                    self._concat_parcellated_input_data.sum(axis=1), 
-                    axis=0
+        if self.dataset == 'bigbrain':
+            concat_input_data = np.concatenate([self._input_data['L'], self._input_data['R']], axis=0)
+            if self.parcellation_name is not None:
+                # concatenate and parcellate
+                self._parcellated_input_data = helpers.parcellate(
+                    concat_input_data,
+                    self.parcellation_name,
+                    averaging_method='median'
                     )
-        print(f"Creating similarity matrix by {self.similarity_metric} at parcel scale")
-        #> Calculate parcel-wise similarity matrix
+                # renormalize the parcellated relative laminar thickness
+                if self.input_type == 'thickness':
+                    self._parcellated_input_data = \
+                        self._parcellated_input_data.divide(
+                            self._parcellated_input_data.sum(axis=1), 
+                            axis=0
+                            )
+            else:
+                # for consistency of unparcellated matrix object
+                # with parcellated ones convert input data to a
+                # dataframe and call it _parcellated_input_data
+                self._parcellated_input_data = pd.DataFrame(concat_input_data)
+        if self.parcellation_name is not None:
+            # get only the valid parcels outside of exc_regions or midline
+            # which also exist in self._parcellated_input_data (the latter
+            # only matters if dataset is economo because some parcels are
+            # missing in economo data)
+            valid_parcels = helpers.get_valid_parcels(
+                self.parcellation_name, 
+                self.exc_regions, 
+                downsampled=True).intersection(self._parcellated_input_data.index)
+        else:
+            # get non-NA vertices
+            valid_parcels = self._parcellated_input_data[
+                ~(self._parcellated_input_data.isna().any(axis=1))
+            ].index
+        self._parcellated_input_data = self._parcellated_input_data.loc[valid_parcels]
+        # Calculate parcel-wise similarity matrix
         if self.similarity_metric in ['parcor', 'pearson']:
             if self.similarity_metric == 'parcor':
-                #> calculate partial correlation
-                r_ij = np.corrcoef(self._concat_parcellated_input_data)
-                mean_input_data = self._concat_parcellated_input_data.mean()
-                r_ic = self._concat_parcellated_input_data\
-                            .corrwith(mean_input_data, 
-                            axis=1) # r_ic and r_jc are the same
+                # calculate partial correlation
+                r_ij = np.corrcoef(self._parcellated_input_data)
+                mean_input_data = self._parcellated_input_data.mean()
+                r_ic = np.corrcoef(
+                    self._parcellated_input_data.values, 
+                    mean_input_data.values[np.newaxis, :])[-1, :-1] # r_ic and r_jc are the same
                 r_icjc = np.outer(r_ic, r_ic) # the second r_ic is actually r_jc
                 matrix = (r_ij - r_icjc) / np.sqrt(np.outer((1-r_ic**2),(1-r_ic**2)))
             else:
-                matrix = np.corrcoef(self._concat_parcellated_input_data.values)
+                matrix = np.corrcoef(self._parcellated_input_data.values)
             if transform:
-                #> zero out negative correlations
+                # zero out negative correlations
                 if self.zero_out_negative:
                     matrix[matrix<0] = 0
-                #> zero out correlations of 1 (to avoid division by 0)
+                # zero out correlations of 1 (to avoid division by 0)
                 matrix[np.isclose(matrix, 1)] = 0
-                #> Fisher's z-transformation
+                # Fisher's z-transformation
                 matrix = 0.5 * np.log((1 + matrix) /  (1 - matrix))
-                #> zero out NaNs and inf
+                # zero out NaNs and inf
                 matrix[np.isnan(matrix) | np.isinf(matrix)] = 0
         elif self.similarity_metric == 'euclidean':
-            #> calculate pair-wise euclidean distance
-            matrix = sk.metrics.pairwise.euclidean_distances(self._concat_parcellated_input_data.values)
+            # calculate pair-wise euclidean distance
+            matrix = sk.metrics.pairwise.euclidean_distances(self._parcellated_input_data.values)
             if transform:
-                #> make it negative (so higher = more similar) and rescale to range (0, 1)
+                # make it negative (so higher = more similar) and rescale to range (0, 1)
                 matrix = sk.preprocessing.minmax_scale(-matrix, (0, 1))
         # label the matrix
         matrix = pd.DataFrame(
@@ -950,42 +1075,42 @@ class MicrostructuralCovarianceMatrix(Matrix):
         # consider removing it
         if self.similarity_metric != 'euclidean':
             raise NotImplementedError("Correlation at vertex level is not implemented")
-        #> Concatenate and parcellate the data
-        print("Concatenating and parcellating the data")
+        # Concatenate and parcellate the data
+        logging.info("Concatenating and parcellating the data")
         concat_input_data = np.concatenate([self._input_data['L'], self._input_data['R']], axis=0)
-        self._concat_parcellated_input_data = helpers.parcellate(
+        self._parcellated_input_data = helpers.parcellate(
             concat_input_data,
             self.parcellation_name,
             averaging_method=None
             ) # a groupby object
-        n_parcels = len(self._concat_parcellated_input_data)
-        #> Calculating similarity matrix
-        print(f"Creating similarity matrix by {self.similarity_metric} at vertex scale")
+        n_parcels = len(self._parcellated_input_data)
+        # Calculating similarity matrix
+        logging.info(f"Creating similarity matrix by {self.similarity_metric} at vertex scale")
         matrix = pd.DataFrame(
             np.zeros((n_parcels, n_parcels)),
-            columns = self._concat_parcellated_input_data.groups.keys(),
-            index = self._concat_parcellated_input_data.groups.keys()
+            columns = self._parcellated_input_data.groups.keys(),
+            index = self._parcellated_input_data.groups.keys()
         )
         invalid_parcs = []
-        for parc_i, vertices_i in self._concat_parcellated_input_data.groups.items():
-            print("\tParcel", parc_i) # printing parcel_i name since it'll take a long time per parcel
+        for parc_i, vertices_i in self._parcellated_input_data.groups.items():
+            logging.info("\tParcel", parc_i) # printing parcel_i name since it'll take a long time per parcel
             input_data_i = concat_input_data[vertices_i,:]
             input_data_i = input_data_i[~np.isnan(input_data_i).any(axis=1)]
             if input_data_i.shape[0] == 0: # sometimes all values may be NaN
                 matrix.loc[parc_i, :] = np.NaN
                 invalid_parcs.append(parc_i)
                 continue
-            for parc_j, vertices_j in self._concat_parcellated_input_data.groups.items():
+            for parc_j, vertices_j in self._parcellated_input_data.groups.items():
                 input_data_j = concat_input_data[vertices_j,:]
                 input_data_j = input_data_j[~np.isnan(input_data_j).any(axis=1)]
                 if input_data_i.shape[0] == 0:
                     matrix.loc[parc_i, :] = np.NaN
                 else:
                     matrix.loc[parc_i, parc_j] = sk.metrics.pairwise.euclidean_distances(input_data_i, input_data_j).mean()
-        #> make ED values negative (so higher = more similar) and rescale to range (0, 1)
+        # make ED values negative (so higher = more similar) and rescale to range (0, 1)
         matrix = sk.preprocessing.minmax_scale(-matrix, (0, 1))
-        #> store the valid parcels
-        valid_parcels = sorted(list(set(self._concat_parcellated_input_data.groups.keys())-set(invalid_parcs)))
+        # store the valid parcels
+        valid_parcels = sorted(list(set(self._parcellated_input_data.groups.keys())-set(invalid_parcs)))
         matrix = pd.DataFrame(
             matrix, 
             index=valid_parcels,
@@ -1013,10 +1138,10 @@ class MicrostructuralCovarianceMatrix(Matrix):
         """
         rank_normalized_matrices = []
         for idx, matrix in enumerate(matrices):
-            #> rank normalize (and flatten) the matrix
+            # rank normalize (and flatten) the matrix
             rank_normalized_matrix_flat = scipy.stats.rankdata(matrix.values)
             if idx > 0:
-                #> rescale it by the first matrix
+                # rescale it by the first matrix
                 rank_normalized_matrix_flat = np.interp(
                     rank_normalized_matrix_flat,
                     (rank_normalized_matrix_flat.min(), rank_normalized_matrix_flat.max()),
@@ -1025,9 +1150,9 @@ class MicrostructuralCovarianceMatrix(Matrix):
             rank_normalized_matrices.append(
                 rank_normalized_matrix_flat.reshape(matrix.shape)
                 )
-        #> fuse the matrices horizontally
+        # fuse the matrices horizontally
         fused_matrix = np.hstack(rank_normalized_matrices)
-        #> rescale to 0-1 (which also zeros out originally zero values)
+        # rescale to 0-1 (which also zeros out originally zero values)
         fused_matrix = np.interp(
             fused_matrix.flatten(),
             (fused_matrix.flatten().min(), fused_matrix.flatten().max()), # from
@@ -1067,15 +1192,18 @@ class MicrostructuralCovarianceMatrix(Matrix):
             'density': 'mpc'
         }
         main_dir = MAIN_DIRS[self.input_type]
-        sub_dir = f'parc-{self.parcellation_name}'
-        if self.input_type != 'density':
+        sub_dir = self.dataset
+        if self.dataset == 'bigbrain':
+            sub_dir += f'_parc-{self.parcellation_name}'
+        if (self.input_type != 'density') & (self.dataset == 'bigbrain'):
             sub_dir += f'_curv-{str(self.correct_curvature).lower()}'
         if self.exc_regions:
             sub_dir += f'_exc-{self.exc_regions}'
         if self.zero_out_negative:
             sub_dir += f'_zero_negs'
-        sub_dir += f'_metric-{self.similarity_metric}'\
-            + f'_scale-{self.similarity_scale}'
+        sub_dir += f'_metric-{self.similarity_metric}'
+        if self.dataset == 'bigbrain':
+            sub_dir += f'_scale-{self.similarity_scale}'
         return os.path.join(OUTPUT_DIR, main_dir, sub_dir)
 
     def create_or_load_surrogates(self, n=1000, itr=1):
@@ -1098,15 +1226,15 @@ class MicrostructuralCovarianceMatrix(Matrix):
         if not hasattr(self, '_input_data'):
             # this is the case if the matrix is loaded from the
             # one created before
-            self._input_data = self._load_input_data()
+            self._load_input_data()
         # get the non-transformed matrix as the randomization
         # algorithm seems not to be suitable for highly skewed
         # matrix with no negative weights
         orig_matrix = self._create_at_parcels(transform=False)
         surrogate_matrices = np.zeros((n, *orig_matrix.shape))
-        print("Creating surrogate matrices")
+        logging.info("Creating surrogate matrices")
         for idx in range(n):
-            print(idx)
+            logging.info(idx)
             # get the surrogate
             matrix, _ = bct.randmio_und_signed(orig_matrix.values, itr)
             # do the transformations
@@ -1134,25 +1262,26 @@ class MicrostructuralCovarianceMatrix(Matrix):
             - bigbrain: layer colors on BigBrain web viewer
             - wagstyl: layer colors on Wagstyl 2020 paper
         """
-        if not hasattr(self, '_concat_parcellated_input_data'):
+        if not hasattr(self, '_parcellated_input_data'):
             # this is the case if the matrix is loaded from the
             # one created before
-            self._input_data = self._load_input_data()
-            concat_input_data = np.concatenate([self._input_data['L'], self._input_data['R']], axis=0)
-            self._concat_parcellated_input_data = helpers.parcellate(
-                concat_input_data,
-                self.parcellation_name,
-                averaging_method='median'
-                )
+            self._load_input_data()
+            if self.dataset == 'bigbrain':
+                concat_input_data = np.concatenate([self._input_data['L'], self._input_data['R']], axis=0)
+                self._parcellated_input_data = helpers.parcellate(
+                    concat_input_data,
+                    self.parcellation_name,
+                    averaging_method='median'
+                    )
         # remove NaNs and reindex
-        concat_parcellated_input_data = self._concat_parcellated_input_data.dropna().reset_index(drop=True)
+        concat_parcellated_input_data = self._parcellated_input_data.dropna().reset_index(drop=True)
         fig, ax = plt.subplots(figsize=(100, 20))
         if self.input_type == 'thickness':
             concat_parcellated_input_data = concat_parcellated_input_data.divide(
                 concat_parcellated_input_data.sum(axis=1),
                 axis=0
                 )
-            #> plot the relative thickness of layers 6 to 1
+            # plot the relative thickness of layers 6 to 1
             colors = datasets.LAYERS_COLORS[palette]
             ax.bar(
                 x = concat_parcellated_input_data.index,
@@ -1169,7 +1298,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
                     color=colors[col_idx]
                     )
         elif self.input_type == 'density':
-            profiles = self._concat_parcellated_input_data.dropna().reset_index(drop=True)
+            profiles = self._parcellated_input_data.dropna().reset_index(drop=True)
             profiles = profiles / profiles.values.max()
             img_data = ((profiles.values.T) * 255).astype('uint8')
             img = PIL.Image.fromarray(img_data , 'L').resize((1000, 400))
@@ -1197,8 +1326,8 @@ class CorticalTypeSimilarityMatrix(Matrix):
             f'similarity_parc-{self.parcellation_name}'\
             + (f'_exc-{self.exc_regions}' if self.exc_regions else '')
             )
-        self.file_path = os.path.join(self.dir_path, 'matrix.csv')
-        if os.path.exists(self.file_path):
+        self.file_path = os.path.join(self.dir_path, 'matrix')
+        if os.path.exists(self.file_path + '.npz'):
             self._load()
         else:
             os.makedirs(self.dir_path, exist_ok=True)
@@ -1212,15 +1341,15 @@ class CorticalTypeSimilarityMatrix(Matrix):
         """
         Create cortical type similarity matrix
         """
-        #> load cortical types per parcel
+        # load cortical types per parcel
         parcellated_cortical_types = datasets.load_cortical_types(self.parcellation_name)
         parcellated_cortical_types = parcellated_cortical_types.dropna()
-        #> get the magnitude of difference between the cortical types
+        # get the magnitude of difference between the cortical types
         ctype_diff = np.abs(
             parcellated_cortical_types.cat.codes.values[:, np.newaxis] \
             - parcellated_cortical_types.cat.codes.values[np.newaxis, :]
             )
-        #> reverse it to make it a similarity matrix in the range of (1, 7)
+        # reverse it to make it a similarity matrix in the range of (1, 7)
         ctype_similarity = 7 - ctype_diff
         self.matrix = pd.DataFrame(
             ctype_similarity,
@@ -1264,8 +1393,8 @@ class DiseaseCovarianceMatrix(Matrix):
             + (f'_exc-{self.exc_regions}' if self.exc_regions else '')\
             + ('_psych_only' if self.psych_only else '')
             )
-        self.file_path = os.path.join(self.dir_path, 'matrix.csv')
-        if os.path.exists(self.file_path):
+        self.file_path = os.path.join(self.dir_path, 'matrix')
+        if os.path.exists(self.file_path + '.npz'):
             self._load()
         else:
             os.makedirs(self.dir_path, exist_ok=True)
@@ -1282,9 +1411,9 @@ class DiseaseCovarianceMatrix(Matrix):
         vectors of cortical thickness Cohen's d in each disorder between
         pairs of parcels
         """
-        #> load the original data from ENIGMA toolbox
+        # load the original data from ENIGMA toolbox
         aparc_disease_maps = datasets.load_disease_maps(self.psych_only)
-        #> reparcellated data to target parcellation
+        # reparcellated data to target parcellation
         # Note: doing this also with 'aparc' as the target parcellation
         # so the order of parcels is the same across all different types of
         # matrices
@@ -1292,25 +1421,25 @@ class DiseaseCovarianceMatrix(Matrix):
         self._parcellated_input_data = helpers.parcellate(
             self._input_data, self.parcellation_name,
             averaging_method='mean')
-        #> calculate the correlation
+        # calculate the correlation
         matrix = np.corrcoef(self._parcellated_input_data.values)
-        #> zero out correlations of 1 (to avoid division by 0)
+        # zero out correlations of 1 (to avoid division by 0)
         # Note: not zeroing out negative values in line with
         # the original paper
         # Note 2: in the original paper no Z-transformation
         # was performed
         matrix[np.isclose(matrix, 1)] = 0
-        #> Fisher's z-transformation
+        # Fisher's z-transformation
         matrix = 0.5 * np.log((1 + matrix) /  (1 - matrix))
-        #> zero out NaNs and inf
+        # zero out NaNs and inf
         matrix[np.isnan(matrix) | np.isinf(matrix)] = 0
-        #> convert to df
+        # convert to df
         matrix = pd.DataFrame(
             matrix, 
             index=self._parcellated_input_data.index,
             columns=self._parcellated_input_data.index
             )
-        #> remove midline parcels in the case of exc_regions=None
+        # remove midline parcels in the case of exc_regions=None
         # they will cause problems for gradients because
         # all cells in their rows is zero
         midline = matrix.index.isin(helpers.MIDLINE_PARCELS[self.parcellation_name])
@@ -1324,7 +1453,8 @@ class NeuronalSubtypesCovarianceMatrix(Matrix):
     brain regions using AHBA data and based on gene lists
     from Lake 2016 (https://doi.org/10.1126/science.aaf1204)
     """
-    def __init__(self, neuron_type, parcellation_name, exc_regions=None, discard_rh=True):
+    def __init__(self, neuron_type, parcellation_name, exc_regions=None, 
+                 discard_rh=True, zero_out_negative=False):
         """
         Creates/loads the matrix
 
@@ -1340,11 +1470,13 @@ class NeuronalSubtypesCovarianceMatrix(Matrix):
             Note: For consistency with other functions the right
             hemisphere vertices/parcels are not removed but are set
             to NaN
+        zero_out_negative: (bool)
         """
         self.neuron_type = neuron_type
         self.parcellation_name = parcellation_name
         self.exc_regions = exc_regions
         self.discard_rh = discard_rh
+        self.zero_out_negative = zero_out_negative
         LABELS = {
             'exc': 'Excitatory neuron subtypes gene expression covariance',
             'inh': 'Inhibitory neuron subtypes gene expression covariance',
@@ -1357,12 +1489,18 @@ class NeuronalSubtypesCovarianceMatrix(Matrix):
         self.short_label = SHORT_LABELS.get(self.neuron_type)
         self.dir_path = os.path.join(
             OUTPUT_DIR, 'ei', 'gene_expression',
-            f'{neuron_type}_subtypes_covariance'\
-            + f'_parc-{self.parcellation_name}'\
+            (f'{neuron_type}_subtypes_covariance'
+            + f'_parc-{self.parcellation_name}'
             + ('_rh_discarded' if discard_rh else '')
+            + ('_zero_negs' if self.zero_out_negative else ''))
             )
-        self.file_path = os.path.join(self.dir_path, 'matrix.csv')
-        if os.path.exists(self.file_path):
+        self.file_path = os.path.join(self.dir_path, 'matrix')
+        CMAPS = {
+            'exc': 'YlOrRd',
+            'inh': 'YlGnBu'
+        }
+        self.cmap = CMAPS[self.neuron_type]
+        if os.path.exists(self.file_path + '.npz'):
             self._load()
         else:
             os.makedirs(self.dir_path, exist_ok=True)
@@ -1383,17 +1521,18 @@ class NeuronalSubtypesCovarianceMatrix(Matrix):
         -------
         matrix: (pd.DataFrame) n_parc x n_parc 
         """
-        #> load mean gene expression of each parcel-subtype
+        # load mean gene expression of each parcel-subtype
         self._parcellated_input_data = self._load_input_data()
-        #> create matrix of correlations
+        # create matrix of correlations
         matrix = np.corrcoef(self._parcellated_input_data.values)
-        #> zero out negative correlations
-        matrix[matrix<0] = 0
-        #> zero out correlations of 1 (to avoid division by 0)
+        if self.zero_out_negative:
+            # zero out negative correlations
+            matrix[matrix<0] = 0
+        # zero out correlations of 1 (to avoid division by 0)
         matrix[np.isclose(matrix, 1)] = 0
-        #> Fisher's z-transformation
+        # Fisher's z-transformation
         matrix = 0.5 * np.log((1 + matrix) /  (1 - matrix))
-        #> zero out NaNs and inf
+        # zero out NaNs and inf
         matrix[np.isnan(matrix) | np.isinf(matrix)] = 0
         matrix = pd.DataFrame(
             matrix, 
@@ -1418,9 +1557,8 @@ class NeuronalSubtypesCovarianceMatrix(Matrix):
             ), delimiter=";", decimal=",").dropna()
         subtypes_expression = pd.DataFrame()
         for subtype, subtype_df in subtypes_genes.groupby('cluster'):
-            print(subtype)
+            logging.info(subtype)
             subtype_genes = subtype_df.set_index('Gene').loc[:, subtype]
-            print(subtype_genes)
             subtypes_expression.loc[:, subtype] = datasets.fetch_aggregate_gene_expression(
                 subtype_genes,
                 parcellation_name = self.parcellation_name, 
@@ -1429,3 +1567,25 @@ class NeuronalSubtypesCovarianceMatrix(Matrix):
                 )
         subtypes_expression = subtypes_expression.dropna()
         return subtypes_expression
+
+    def get_surface(self):
+        """
+        Gets the ContCorticalSurface object of subtypes expression
+        maps
+        """
+        if not hasattr(self, '_parcellated_input_data'):
+            self._parcellated_input_data = self._load_input_data()
+        surf_data = helpers.deparcellate(
+            self._parcellated_input_data, self.parcellation_name
+            )
+        CMAPS = {
+            'exc': 'YlOrRd',
+            'inh': 'YlGnBu'
+        }
+        return surfaces.ContCorticalSurface(
+            surf_data,
+            columns = self._parcellated_input_data.columns,
+            label = self.label.replace(' covariance', ''),
+            dir_path = os.path.join(self.dir_path, 'input_maps'),
+            cmap = self.cmap,
+        )
