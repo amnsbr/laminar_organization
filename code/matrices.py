@@ -75,7 +75,7 @@ class Matrix:
         logging.info(f"Loading the matrix from {self.file_path}.npz")
         npz = np.load(self.file_path+'.npz', allow_pickle=True)
         parcels = npz['parcels']
-        matrix = npz['matrix']
+        matrix = npz['matrix'].astype('float64') # many functions have problems with float16
         n_sq_matrix = matrix.shape[1] // matrix.shape[0]
         if make_symmetric:
             matrices = []
@@ -97,7 +97,7 @@ class Matrix:
         as in that case the adysgranular regions are removed from the input data (this 
         is important when using partial correlation)
 
-        exc_mask_type: (str)
+        exc_regions: (str)
             - allocortex: excludes allocortex
             - adysgranular: excludes allocortex + adysgranular regions
         """
@@ -133,8 +133,6 @@ class Matrix:
             - spearman
         plot_half_matrices: (bool) plot upper/lower half of each matrix for using in the paper
         """
-        # TODO: maybe move this to MicrostructuralCovarianceMatrix
-        # TODO: add the option of correlating non-transformed matrices
         # make sure they have the same parcellation and mask
         assert self.parcellation_name == other.parcellation_name
         # match the matrices in the order and selection of parcels
@@ -142,12 +140,10 @@ class Matrix:
         shared_parcels = self.matrix.index.intersection(other.matrix.index)
         X = self.matrix.loc[shared_parcels, shared_parcels]
         Y = other.matrix.loc[shared_parcels, shared_parcels]
-        # # make NaNs zero so NaN can be assigned to L-R edges
-        # X[np.isnan(X)] = 0 # TODO: make sure this is okay for all the matrices
-        # Y[np.isnan(Y)] = 0
         # if L and R should be investigated separately
         # make interhemispheric pairs of the lower triangle
         # NaN so it could be then removed
+        # it may be already NaN in these matrices
         if self.split_hem or other.split_hem:
             hem_parcels = helpers.get_hem_parcels(
                 self.parcellation_name, 
@@ -155,15 +151,17 @@ class Matrix:
                 )
             X.loc[hem_parcels['R'], hem_parcels['L']] = np.NaN
             Y.loc[hem_parcels['R'], hem_parcels['L']] = np.NaN
+            X.loc[hem_parcels['L'], hem_parcels['R']] = np.NaN
+            Y.loc[hem_parcels['L'], hem_parcels['R']] = np.NaN
         # get the index for lower triangle
         tril_index = np.tril_indices_from(X.values, -1)
         x = X.values[tril_index]
         y = Y.values[tril_index]
         # remove NaNs (e.g. interhemispheric pairs) and 0s
-        # as the Y matrix is often zeroed out and 0
+        # as when Y matrix is zeroed out 0
         # has lost its meaning and there's a lot of zeros which
         # have been actually the negative values
-        mask = ~((x==0) | np.isnan(x) | (y==0) | np.isnan(y)) 
+        mask = ~((x==0) | np.isnan(x) | (y==0) | np.isnan(y))
         x = x[mask]
         y = y[mask]
         # correlation
@@ -173,18 +171,16 @@ class Matrix:
             coef, p_val = scipy.stats.spearmanr(x, y)
         res_str = f"{test.title()} correlation with {other.label}\nCoef: {coef}; Parametric p-value: {p_val}"
         # TODO: calculate p-value non-parametrically?
-        # TODO: regress out GD in some cases
         out_path = os.path.join(self.dir_path, f'correlation_{other.label.lower().replace(" ", "_")}')
         with open(out_path+'.txt', 'w') as res_file:
             res_file.write(res_str)
         # plotting
+        # TODO: plot it as scatter plot
         jp = sns.jointplot(
             x = x, y = y, kind = "hex", 
             color = "grey", height = 4,
             marginal_kws = {'bins':35}, 
             joint_kws = {'gridsize':35},
-            # xlim = (np.quantile(X[tril_index], 0.025), np.quantile(X[tril_index], 0.975)),
-            # ylim = (np.quantile(Y[tril_index], 0.025), np.quantile(Y[tril_index], 0.975)),
         )
         ax = jp.ax_joint
         sns.regplot(
@@ -192,6 +188,8 @@ class Matrix:
             ax=ax, ci=None, scatter=False, 
             color='red', line_kws=dict(alpha=0.6)
             )
+        ax.set_xlim((np.quantile(x, 0.025), np.quantile(x, 0.975)))
+        ax.set_ylim((np.quantile(y, 0.025), np.quantile(y, 0.975))),
         # add rho on the figure
         text_x = ax.get_xlim()[0]+(ax.get_xlim()[1]-ax.get_xlim()[0])*0.05
         text_y = ax.get_ylim()[0]+(ax.get_ylim()[1]-ax.get_ylim()[0])*0.95
@@ -208,9 +206,10 @@ class Matrix:
         jp.fig.savefig(out_path+'.png', dpi=192)
         if plot_half_matrices:
             # plotting half-half matrix
-            uhalf_X = X.copy().values
+            X, Y = self._get_x_y(other, return_matrix=True)
+            uhalf_X = X.values
             uhalf_X[np.tril_indices_from(X, 0)] = np.NaN
-            lhalf_Y = Y.copy().values
+            lhalf_Y = Y.values
             lhalf_Y[np.triu_indices_from(Y, 0)] = np.NaN
             helpers.plot_matrix(
                 uhalf_X, 
@@ -253,6 +252,7 @@ class Matrix:
         # if L and R should be investigated separately
         # make interhemispheric pairs of the lower triangle
         # NaN so it could be then removed
+        # it may be already NaN in these matrices
         if self.split_hem or other.split_hem:
             hem_parcels = helpers.get_hem_parcels(
                 self.parcellation_name, 
@@ -260,6 +260,8 @@ class Matrix:
                 )
             X.loc[hem_parcels['R'], hem_parcels['L']] = np.NaN
             Y.loc[hem_parcels['R'], hem_parcels['L']] = np.NaN
+            X.loc[hem_parcels['L'], hem_parcels['R']] = np.NaN
+            Y.loc[hem_parcels['L'], hem_parcels['R']] = np.NaN
         X = X.values
         Y = Y.values
         # calculate the correlation at each row (node)
@@ -677,6 +679,84 @@ class DistanceMatrix(Matrix):
         ED_matrix = pd.DataFrame(ED_matrix, columns=parcels, index=parcels)
         return ED_matrix
 
+    def regress_out(self, other):
+        """
+        Regresses out GD matrix from another matrix (e.g. LTC)
+        using a 2nd degree polynomial regression
+        """
+        # make sure they have the same parcellation and mask
+        assert self.parcellation_name == other.parcellation_name
+        # match the matrices in the order and selection of parcels
+        # + convert them to np.ndarray
+        shared_parcels = self.matrix.index.intersection(other.matrix.index)
+        GD = self.matrix.loc[shared_parcels, shared_parcels]
+        Y = other.matrix.loc[shared_parcels, shared_parcels]
+        # if L and R should be investigated separately
+        # make interhemispheric pairs of the lower triangle
+        # NaN so it could be then removed
+        # it may be already NaN in these matrices
+        if self.split_hem or other.split_hem:
+            hem_parcels = helpers.get_hem_parcels(
+                self.parcellation_name, 
+                limit_to_parcels=shared_parcels.tolist()
+                )
+            GD.loc[hem_parcels['R'], hem_parcels['L']] = np.NaN
+            Y.loc[hem_parcels['R'], hem_parcels['L']] = np.NaN
+            GD.loc[hem_parcels['L'], hem_parcels['R']] = np.NaN
+            Y.loc[hem_parcels['L'], hem_parcels['R']] = np.NaN
+        # get the index for lower triangle
+        tril_index = np.tril_indices_from(GD.values, -1)
+        gd = GD.values[tril_index]
+        y = Y.values[tril_index]
+        # remove NaNs (e.g. interhemispheric pairs) and 0s
+        # as when Y matrix is zeroed out 0
+        # has lost its meaning and there's a lot of zeros which
+        # have been actually the negative values
+        mask = ~((gd==0) | np.isnan(gd) | (y==0) | np.isnan(y))
+        mask_idx = np.arange(mask.shape[0])[mask]
+        gd = gd[mask]
+        y = y[mask]
+        # the polynomial fit
+        coefs = np.polyfit(gd, y, deg=2)
+        # get the reisd
+        y_hat = coefs[2] + coefs[1]*gd + coefs[0]*gd**2
+        y_resid = y - y_hat
+        # calculate R2
+        r2 = 1 - (y_resid.var() / y.var())
+        # plot the polynomial fit
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax = sns.scatterplot(gd, y, s=1, alpha=0.2, color='grey')
+        line_x = np.linspace(0, gd.max(), 500)
+        line_y = coefs[2] + coefs[1]*line_x + coefs[0]*line_x**2
+        ax.plot(line_x, line_y, color='red')
+        ax.set_xlabel('Geodesic distance')
+        ax.set_ylabel(other.label)
+        ax.text(
+            ax.get_xlim()[0]+(ax.get_xlim()[1]-ax.get_xlim()[0])*0.05,
+            ax.get_ylim()[0]+(ax.get_ylim()[1]-ax.get_ylim()[0])*0.1,
+            f'R2 = {r2:.2f}',
+            color='black', size=12,
+            multialignment='left')
+        fig.tight_layout()
+        fig.savefig(other.file_path+'_gd_regression')
+        # convert it back to the matrix
+        lhalf_matrix = np.zeros_like(tril_index[0]).astype('float64')
+        lhalf_matrix[mask_idx] = y_resid
+        Y_RES = np.zeros_like(Y)
+        Y_RES[tril_index] = lhalf_matrix
+        Y_RES = Y_RES.T
+        Y_RES[tril_index] = lhalf_matrix
+        Y_RES[np.diag_indices_from(Y_RES)] = np.diag(Y)
+        # label the matrix
+        Y_RES = pd.DataFrame(
+            Y_RES, index=shared_parcels, columns=shared_parcels
+        )
+        # set interhemispheric edges to NaN
+        Y_RES.loc[hem_parcels['R'], hem_parcels['L']] = np.NaN
+        Y_RES.loc[hem_parcels['L'], hem_parcels['R']] = np.NaN
+        return Y_RES
+
+
 class ConnectivityMatrix(Matrix):
     """
     Structural or functional connectivity matrix
@@ -813,6 +893,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
     """
     def __init__(self, input_type, parcellation_name='sjh', 
                  exc_regions='adysgranular', correct_curvature='smooth-10', 
+                 regress_out_geodesic_distance = False,
                  similarity_metric='parcor', similarity_scale='parcel',
                  dataset='bigbrain', zero_out_negative=False, create_plots=True):
         """
@@ -835,6 +916,9 @@ class MicrostructuralCovarianceMatrix(Matrix):
             of each layer (separately) using a linear regression. This is a more lenient approach of 
             controlling for curvature.
             - None
+        regress_out_geodesic_distance: (bool)
+            uses a polynomial of degree 2 to regress out geodesic distance from the matrix
+            Note that this will make interhemispheric edges NaN
         similarity_metric: (str) how is similarity of laminar structure between two parcels determined
             - 'parcor': partial correlation with mean thickness pattern as covariate
             - 'euclidean': euclidean distance inverted and normalize to 0-1
@@ -852,6 +936,9 @@ class MicrostructuralCovarianceMatrix(Matrix):
         # save parameters as class fields
         self.input_type = input_type
         self.correct_curvature = correct_curvature
+        self.regress_out_geodesic_distance = regress_out_geodesic_distance
+        if self.regress_out_geodesic_distance:
+            self.split_hem = True
         self.similarity_metric = similarity_metric
         self.similarity_scale = similarity_scale
         self.parcellation_name = parcellation_name
@@ -873,6 +960,8 @@ class MicrostructuralCovarianceMatrix(Matrix):
             'thickness-density': 'Laminar thickness and microstructural profile covariance'
         }
         self.label = LABELS[self.input_type]
+        if self.regress_out_geodesic_distance:
+            self.label += ' (regressed out GD)'
         self.short_label = SHORT_LABELS[self.input_type]
         # set cmap
         if self.input_type == 'density':
@@ -895,7 +984,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
         """
         Creates microstructural covariance matrix
         """
-        logging.info(f"""
+        print(f"""
         Creating microstructural covariance matrix:
             - input_type: {self.input_type},
             - correct_curvature: {self.correct_curvature}
@@ -908,12 +997,14 @@ class MicrostructuralCovarianceMatrix(Matrix):
                 # create matrix_obj for each input_type
                 # by calling the same class
                 matrix_obj = MicrostructuralCovarianceMatrix(
-                    input_type = input_type,
+                    input_type=input_type,
+                    parcellation_name=self.parcellation_name,
+                    exc_regions=self.exc_regions,
                     correct_curvature=self.correct_curvature,
+                    regress_out_geodesic_distance=self.regress_out_geodesic_distance,
                     similarity_metric=self.similarity_metric,
                     similarity_scale=self.similarity_scale,
-                    exc_regions=self.exc_regions,
-                    parcellation_name=self.parcellation_name
+                    zero_out_negative=self.zero_out_negative,
                 )
                 matrices.append(matrix_obj.matrix)
                 #TODO: it is unlikely but maybe valid parcels are different for each modality
@@ -927,16 +1018,18 @@ class MicrostructuralCovarianceMatrix(Matrix):
                 self.matrix = self._create_at_parcels()
             else:
                 self.matrix = self._create_at_vertices()
+            if self.regress_out_geodesic_distance:
+                GD = DistanceMatrix(
+                    self.parcellation_name,
+                    kind = 'geodesic',
+                    exc_regions = self.exc_regions
+                    )
+                self.matrix = GD.regress_out(self)
 
     def _load_input_data(self):
         """
         Load input data
         """
-        # load exclusion masks for a-/dysgranular regions if needed
-        if self.exc_regions:
-            exc_masks = datasets.load_exc_masks(self.exc_regions)
-        else:
-            raise NotImplementedError
         # load the data
         if self.input_type == 'thickness':
             if self.dataset == 'economo':
@@ -946,14 +1039,14 @@ class MicrostructuralCovarianceMatrix(Matrix):
             else:
                 if self.correct_curvature is None:
                     self._input_data = datasets.load_laminar_thickness(
-                        exc_masks=exc_masks,
+                        exc_regions=self.exc_regions,
                         regress_out_curvature=False,
                         normalize_by_total_thickness=True,
                     )
                 elif 'smooth' in self.correct_curvature:
                     smooth_disc_radius = int(self.correct_curvature.split('-')[1])
                     self._input_data = datasets.load_laminar_thickness(
-                        exc_masks=exc_masks,
+                        exc_regions=self.exc_regions,
                         regress_out_curvature=False,
                         normalize_by_total_thickness=True,
                         smooth_disc_radius=smooth_disc_radius
@@ -962,18 +1055,21 @@ class MicrostructuralCovarianceMatrix(Matrix):
                     # which may lead to some missing parcels in e.g. sjh
                     # TODO: make sure this will not cause any problems
                 elif self.correct_curvature == 'volume':
+                    # Note: later turned out that this does not 
+                    # correct for curvature properly, but I'm keeping
+                    # it for now for backward compatibility
                     self._input_data = datasets.load_laminar_volume(
-                        exc_masks=exc_masks,
+                        exc_regions=self.exc_regions,
                     )
                 elif self.correct_curvature == 'regress':
                     self._input_data = datasets.load_laminar_thickness(
-                        exc_masks=exc_masks,
+                        exc_regions=self.exc_regions,
                         regress_out_curvature=True,
                         normalize_by_total_thickness=True,
                     )
         elif self.input_type == 'density':
             self._input_data = datasets.load_total_depth_density(
-                exc_masks=exc_masks
+                exc_regions=self.exc_regions
             )
         # downsample the data if it's not already downsampled
         # (for homogeneity of different types of matrices)
@@ -1216,6 +1312,8 @@ class MicrostructuralCovarianceMatrix(Matrix):
             sub_dir += f'_parc-{self.parcellation_name}'
         if (self.input_type != 'density') & (self.dataset == 'bigbrain'):
             sub_dir += f'_curv-{str(self.correct_curvature).lower()}'
+        if self.regress_out_geodesic_distance:
+            sub_dir += '_reg_out_gd'
         if self.exc_regions:
             sub_dir += f'_exc-{self.exc_regions}'
         if self.zero_out_negative:

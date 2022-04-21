@@ -7,8 +7,7 @@ The `src` directory includes local and external input data used in the analyses.
 |`economo_cortical_types.csv`|Cortical type of each von Economo region|Local|Created manually based on [García-Cabezas 2020](https://doi.org/10.3389/fnana.2020.576015). Labels correspond to `*h_economo.annot`|
 |`*h_schaefer*.annot`|Schaefer-N parcellation in fsaverage space|[ThomasYeoLab / CBIG](https://github.com/ThomasYeoLab/CBIG/tree/master/stable_projects/brain_parcellation/Schaefer2018_LocalGlobal/Parcellations/FreeSurfer5.3/fsaverage/label)|Originally named `*h.Schaefer2018_*Parcels_7Networks_order.annot`|
 |`*h_sjh.annot`|SJH parcellation in fsaverage space|[MICA-MNI / micaopen](https://github.com/MICA-MNI/micaopen/tree/master/MPC/maps)| |
-|`*h_brodmann_orig.annot`|Brodmann regions in fsaverage space|FreeSurfer|Located in `$SUBJECTS_DIR/fsaverage/label/&h.PALS_B12_Brodmann.annot`|
-|`*h_brodmann.annot`|Brodmann regions in fsaverage space fixed|Local|Created from `*h_brodmann_orig.annot` using `helpers.py` > `fix_brodmann_annot`|
+|`*h_brodmann.label.gii`|Brodmann regions in fsaverage space|[Pijnenburg 2021](https://www.sciencedirect.com/science/article/pii/S1053811921005504#sec0031)|Supplementary zip file|
 |`tpl-bigbrain_hemi-*_desc-*_parcellation.label.gii`|Parcellations in bigbrain surface space|Local|Created using `code/local/transform_to_bigbrain.sh`|
 |`tpl-bigbrain_hemi-*_desc-*_parcellation_centers.csv`|Center indices of each parcel in bigbrain surface|Local|Created using `code/helpers.py`:`get_parcel_center_indices`|
 |`*h_*_fsa5.label.gii`|Parcellations in fsaverage 5 space|Local|Created using `helpers.py` > `fsa_annot_to_fsa5_gii`|

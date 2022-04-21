@@ -95,23 +95,21 @@ def run():
     # disease_gradients_analyses()
     # ei_analyses()
     # create_surrogates()
-    for correct_curvature in ['smooth-10', None]:
-        ltc = matrices.MicrostructuralCovarianceMatrix('thickness', None, correct_curvature=correct_curvature)
-        ltcg = surfaces.MicrostructuralCovarianceGradients(ltc)
+    # for correct_curvature in ['smooth-10', None]:
+    ltc = matrices.MicrostructuralCovarianceMatrix('thickness', 'sjh')
+    ltcg = surfaces.MicrostructuralCovarianceGradients(ltc)
     # mpc = matrices.MicrostructuralCovarianceMatrix('density', 'sjh')
     # mpcg = surfaces.MicrostructuralCovarianceGradients(mpc)
     # ltcg.correlate(mpcg, x_columns=['LTC G1'], y_columns=['MPC G1'])
-    # ec_maps = surfaces.EffectiveConnectivityMaps()
-    # ltcg = surfaces.MicrostructuralCovarianceGradients(
-    #     matrices.MicrostructuralCovarianceMatrix('thickness', 'schaefer400')
-    # )
-    # ltcg.correlate(ec_maps, x_columns=['LTC G1'])
+    ec_maps = surfaces.EffectiveConnectivityMaps(dataset='mics')
+    ltcg = surfaces.MicrostructuralCovarianceGradients(
+        matrices.MicrostructuralCovarianceMatrix('thickness', 'schaefer400')
+    )
+    ltcg.correlate(ec_maps, x_columns=['LTC G1'], axis_off=True)
     # nmda = surfaces.PETMaps('NMDA', 'sjh')
     # ltcg.correlate(nmda, x_columns=['LTC G1'], axis_off=True)
     # gaba = surfaces.PETMaps('GABAa', 'sjh')
     # ltcg.correlate(gaba, x_columns=['LTC G1'], axis_off=True)
-
-
     
 
 if __name__=='__main__':

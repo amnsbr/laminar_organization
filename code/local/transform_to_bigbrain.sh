@@ -13,13 +13,15 @@ if ! [ -f "${TOOLS_PATH}/bigbrainwarp.simg" ]; then
 fi
 
 
-fsaverage_parcellations=('sjh.annot' 'economo.annot' 'schaefer400.annot' 'schaefer1000.annot' 'aparc.annot' 'mmp1.annot' 'brodmann.annot')
+fsaverage_parcellations=('sjh.annot' 'economo.annot' 'schaefer400.annot' 'schaefer1000.annot' 'aparc.annot' 'mmp1.annot' 'brodmann.label.gii')
 for suffix in "${fsaverage_parcellations[@]}"
 do
-    if [ -f "${SRC_PATH}/tpl-bigbrain_hemi-L_desc-${suffix/.annot/_parcellation}.label.gii" ]; then
-        echo "${suffix} already transformed to bigbrain space"
+    desc=${suffix/.annot/_parcellation}
+    desc=${desc/.label.gii/_parcellation}
+    if [ -f "${SRC_PATH}/tpl-bigbrain_hemi-L_desc-${desc}.label.gii" ]; then
+        echo "${desc} already transformed to bigbrain space"
     else
-        echo "Transforming ${suffix} to bigbrain space (singularity)"
+        echo "Transforming ${desc} to bigbrain space (singularity)"
         #> Run bigbrainwarp with singularity
         # `singularity run` is not used because of problems with environment
         # variables. Instead I have used `singularity exec` to 1) run init.sh
@@ -35,7 +37,7 @@ do
         --out_space bigbrain \
         --out_den 32 \
         --interp nearest \
-        --desc '${suffix/.annot/_parcellation}' \
+        --desc ${desc} \
         --wd ${SRC_PATH}"
     fi
 done

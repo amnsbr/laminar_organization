@@ -83,31 +83,30 @@ def load_downsampled_surface_paths(kind='orig'):
             #  the position of vertices)
             bb_downsample_indices = mat['bb_downsample'][:, 0]-1 #1-indexing to 0-indexing
             coords = deformed_ico7.coordinates[bb_downsample_indices]
-        # save it as gifti
-        bb10_gifti = nibabel.gifti.gifti.GiftiImage(
-            darrays = [
-                nibabel.gifti.gifti.GiftiDataArray(
-                    data=coords,
-                    intent='NIFTI_INTENT_POINTSET'
-                    ),
-                nibabel.gifti.gifti.GiftiDataArray(
-                    data=faces,
-                    intent='NIFTI_INTENT_TRIANGLE'
-                    )
-            ])
+        # save it as gifti by using ico7 gifti as a template
+        # and modifying it
+        bb10_gifti = nibabel.load(
+            os.path.join(
+                SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-mid.surf.inflate.gii'
+            )
+        )
+        bb10_gifti.darrays[0].data = coords
+        bb10_gifti.darrays[0].dims = list(coords.shape)
+        bb10_gifti.darrays[1].data = faces
+        bb10_gifti.darrays[1].dims = list(faces.shape)
         nibabel.save(bb10_gifti, paths[hem])
     return paths
 
 
 
-def load_curvature_maps(downsampled=False):
+def load_curvature_maps(downsampled=False, concatenate=False):
     """
     Creates the map of curvature for the bigbrain surface
     using pycortex or loads it if it already exist
 
     Returns
     -------
-    curvature_maps: (dict of np.ndarray) n_vertices, for L and R hemispheres
+    curvature_maps: (np.ndarray | dict) n_vertices, for L and R hemispheres
     """
     curvature_maps = {}
     for hem in ['L', 'R']:
@@ -129,13 +128,16 @@ def load_curvature_maps(downsampled=False):
                 )
         vertices, faces = nilearn.surface.load_surf_mesh(mesh_path)
         surface = Surface(vertices, faces)
-        # calculate mean curvature
+        # calculate mean curvature; negative = sulci, positive = gyri
         curvature = surface.mean_curvature()
         # save it
         os.makedirs(os.path.join(OUTPUT_DIR, 'curvature'), exist_ok=True)
         np.save(curvature_filepath, curvature)
         curvature_maps[hem] = curvature
-    return curvature_maps
+    if concatenate:
+        return np.concatenate([curvature_maps['L'], curvature_maps['R']])
+    else:
+        return curvature_maps
 
 def load_cortical_types(parcellation_name=None, downsampled=False):
     """
@@ -300,7 +302,7 @@ def load_exc_masks(exc_regions, concatenate=False, downsampled=False):
             'R': exc_mask[N_VERTICES_HEM_BB:]
         }
 
-def load_laminar_thickness(exc_masks=None, normalize_by_total_thickness=True, 
+def load_laminar_thickness(exc_regions=None, normalize_by_total_thickness=True, 
                            regress_out_curvature=False, smooth_disc_radius=None):
     """
     Loads laminar thickness data from 'data' folder and after masking out
@@ -310,8 +312,7 @@ def load_laminar_thickness(exc_masks=None, normalize_by_total_thickness=True,
 
     Parameters
     --------
-    exc_masks: (dict of np.ndarray) 
-        The surface masks of vertices that should be excluded (L and R)
+    exc_regions: (str | None) 
     normalize_by_total_thickness: (bool) 
         Normalize by total thickness. Default: True
     regress_out_curvature: (bool) 
@@ -323,6 +324,8 @@ def load_laminar_thickness(exc_masks=None, normalize_by_total_thickness=True,
     --------
     laminar_thickness: (dict of np.ndarray) n_vertices [ico7 or ico5] x 6 for laminar thickness of L and R hemispheres
     """
+    if exc_regions is not None:
+        exc_masks = load_exc_masks(exc_regions)
     laminar_thickness = {}
     for hem in ['L', 'R']:
         # read the laminar thickness data from bigbrainwrap .txt files
@@ -334,13 +337,33 @@ def load_laminar_thickness(exc_masks=None, normalize_by_total_thickness=True,
                     f'tpl-bigbrain_hemi-{hem}_desc-layer{layer_num}_thickness.txt'
                     ))
         # remove the exc_mask
-        if exc_masks:
+        if exc_regions is not None:
             laminar_thickness[hem][exc_masks[hem], :] = np.NaN
     if smooth_disc_radius:
-        # downsample it for better performance
-        laminar_thickness = helpers.downsample(laminar_thickness)
-        # smooth the laminar thickness using the disc approach
-        laminar_thickness, _ = helpers.disc_smooth(laminar_thickness, smooth_disc_radius)
+        # smoothing is memory intensive, load it from disc
+        # if it is created already
+        smoothed_laminar_thickness_path = os.path.join(
+            SRC_DIR, 
+            f'tpl-bigbrain_desc-laminar_thickness_exc-{exc_regions}_smooth-{smooth_disc_radius}.npz'
+        )
+        if os.path.exists(smoothed_laminar_thickness_path):
+            laminar_thickness = np.load(smoothed_laminar_thickness_path)
+            # convert npz object to dict (even though they have the same indexing)
+            laminar_thickness = {
+                'L': laminar_thickness['L'],
+                'R': laminar_thickness['R']
+            }
+        else:
+            # downsample it for better performance
+            laminar_thickness = helpers.downsample(laminar_thickness)
+            # smooth the laminar thickness using the disc approach
+            laminar_thickness, _ = helpers.disc_smooth(laminar_thickness, smooth_disc_radius)
+            # save it
+            np.savez_compressed(
+                smoothed_laminar_thickness_path,
+                L = laminar_thickness['L'],
+                R = laminar_thickness['R']
+            )
     for hem in ['L', 'R']:
         # normalize by total thickness
         if normalize_by_total_thickness:
@@ -403,7 +426,7 @@ def calculate_alphas(betas, aw, ap):
     """
     return ((aw + ((ap-aw)*betas))**2 - aw**2) / (ap**2 - aw**2)
 
-def load_laminar_volume(exc_masks=None):
+def load_laminar_volume(exc_regions=None):
     """
     To correct for the effect of curvature on laminar thickness, this function 
     calculates relative volume of each layer at each vertex considering the
@@ -422,7 +445,7 @@ def load_laminar_volume(exc_masks=None):
 
     Parameters
     ----------
-    exc_masks: (dict of np.ndarray) The surface masks of vertices that should be excluded (L and R)
+    exc_regions: (str | None)
 
     Returns
     --------
@@ -430,7 +453,7 @@ def load_laminar_volume(exc_masks=None):
     """
     # Load laminar thickness
     laminar_thickness = load_laminar_thickness(
-        exc_masks=exc_masks, 
+        exc_regions=exc_regions, 
         normalize_by_total_thickness=True,
         regress_out_curvature=False
         )
@@ -467,20 +490,22 @@ def load_laminar_volume(exc_masks=None):
             ], axis=1)[:,::-1] # reverse it from layer 6to1 to layer 1to6
     return laminar_volume
 
-def load_total_depth_density(exc_masks=None):
+def load_total_depth_density(exc_regions=None):
     """
     Loads laminar density of total cortical depth sampled at 50 points and after masking out
-    `exc_masks` returns separate arrays for L and R hemispheres
+    `exc_regions` returns separate arrays for L and R hemispheres
 
     Parameters
     ---------
-    exc_masks: (dict of np.ndarray) The surface masks of vertices that should be excluded (L and R)
+    exc_regions: (str | None) The surface masks of vertices that should be excluded (L and R)
  
 
     Returns
     -------
     density_profiles (dict of np.ndarray) n_vert x 50 for L and R hemispheres
     """
+    if exc_regions is not None:
+        exc_masks = load_exc_masks(exc_regions)
     # load profiles and reshape to n_vert x 50
     density_profiles = np.loadtxt(os.path.join(SRC_DIR, 'tpl-bigbrain_desc-profiles.txt'))
     density_profiles = density_profiles.T
@@ -490,14 +515,14 @@ def load_total_depth_density(exc_masks=None):
         'R': density_profiles[density_profiles.shape[0]//2:, :],
     }
     # remove the exc_mask
-    if exc_masks:
+    if exc_regions is not None:
         for hem in ['L', 'R']:
             density_profiles[hem][exc_masks[hem], :] = np.NaN
 
     return density_profiles
 
 
-def load_laminar_density(exc_masks=None, method='mean'):
+def load_laminar_density(exc_regions=None, method='mean'):
     """
     Loads laminar density data from 'src' folder, takes the average of sample densities
     for each layer, and after masking out `exc_mask` returns 6-d average laminar density 
@@ -505,7 +530,7 @@ def load_laminar_density(exc_masks=None, method='mean'):
 
     Parameters
     ----------
-    exc_masks: (dict of np.ndarray) The surface masks of vertices that should be excluded (L and R)
+    exc_regions: (str | None)
     method: (str) method of finding central tendency of samples in each layer in each vertex
         - mean
         - median
@@ -514,6 +539,8 @@ def load_laminar_density(exc_masks=None, method='mean'):
     --------
     laminar_density: (dict of np.ndarray) n_vertices x 6 for laminar density of L and R hemispheres
     """
+    if exc_regions is not None:
+        exc_masks = load_exc_masks(exc_regions)
     laminar_density = {}
     for hem in ['L', 'R']:
         # read the laminar thickness data from bigbrainwrap .txt files
@@ -529,7 +556,7 @@ def load_laminar_density(exc_masks=None, method='mean'):
             elif method == 'median':
                 laminar_density[hem][:, layer_num-1] = np.median(profiles, axis=0)
         # remove the exc_mask
-        if exc_masks:
+        if exc_regions is not None:
             laminar_density[hem][exc_masks[hem], :] = np.NaN
         # TODO: also normalize density?
     return laminar_density
@@ -601,21 +628,32 @@ def load_parcellation_map(parcellation_name, concatenate, downsampled=False, loa
             )
         if not load_indices:
             # label parcellation map
-            _, _, sorted_labels = nibabel.freesurfer.io.read_annot(
-                os.path.join(
-                    SRC_DIR, 
-                    f'{hem.lower()}h_{parcellation_name}.annot')
-            )
-            # labels post-processing for each specific parcellation
-            if parcellation_name == 'sjh':
-                # remove sjh_ from the label
-                sorted_labels = list(map(lambda l: int(l.decode().replace('sjh_','')), sorted_labels))
-            elif parcellation_name in ['aparc', 'economo']:
-                # add hemisphere to the labels to have distinct parcel labels in each hemisphere
-                sorted_labels = list(map(lambda l: f'{hem}_{l.decode()}', sorted_labels))
+            if parcellation_name == 'brodmann':
+                # the source (fsaverage) is a gifti file
+                orig_gifti = nibabel.load(
+                    os.path.join(
+                        SRC_DIR,
+                        f'{hem.lower()}h_{parcellation_name}.label.gii'
+                    )
+                )
+                transdict = orig_gifti.labeltable.get_labels_as_dict()
             else:
-                sorted_labels = list(map(lambda l: l.decode(), sorted_labels)) # b'name' => 'name'
-            transdict = dict(enumerate(sorted_labels))
+                # for others its an annot file
+                _, _, sorted_labels = nibabel.freesurfer.io.read_annot(
+                    os.path.join(
+                        SRC_DIR, 
+                        f'{hem.lower()}h_{parcellation_name}.annot')
+                )
+                # labels post-processing for each specific parcellation
+                if parcellation_name == 'sjh':
+                    # remove sjh_ from the label
+                    sorted_labels = list(map(lambda l: int(l.decode().replace('sjh_','')), sorted_labels))
+                elif parcellation_name in ['aparc', 'economo']:
+                    # add hemisphere to the labels to have distinct parcel labels in each hemisphere
+                    sorted_labels = list(map(lambda l: f'{hem}_{l.decode()}', sorted_labels))
+                else:
+                    sorted_labels = list(map(lambda l: l.decode(), sorted_labels)) # b'name' => 'name'
+                transdict = dict(enumerate(sorted_labels))
             parcellation_map[hem] = np.vectorize(transdict.get)(parcellation_map[hem])
         if downsampled:
             # select only the vertices corresponding to the downsampled ico5 surface

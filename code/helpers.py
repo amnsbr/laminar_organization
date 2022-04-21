@@ -333,7 +333,7 @@ def regress_out_surf_covariates(input_surface_data, cov_surface_data, sig_only=F
     cleaned_surface_data = input_surface_data.copy()
     mask = (np.isnan(input_surface_data).sum(axis=1) == 0)
     for col_idx in range(input_surface_data.shape[1]):
-        logging.info(f"col {col_idx}")
+        print(f"col {col_idx}")
         # read and reshape y
         y = input_surface_data[mask, col_idx].reshape(-1, 1)
         # demean and store mean (instead of fitting intercept)
@@ -345,7 +345,7 @@ def regress_out_surf_covariates(input_surface_data, cov_surface_data, sig_only=F
         assert X.shape[0] == y.shape[0]
         # model fitting
         lr = sm.OLS(y_demean, X).fit()
-        logging.info(f'pval {lr.pvalues[0]} {"*" if lr.pvalues[0] < 0.05 else ""}')
+        print(f'pval {lr.pvalues[0]} {"*" if lr.pvalues[0] < 0.05 else ""}')
         if (lr.pvalues[0] < 0.05) or (not sig_only):
             cleaned_surface_data[mask, col_idx] = lr.resid + y_mean
         else:
@@ -489,12 +489,13 @@ def get_hem_parcels(parcellation_name, limit_to_parcels=None):
     return parcels
 
 
-def get_parcel_center_indices(parcellation_name):
+def get_parcel_center_indices(parcellation_name, downsampled=False):
     """
     Gets the center of parcels and returns their index
-    in BigBrain ico7 surface
+    in BigBrain inflated surface
 
-    Based on "geoDistMapper.py" from micapipe/functions
+    Based on "geoDistMapper.py" from micapipe/functions but using
+    inflated surface so that euclidean distance is closer to geodesic
     Original Credit:
     # Translated from matlab:
     # Original script by Boris Bernhardt and modified by Casey Paquola
@@ -504,19 +505,21 @@ def get_parcel_center_indices(parcellation_name):
     for hem in ['L', 'R']:
         out_path = os.path.join(
             SRC_DIR,
-            f'tpl-bigbrain_hemi-{hem}_desc-{parcellation_name}_parcellation_centers.csv'
+            f'tpl-bigbrain_hemi-{hem}_downsampled-{downsampled}_desc-{parcellation_name}_parcellation_centers.csv'
             )
         if os.path.exists(out_path):
             centers[hem] = pd.read_csv(out_path, index_col='parcel').iloc[:, 0]
             continue
-        # load surf
-        surf_path = os.path.join(
-            SRC_DIR, 
-            f'tpl-bigbrain_hemi-L_desc-mid.surf.gii'
-            )
+        # load inflated surf
+        if downsampled:
+            surf_path = datasets.load_downsampled_surface_paths('inflated')[hem]
+        else:
+            surf_path = os.path.join(
+                SRC_DIR, 
+                f'tpl-bigbrain_hemi-{hem}_desc-mid.surf.inflate.gii'
+                )
         vertices = nilearn.surface.load_surf_mesh(surf_path).coordinates           
-        parc = datasets.load_parcellation_map(parcellation_name, False)[hem]
-
+        parc = datasets.load_parcellation_map(parcellation_name, False, downsampled=downsampled)[hem]
         centers[hem] = pd.Series(0, index=np.unique(parc))        
         for parcel_name in centers[hem].index:
             this_parc = np.where(parc == parcel_name)[0]
@@ -795,9 +798,9 @@ def create_bigbrain_spin_permutations(is_downsampled=True, n_perm=1000, batch_si
     if is_downsampled:
         outpath = os.path.join(SRC_DIR, f'tpl-bigbrain_desc-spin_indices_downsampled_n-{n_perm}.npz')
         if os.path.exists(outpath):
-            logging.info("Spin permutations already exist")
+            print("Spin permutations already exist")
             return
-        logging.info(f"Creating {n_perm} spin permutations")
+        print(f"Creating {n_perm} spin permutations")
         # read the bigbrain surface sphere files as a mesh that can be used by _generate_spins function
         downsampled_sphere_paths = datasets.load_downsampled_surface_paths('sphere')
         lh_sphere = brainspace.mesh.mesh_io.read_surface(downsampled_sphere_paths['L'])
@@ -814,9 +817,9 @@ def create_bigbrain_spin_permutations(is_downsampled=True, n_perm=1000, batch_si
             )
     else:    
         if os.path.exists(os.path.join(SPIN_BATCHES_DIR, 'tpl-bigbrain_desc-spin_indices_batch0.npz')):
-            logging.info("Spin permutation batches already exist")
+            print("Spin permutation batches already exist")
             return
-        logging.info(f"Creating {n_perm} spin permutations")
+        print(f"Creating {n_perm} spin permutations")
         # read the bigbrain surface sphere files as a mesh that can be used by _generate_spins function
         lh_sphere = brainspace.mesh.mesh_io.read_surface(os.path.join(SRC_DIR, 'tpl-bigbrain_hemi-L_desc-sphere_rot_fsaverage.surf.gii'))
         rh_sphere = brainspace.mesh.mesh_io.read_surface(os.path.join(SRC_DIR, 'tpl-bigbrain_hemi-R_desc-sphere_rot_fsaverage.surf.gii'))
@@ -824,7 +827,7 @@ def create_bigbrain_spin_permutations(is_downsampled=True, n_perm=1000, batch_si
         #  doing it in batches to reduce memory requirements
         n_batch = n_perm // batch_size
         for batch in range(n_batch):
-            logging.info(f'\t\tBatch {batch}')
+            print(f'\t\tBatch {batch}')
             spin_idx = brainspace.null_models.spin._generate_spins(
                 lh_sphere, rh_sphere, 
                 n_rep = batch_size,
@@ -891,14 +894,15 @@ def spin_test(surface_data_to_spin, surface_data_target, n_perm, is_downsampled)
     else:
         batch_files = sorted(glob.glob(os.path.join(SPIN_BATCHES_DIR, f'tpl-bigbrain_desc-spin_indices_batch*.npz')))
     for batch_file in batch_files:
-        logging.info(f"\t\tBatch {batch_file}")
+        print(f"\t\tBatch {batch_file}")
         # load the batch of spin permutated maps and concatenate left and right hemispheres
         batch_idx = np.load(batch_file) # n_perm * n_vert arrays for 'lh' and 'rh'
         batch_lh_surrogates = surface_data_to_spin['L'][batch_idx['lh']] # n_perm * n_vert * n_features
         batch_rh_surrogates = surface_data_to_spin['R'][batch_idx['rh']]
         concat_batch_surrogates = np.concatenate([batch_lh_surrogates, batch_rh_surrogates], axis=1)
         for perm_idx in range(batch_rh_surrogates.shape[0]):
-            logging.info(counter)
+            if (counter % 100) == 0:
+                print(counter)
             surrogate = pd.DataFrame(concat_batch_surrogates[perm_idx, :, :])
             # calculate null correlation coefficient between all gradients and all other surface maps
             null_r = (
@@ -949,10 +953,10 @@ def variogram_test(X, Y, parcellation_name, n_perm=1000, surrogates_path=None):
         surrogates = np.load(surrogates_path, allow_pickle=True)['surrogates']
         parcels = np.load(surrogates_path, allow_pickle=True)['parcels']
         if (X.index.values == parcels).all():
-            logging.info(f"Surrogates already exist in {surrogates_path} and have the same parcels")
+            print(f"Surrogates already exist in {surrogates_path} and have the same parcels")
             create_surrogates = False
     if create_surrogates:
-        logging.info(f"Creating {n_perm} surrogates based on variograms in {surrogates_path}")
+        print(f"Creating {n_perm} surrogates based on variograms in {surrogates_path}")
         # load GD
         GD = matrices.DistanceMatrix(parcellation_name, 'geodesic').matrix
         # get parcels (that exist in X) per hemisphere and split the data

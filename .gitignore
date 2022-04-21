@@ -148,6 +148,7 @@ logs/
 src_local/
 _src_archive/
 src/tpl-fsaverage*
+src/tpl-fs_LR*
 code/playground*.ipynb
 code/Plotting_gradients.ipynb
 # also ignoring data and output for now; will un-ignore it in final release

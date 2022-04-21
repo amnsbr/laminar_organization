@@ -1,5 +1,6 @@
 import os
 import itertools
+from attr import has
 import numpy as np
 import scipy.spatial.distance
 import pandas as pd
@@ -10,9 +11,12 @@ import brainspace.gradient
 import scipy.stats
 import ptitprince
 import nibabel
+import nilearn.surface
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
+from sklearn.preprocessing import MinMaxScaler
 from dominance_analysis import Dominance
+import subprocess
 import logging, sys
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 
@@ -25,6 +29,7 @@ abspath = os.path.abspath(__file__)
 cwd = os.path.dirname(abspath)
 OUTPUT_DIR = os.path.join(cwd, '..', 'output')
 SRC_DIR = os.path.join(cwd, '..', 'src')
+WB_PATH = os.path.join(cwd, '..', 'tools', 'workbench', 'bin_linux64', 'wb_command')
 
 
 class ContCorticalSurface:
@@ -116,6 +121,7 @@ class ContCorticalSurface:
         x_columns, y_columns: (list of str) selected columns from self (x) and other (y)
         axis_off: (bool) turn the axis off from the plot
         """
+        # TODO: add an option for removing outliers
         if parcellated:
             assert self.parcellation_name == other.parcellation_name
             assert self.parcellation_name is not None
@@ -146,7 +152,7 @@ class ContCorticalSurface:
                 ).loc[:, y_columns]
         if parcellated:
             # statistical test using variogram-based permutation
-            logging.info("Calculating correlations using variogram-based permutation")
+            print("Calculating correlations using variogram-based permutation")
             coefs, pvals, coefs_null_dist =  helpers.variogram_test(
                 X = x_data, 
                 Y = y_data,
@@ -156,7 +162,7 @@ class ContCorticalSurface:
                 )
         else:
             # statistical test using spin permutation
-            logging.info("Calculating correlations with spin test")
+            print("Calculating correlations with spin test")
             coefs, pvals, coefs_null_dist =  helpers.spin_test(
                 surface_data_to_spin = x_data.values, 
                 surface_data_target = y_data.values,
@@ -418,7 +424,7 @@ class Gradients(ContCorticalSurface):
     """
     def __init__(self, matrix_obj, n_components_create=10, n_components_report=2,
                  approach='dm', kernel='normalized_angle', sparsity=0.9, fair_sparsity=True,
-                 cmap='viridis', create_plots=True):
+                 hemi=None, cmap='viridis', create_plots=True):
         """
         Initializes laminar similarity gradients based on LaminarSimilarityMatrix objects
         and the gradients fitting parameters
@@ -432,6 +438,7 @@ class Gradients(ContCorticalSurface):
         kernel: (str) affinity matrix calculation kernel
         sparsity: (int) proportion of smallest elements to zero-out for each row.
         fair_sparsity: (bool) whether to make joined matrices sparse fairly
+        hemi: (str | None) limit the gradient to selected hemisphere ('L' or 'R')
         create_plots: (bool) Default: False
         """
         self.matrix_obj = matrix_obj
@@ -444,6 +451,13 @@ class Gradients(ContCorticalSurface):
         self.n_matrices = self.matrix_obj.matrix.shape[1] // self.n_parcels
         self._sparsity = sparsity
         self._fair_sparsity = fair_sparsity
+        self.hemi = hemi
+        if (self.matrix_obj.split_hem) & (self.hemi is None):
+            # in case the matrix is split in two hemispheres
+            # and this is the parent gradient where hemispheres
+            # are concatenated do not plot anything as some
+            # of the fields (e.g. lambdas) are undefined
+            create_plots = False
         self.columns = [f'{self.matrix_obj.short_label} G{num}' \
                         for num in range(1, self._n_components_create+1)]
         self.label = f'{self.matrix_obj.label} gradients'
@@ -467,28 +481,44 @@ class Gradients(ContCorticalSurface):
         """
         Creates the GradientMaps object and fits the data
         """
-        # initialize GradientMaps object and fit it to data
-        self.gm = brainspace.gradient.GradientMaps(
-            n_components=self._n_components_create, 
-            approach=self._approach, 
-            kernel=self._kernel, 
-            random_state=912
-            )
-        if (self.n_matrices > 1) & self._fair_sparsity:
-            sparsity = None
-            matrix = self.matrix_obj._make_sparse_fairly(sparsity=self._sparsity)
-        else:
-            sparsity = self._sparsity
-            matrix = self.matrix_obj.matrix.values
-        self.gm.fit(matrix, sparsity=sparsity)
-        self.lambdas = self.gm.lambdas_
-        if self.parcellation_name is not None:
-            # add parcel labels
-            self.parcellated_data = pd.DataFrame(
-                self.gm.gradients_,
-                index=self.matrix_obj.matrix.index,
-                columns=self.columns
+        if (self.matrix_obj.split_hem) & (self.hemi is None):
+            # if the matrix obj is defined separately for L and R
+            # (e.g., GD is regressed out of it) and this is the 
+            # parent gradient where hemisphere should be concatenated
+            # create separate gradient objects for L and R
+            # TODO: This code is too complicated. Rewrite it
+            split_gradients = {}
+            for hemi in ['L', 'R']:
+                split_gradients[hemi] = MicrostructuralCovarianceGradients(
+                    **self._get_params(),
+                    hemi = hemi
+                ).parcellated_data
+            # for each gradient (column) rescale the
+            # values or R hem to L hem
+            # Warning & TODO: the gradients from the
+            # two hemispheres may have opposite directions
+            # and I don't know how to fix it!
+            for column in self.columns:
+                scaler = MinMaxScaler(
+                    (split_gradients['L'].loc[:, column].values.min(),
+                    split_gradients['L'].loc[:, column].values.max())
                 )
+                split_gradients['R'].loc[:, column] = scaler.fit_transform(
+                    split_gradients['R'].loc[:, column].values[:, np.newaxis]
+                )[:, 0]
+            # concatenate the hemispheres and label
+            # the gradients
+            gradients = np.concatenate([
+                split_gradients['L'], split_gradients['R']
+            ], axis=0)
+            hem_parcels = helpers.get_hem_parcels(
+                self.parcellation_name, 
+                self.matrix_obj.matrix.index)
+            self.parcellated_data = pd.DataFrame(
+                gradients,
+                index = hem_parcels['L'] + hem_parcels['R'],
+                columns = self.columns
+            )
             # project to surface
             self.surf_data = helpers.deparcellate(
                 self.parcellated_data,
@@ -496,10 +526,66 @@ class Gradients(ContCorticalSurface):
                 downsampled = True
                 )
         else:
-            # bring back removed vertices with NaN input data
-            # which are not included in the matrix or gradients
-            self.surf_data = np.zeros((datasets.N_VERTICES_HEM_BB_ICO5*2, len(self.columns))) * np.NaN
-            self.surf_data[self.matrix_obj.matrix.index, :] = self.gm.gradients_
+            # initialize GradientMaps object
+            self.gm = brainspace.gradient.GradientMaps(
+                n_components=self._n_components_create, 
+                approach=self._approach, 
+                kernel=self._kernel, 
+                random_state=912
+                )
+            # matrix pre-processing
+            parcels = self.matrix_obj.matrix.index
+            if (self.n_matrices > 1) & self._fair_sparsity:
+                # enforce fair sparsity between fused matrices
+                sparsity = None
+                matrix = self.matrix_obj._make_sparse_fairly(sparsity=self._sparsity)
+            else:
+                sparsity = self._sparsity
+                if self.hemi is not None:
+                    # limit the matrix to the selected hemisphere
+                    parcels = helpers.get_hem_parcels(
+                        self.parcellation_name, 
+                        parcels)[self.hemi]
+                matrix = self.matrix_obj.matrix.loc[parcels, parcels].values
+            # create the gradient
+            self.gm.fit(matrix, sparsity=sparsity)
+            self.lambdas = self.gm.lambdas_
+            if self.parcellation_name is not None:
+                # add parcel labels
+                self.parcellated_data = pd.DataFrame(
+                    self.gm.gradients_,
+                    index=parcels,
+                    columns=self.columns
+                    )
+                # project to surface
+                self.surf_data = helpers.deparcellate(
+                    self.parcellated_data,
+                    self.matrix_obj.parcellation_name,
+                    downsampled = True
+                    )
+            else:
+                # bring back removed vertices with NaN input data
+                # which are not included in the matrix or gradients
+                self.surf_data = np.zeros((datasets.N_VERTICES_HEM_BB_ICO5*2, len(self.columns))) * np.NaN
+                self.surf_data[self.matrix_obj.matrix.index, :] = self.gm.gradients_
+
+    def _get_params(self):
+        """
+        Get the parameters used for intializing the
+        object except hemi (for calling it recursively in case
+        of split hemispheres gradients)
+        """
+        return dict(
+            matrix_obj=self.matrix_obj, 
+            n_components_create=self._n_components_create, 
+            n_components_report=self._n_components_report,
+            approach=self._approach, 
+            kernel=self._kernel, 
+            sparsity=self._sparsity, 
+            fair_sparsity=self._fair_sparsity,
+            cmap=self.cmap, 
+            create_plots=False
+        )
 
     def _get_dir_path(self):
         """
@@ -512,6 +598,8 @@ class Gradients(ContCorticalSurface):
             + f'_sparsity-{self._sparsity}'.replace('.','')\
             + ('fair' if (self._fair_sparsity & (self.n_matrices>1)) else '')\
             + f'_n-{self._n_components_create}'
+        if self.hemi:
+            sub_dir = os.path.join(sub_dir, f'hemi-{self.hemi}')
         return os.path.join(parent_dir, sub_dir)
 
     def _save(self):
@@ -529,10 +617,14 @@ class Gradients(ContCorticalSurface):
                 os.path.join(self.dir_path,'gradients_surface.npz'),
                 surface=self.surf_data
                 )
-        np.savetxt(
-            os.path.join(self.dir_path,'lambdas.txt'),
-            self.lambdas
-            )
+        if hasattr(self, 'lambdas'):
+            # the parent gradient object where split
+            # gradients for the two hemispheres are joined
+            # do not have lambdas 
+            np.savetxt(
+                os.path.join(self.dir_path,'lambdas.txt'),
+                self.lambdas
+                )
 
     def _load(self):
         """
@@ -550,7 +642,11 @@ class Gradients(ContCorticalSurface):
                 )
         else:
             self.surf_data = np.load(os.path.join(self.dir_path, 'gradients_surface.npz'))['surface']
-        self.lambdas = np.loadtxt(os.path.join(self.dir_path, 'lambdas.txt'))
+        if os.path.exists(os.path.join(self.dir_path, 'lambdas.txt')):
+            # the parent gradient object where split
+            # gradients for the two hemispheres are joined
+            # do not have lambdas 
+            self.lambdas = np.loadtxt(os.path.join(self.dir_path, 'lambdas.txt'))
 
     def plot_surface(self, layout_style='row', inflate=True):
         """
@@ -693,25 +789,12 @@ class MicrostructuralCovarianceGradients(Gradients):
         """
         Initializes laminar similarity gradients based on LaminarSimilarityMatrix objects
         and the gradients fitting parameters
-
-        Parameters
-        ---------
-        matrix: (MicrostructuralCovarianceMatrix)
-        n_components_create: (int) number of components to calculate
-        n_components_report: (int) number of first n components to report / plot / associate
-        approach: (str) dimensionality reduction approach
-        kernel: (str) affinity matrix calculation kernel
-        sparsity: (int) proportion of smallest elements to zero-out for each row.
-        fair_sparsity: (bool) whether to make joined matrices sparse fairly
-        plot_surface: (bool) Default: False
         """
         super().__init__(*args, **kwargs)
         if 'thickness' in self.matrix_obj.input_type:
             self.cmap = 'viridis'
         else:
             self.cmap = 'Spectral_r'
-        if not os.path.exists(os.path.join(self.dir_path, 'gradients_surface.npz')):
-            self.plot_binned_profile()
 
     def plot_binned_profile(self, n_bins=10, palette='bigbrain'):
         """
@@ -777,85 +860,157 @@ class MicrostructuralCovarianceGradients(Gradients):
                 orientation='horizontal', figsize=(6,4))
             clfig.savefig(os.path.join(self.dir_path, f'binned_profile_G{gradient_num}_clbar.png'), dpi=192)
 
-class StructuralFeatures(ContCorticalSurface):
-    label = 'Structural features'
-    def __init__(self, correct_curvature):
+class CurvatureMap(ContCorticalSurface):
+    """
+    Map of bigbrain surface curvature
+    """
+    def __init__(self, downsampled=True):
+        self.downsampled = downsampled
+        self.surf_data = datasets.load_curvature_maps(
+            downsampled=downsampled, 
+            concatenate=True
+            )[:, np.newaxis]
+        self.columns = ['Curvature']
+        self.label = 'Curvature'
+        self.dir_path = os.path.join(OUTPUT_DIR, 'curvature')
+    
+    def effect_on_laminar_thickness(self, correct_curvature, nbins=20,
+                             exc_regions='adysgranular', palette='bigbrain'):
         """
-        Structural features including total/laminar thickness, laminar densities and
-        microstructural profile moments
-        
-        Parameters
-        ----------
-        correct_curvature: (str or None)
-            - 'volume' [default]: normalize relative thickness by curvature according to the 
-            equivolumetric principle i.e., use relative laminar volume instead of relative laminar 
-            thickness. Laminar volume is expected to be less affected by curvature.
-            - 'regress': regresses map of curvature out from the map of relative thickness
-            of each layer (separately) using a linear regression. This is a more lenient approach of 
-            controlling for curvature.
-            - None
+        Plot the laminar profile ordered by binned curvature
+        to show how it differs for corrected and uncorrected 
+        laminar thickness and plots a regplot on how deep layers
+        ratio is associated with curvature
         """
-        self.correct_curvature = correct_curvature
-        self.dir_path = OUTPUT_DIR
-        self._create()
+        # load thickness data
+        if correct_curvature is None:
+            laminar_data = datasets.load_laminar_thickness(exc_regions=exc_regions)
+        elif 'smooth' in correct_curvature:
+            smooth_disc_radius = int(correct_curvature.split('-')[1])
+            laminar_data = datasets.load_laminar_thickness(
+                exc_regions=exc_regions,
+                smooth_disc_radius=smooth_disc_radius
+            )
+        elif correct_curvature == 'regress':
+            laminar_data = datasets.load_laminar_thickness(
+                exc_regions=exc_regions,
+                regress_out_curvature=True,
+            )
+        if laminar_data['L'].shape[0] == datasets.N_VERTICES_HEM_BB:
+            laminar_data = helpers.downsample(laminar_data)
+        laminar_data = np.concatenate([laminar_data['L'], laminar_data['R']])
+        # 1. Correlation with deep laminar ratio
+        deep_ratio_obj = ContCorticalSurface(
+            laminar_data[:, :3].sum(axis=1) / laminar_data.sum(axis=1), 
+            columns = ['Deep laminar ratio'],
+            label = f'Deep laminar ratio {correct_curvature}'
+        )
+        self.correlate(deep_ratio_obj, parcellated=False)
+        # 2. Plotting laminar profile per bin
+        # convert to dataframe and rename columns
+        laminar_data = pd.DataFrame(laminar_data,
+                                columns = [f'Layer {idx+1}' for idx in range(6)]
+                                )
+        # reverse the columns so that in the plot Layer 6 is at the bottom
+        laminar_data = laminar_data[laminar_data.columns[::-1]]
+        # calculate the curvature bin
+        laminar_data['bin'] = pd.qcut(pd.Series(self.surf_data[:, 0]), nbins)
+        # average laminar thickness per bin
+        laminar_data = laminar_data.groupby('bin').mean().reset_index(drop=True)
+        # specifiy the layer colors
+        colors = datasets.LAYERS_COLORS.get(palette)
+        if colors is None:
+            colors = plt.cm.get_cmap(palette, 6).colors
+        # plot the relative thickness of layers 6 to 1
+        fig, ax = plt.subplots(figsize=(12, 4))
+        ax.bar(
+            x = laminar_data.index,
+            height = laminar_data['Layer 6'],
+            width = 1,
+            color=colors[-1],
+            )
+        for layer_num in range(5, 0, -1):
+            ax.bar(
+                x = laminar_data.index,
+                height = laminar_data[f'Layer {layer_num}'],
+                width = 1,
+                bottom = laminar_data.cumsum(axis=1)[f'Layer {layer_num+1}'],
+                color=colors[layer_num-1],
+                )
+        ax.axis('off')
+        fig.tight_layout()
+        fig.savefig(
+            os.path.join(
+                self.dir_path, 
+                f'laminar_profile_correct-{correct_curvature}_exc-{exc_regions}_nbins-{nbins}'),
+            dpi=192)
+        return ax
+
+class GeodesicDistance(ContCorticalSurface):
+    """
+    Map of minimum geodesic distance from given seeds
+
+    Depends on wb_command
+    """
+    def __init__(self, seed_parcellation='brodmann', 
+                 seed_parcels=['BA17','BA1_3','BA41_42_52']):
+        """
+        Initializes geodesic distance surface from the center of `parcel`
+        in `parcellation_name`
+        """
+        self.seed_parcellation = seed_parcellation
+        self.seed_parcels = seed_parcels
+        self.dir_path = os.path.join(
+            OUTPUT_DIR, 'distance',
+            f'geodesic_{seed_parcellation}_{"-".join(seed_parcels)}'
+        )
+        os.makedirs(self.dir_path, exist_ok=True)
+        self.file_path = os.path.join(self.dir_path, 'surf_data.npz')
+        if os.path.exists(self.file_path):
+            self.surf_data = np.load(self.file_path)['surf_data']
+        else:
+            self.surf_data = self._create()
+            np.savez_compressed(self.file_path, surf_data=self.surf_data)
+        self.label = f'Geodesic distance from {"-".join(seed_parcels)}'
+        self.columns = [self.label]
+        self.cmap = 'pink'
     
     def _create(self):
-        self.columns = []
-        features = []
-        # Total cortical thickness
-        abs_laminar_thickness = datasets.load_laminar_thickness(
-            regress_out_curvature=False,
-            normalize_by_total_thickness=False
-        )
-        abs_laminar_thickness = np.concatenate(
-            [abs_laminar_thickness['L'], abs_laminar_thickness['R']], axis=0
+        """
+        Creates the GD map from seed parcel using wb_command
+        """
+        meshes = datasets.load_downsampled_surface_paths('inflated')
+        parcel_centers = helpers.get_parcel_center_indices(
+            self.seed_parcellation, 
+            downsampled=True
             )
-        total_thickness = abs_laminar_thickness.sum(axis=1)[:, np.newaxis]
-        features.append(total_thickness)
-        self.columns += ['Total thickness']
-        # Relative thicknesses/volumes
-        if self.correct_curvature == 'volume':
-            rel_laminar_thickness = datasets.load_laminar_volume()
-        elif self.correct_curvature == 'regress':
-            rel_laminar_thickness = datasets.load_laminar_thickness(
-                regress_out_curvature=True,
-                normalize_by_total_thickness=True,
-                )
-        else:
-            rel_laminar_thickness = datasets.load_laminar_thickness(
-                regress_out_curvature=False,
-                normalize_by_total_thickness=True,
-                )
-        rel_laminar_thickness = np.concatenate(
-            [rel_laminar_thickness['L'], rel_laminar_thickness['R']], axis=0
+        surf_data = []
+        for seed_parcel in self.seed_parcels:
+            curr_seed_surf = {}
+            for hem in ['L', 'R']:
+                # get the center vertex
+                center_vertex = parcel_centers[hem][seed_parcel]
+                # using wb_command get the GD map from the vertex and save it temporarily
+                tmp_file_path = os.path.join(self.dir_path, f'{hem}.func.gii')
+                cmdStr = f"{WB_PATH} -surface-geodesic-distance {meshes[hem]} {center_vertex} {tmp_file_path}"
+                subprocess.run(cmdStr.split())
+                curr_seed_surf[hem] = nilearn.surface.load_surf_data(tmp_file_path)
+                # remove the tmp file
+                os.remove(tmp_file_path)
+            surf_data.append(
+                np.concatenate([curr_seed_surf['L'], curr_seed_surf['R']])[:, np.newaxis]
             )
-        features.append(rel_laminar_thickness)
-        self.columns += [f'Layer {num} relative thickness' for num in range(1, 7)]
-        # Deep thickness ratio
-        deep_thickness_ratio = rel_laminar_thickness[:, 3:].sum(axis=1)[:, np.newaxis]
-        features.append(deep_thickness_ratio)
-        self.columns += ['Deep laminar thickness ratio']
-        # Laminar densities
-        laminar_density = datasets.load_laminar_density()
-        laminar_density = np.concatenate(
-            [laminar_density['L'], laminar_density['R']], axis=0
-            )
-        features.append(laminar_density)
-        self.columns += [f'Layer {num} density' for num in range(1, 7)]
-        # Microstructural profile moments
-        density_profiles = datasets.load_total_depth_density()
-        density_profiles = np.concatenate(
-            [density_profiles['L'], density_profiles['R']], axis=0
-            )
-        features += [
-            np.mean(density_profiles, axis=1)[:, np.newaxis],
-            np.std(density_profiles, axis=1)[:, np.newaxis],
-            scipy.stats.skew(density_profiles, axis=1)[:, np.newaxis],
-            scipy.stats.kurtosis(density_profiles, axis=1)[:, np.newaxis]
-        ]
-        self.columns += ['Density mean', 'Density std', 'Density skewness', 'Density kurtosis']
-        # concatenate all the features into a single array
-        self.surf_data = helpers.downsample(np.hstack(features))
+        surf_data = np.hstack(surf_data).min(axis=1)[:, np.newaxis]
+        # get a maks of midline (from sjh parcellation)
+        # and make the map NaN at midline
+        midline_mask = np.isnan(
+            helpers.deparcellate(
+                helpers.parcellate(surf_data, 'sjh'), 
+                'sjh', 
+                downsampled=True
+                )[:, 0])
+        surf_data[midline_mask] = np.NaN
+        return surf_data
 
 class MyelinMap(ContCorticalSurface):
     """
@@ -871,6 +1026,7 @@ class MyelinMap(ContCorticalSurface):
         self.surf_data = datasets.load_hcp1200_myelin_map(exc_regions, downsampled)
         self.columns = ['Myelin']
         self.label = 'HCP 1200 Myelin'
+        self.cmap = 'pink_r'
         self.dir_path = os.path.join(OUTPUT_DIR, 'myelin')
         os.makedirs(self.dir_path, exist_ok=True)
         if self.parcellation_name:
