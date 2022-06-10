@@ -1,6 +1,5 @@
 import os
 import itertools
-from attr import has
 import numpy as np
 import scipy.spatial.distance
 import pandas as pd
@@ -38,7 +37,8 @@ class ContCorticalSurface:
     """
     cmap = 'viridis' # default
     # TODO: specify required fields and methods
-    def __init__(self, surf_data, columns, label, dir_path=None):
+    def __init__(self, surf_data, columns, label, dir_path=None, 
+                 cmap='viridis', parcellation_name=None):
         """
         Initialize object using n-d surf_data. This will be overwritten
         by the sub-classes
@@ -63,6 +63,14 @@ class ContCorticalSurface:
         if self.dir_path is None:
             self.dir_path = OUTPUT_DIR
         os.makedirs(self.dir_path, exist_ok=True)
+        self.cmap = cmap
+        self.parcellation_name = parcellation_name
+        if self.parcellation_name:
+            self.parcellated_data = helpers.parcellate(
+                self.surf_data, self.parcellation_name
+                )
+            self.parcellated_data.columns = self.columns
+
 
     def plot(self, columns=None, add_labels=None, cmap=None, **plotter_kwargs):
         """
@@ -105,7 +113,8 @@ class ContCorticalSurface:
         return plots
 
     def correlate(self, other, parcellated=True, n_perm=1000,
-                 x_columns=None, y_columns=None, axis_off=False):
+                 x_columns=None, y_columns=None, axis_off=False,
+                 sort_barplot=True):
         """
         Calculate the correlation of surface maps with permutation test
         (with surrogates created using spins or variograms) and plot 
@@ -120,6 +129,7 @@ class ContCorticalSurface:
         n_perm: (int) number of permutations. Max: 1000
         x_columns, y_columns: (list of str) selected columns from self (x) and other (y)
         axis_off: (bool) turn the axis off from the plot
+        sort_barplot: (bool) sort bar plot based on correlation values
         """
         # TODO: add an option for removing outliers
         if parcellated:
@@ -130,6 +140,8 @@ class ContCorticalSurface:
             'correlation_'\
             +('parcellated_' if parcellated else '')\
             + other.label.lower().replace(" ", "_"))
+        # TODO: this naming approach sometimes can lead
+        # to error because of the file name being too long
         os.makedirs(out_dir, exist_ok=True)
         # select columns
         if not x_columns:
@@ -181,6 +193,37 @@ class ContCorticalSurface:
         coefs.index = pvals.index = y_columns
         coefs.to_csv(os.path.join(out_dir, 'coefs.csv'))
         pvals.to_csv(os.path.join(out_dir, 'pvals.csv'))
+        # bar plots
+        for x_column in x_columns:
+            curr_coefs = coefs.loc[:, x_column]
+            curr_pvals = pvals.loc[:, x_column]
+            if sort_barplot:
+                curr_coefs = curr_coefs.sort_values()
+                curr_pvals = curr_pvals.loc[curr_coefs.index]
+            # set the bar color based on p-value
+            # white = non-sig; darker = lower p-val
+            colors=[(1, 1, 1, 0)]*len(y_columns)
+            for i, y_column in enumerate(curr_pvals.index):
+                if curr_pvals[y_column] < 0.05:
+                    colors[i] = tuple([curr_pvals[y_column]/0.05]*3 + [0])
+            sns.set_style("white")
+            fig, ax = plt.subplots(figsize=(3, 2))
+            sns.barplot(
+                data=curr_coefs.to_frame(), 
+                x=x_column, y=curr_coefs.index, 
+                palette=colors, edgecolor=".2", ax=ax)
+            ax.axvline(0, color='black')
+            sns.despine(offset=1, left=True, trim=False, ax=ax)
+            ax.set_xlim((-1, 1))
+            ax.set_ylabel('')
+            ax.set_xlabel(f'Correlation with {x_column}')
+            fig.tight_layout()
+            fig.savefig(
+                os.path.join(
+                    out_dir, 
+                    f'barplot_{x_column.lower().replace(" ", "_")}.png'),
+                dpi=192
+                )
         # regression plots
         for x_column in x_columns:
             for y_column in y_columns:
@@ -417,6 +460,116 @@ class ContCorticalSurface:
                 = dominance_stats.loc[:, 'Total Dominance'].sum()
         dominance_stats.to_csv(os.path.join(out_path, 'dominance_stats.csv'))
 
+class LaminarFeatures(ContCorticalSurface):
+    label = 'Laminar features'
+    def __init__(self, parcellation_name=None, correct_curvature='smooth-10', exc_regions=None):
+        """
+        Structural features including total/laminar thickness, laminar densities and
+        microstructural profile moments
+        
+        Parameters
+        ----------
+        correct_curvature: (str or None)
+            - 'volume' [default]: normalize relative thickness by curvature according to the 
+            equivolumetric principle i.e., use relative laminar volume instead of relative laminar 
+            thickness. Laminar volume is expected to be less affected by curvature.
+            - 'regress': regresses map of curvature out from the map of relative thickness
+            of each layer (separately) using a linear regression. This is a more lenient approach of 
+            controlling for curvature.
+            - None
+        """
+        self.parcellation_name = parcellation_name
+        self.correct_curvature = correct_curvature
+        self.exc_regions = exc_regions
+        self.dir_path = os.path.join(OUTPUT_DIR, 'laminar_features')
+        os.makedirs(self.dir_path, exist_ok=True)
+        self.file_path = os.path.join(
+            self.dir_path, 
+            f'curv-{correct_curvature}_exc-{exc_regions}')
+        if os.path.exists(self.file_path+'.npz'):
+            npz = np.load(self.file_path+'.npz', allow_pickle=True)
+            self.columns = npz['columns']
+            self.surf_data = npz['surf_data']
+        else:
+            self._create()
+            np.savez_compressed(
+                self.file_path+'.npz',
+                surf_data = self.surf_data,
+                columns = self.columns
+            )
+        if self.parcellation_name:
+            self.parcellated_data = helpers.parcellate(
+                self.surf_data,
+                self.parcellation_name
+            )
+            self.parcellated_data.columns = self.columns
+    
+    def _create(self):
+        self.columns = []
+        features = []
+        # Absolute laminar thickness
+        abs_laminar_thickness = datasets.load_laminar_thickness(
+            normalize_by_total_thickness=False,
+            exc_regions=self.exc_regions
+        )
+        abs_laminar_thickness = helpers.downsample(
+            np.concatenate(
+                [abs_laminar_thickness['L'], abs_laminar_thickness['R']], axis=0
+                )
+        )
+        features.append(abs_laminar_thickness)
+        self.columns += [f'Layer {num} absolute thickness' for num in range(1, 7)]
+        # Total cortical thickness
+        total_thickness = abs_laminar_thickness.sum(axis=1)[:, np.newaxis]
+        total_thickness = helpers.downsample(total_thickness)
+        features.append(total_thickness)
+        self.columns += ['Total thickness']
+        #> Relative thicknesses/volumes
+        if self.correct_curvature is None:
+            rel_laminar_thickness = datasets.load_laminar_thickness(exc_regions=self.exc_regions)
+        elif 'smooth' in self.correct_curvature:
+            smooth_disc_radius = int(self.correct_curvature.split('-')[1])
+            rel_laminar_thickness = datasets.load_laminar_thickness(
+                exc_regions=self.exc_regions,
+                smooth_disc_radius=smooth_disc_radius
+            )
+        elif self.correct_curvature == 'regress':
+            rel_laminar_thickness = datasets.load_laminar_thickness(
+                exc_regions=self.exc_regions,
+                regress_out_curvature=True,
+            )
+        if rel_laminar_thickness['L'].shape[0] == datasets.N_VERTICES_HEM_BB:
+            rel_laminar_thickness = helpers.downsample(rel_laminar_thickness)
+        rel_laminar_thickness = np.concatenate(
+            [rel_laminar_thickness['L'], rel_laminar_thickness['R']], axis=0
+            )
+        features.append(rel_laminar_thickness)
+        self.columns += [f'Layer {num} relative thickness' for num in range(1, 7)]
+        #> Deep thickness ratio
+        deep_thickness_ratio = rel_laminar_thickness[:, 3:].sum(axis=1)[:, np.newaxis]
+        features.append(deep_thickness_ratio)
+        self.columns += ['Deep laminar thickness ratio']
+        #> Laminar densities
+        laminar_density = datasets.load_laminar_density(exc_regions=self.exc_regions)
+        laminar_density = np.concatenate(
+            [laminar_density['L'], laminar_density['R']], axis=0
+            )
+        laminar_density = helpers.downsample(laminar_density)
+        features.append(laminar_density)
+        self.columns += [f'Layer {num} density' for num in range(1, 7)]
+        #> Microstructural profile moments
+        density_profiles = datasets.load_total_depth_density(exc_regions=self.exc_regions)
+        density_profiles = np.concatenate([density_profiles['L'], density_profiles['R']])
+        density_profiles = helpers.downsample(density_profiles)
+        features += [
+            np.mean(density_profiles, axis=1)[:, np.newaxis],
+            np.std(density_profiles, axis=1)[:, np.newaxis],
+            scipy.stats.skew(density_profiles, axis=1)[:, np.newaxis],
+            scipy.stats.kurtosis(density_profiles, axis=1)[:, np.newaxis]
+        ]
+        self.columns += ['Density mean', 'Density std', 'Density skewness', 'Density kurtosis']
+        #> concatenate all the features into a single array
+        self.surf_data = np.hstack(features)
 
 class Gradients(ContCorticalSurface):
     """
@@ -810,11 +963,14 @@ class MicrostructuralCovarianceGradients(Gradients):
         # loading and parcellating the laminar thickness
         if not hasattr(self.matrix_obj, '_input_data'):
             self.matrix_obj._load_input_data()
-        laminar_thickness = self.matrix_obj._input_data
-        parcellated_laminar_thickness = helpers.parcellate(laminar_thickness, self.matrix_obj.parcellation_name)
-        parcellated_laminar_thickness = helpers.concat_hemispheres(parcellated_laminar_thickness, dropna=True)
-        # re-normalize small deviations from sum=1 because of parcellation
-        parcellated_laminar_thickness = parcellated_laminar_thickness.divide(parcellated_laminar_thickness.sum(axis=1), axis=0)
+        if self.matrix_obj.dataset == 'bigbrain':
+            laminar_thickness = self.matrix_obj._input_data
+            parcellated_laminar_thickness = helpers.parcellate(laminar_thickness, self.matrix_obj.parcellation_name)
+            parcellated_laminar_thickness = helpers.concat_hemispheres(parcellated_laminar_thickness, dropna=True)
+            # re-normalize small deviations from sum=1 because of parcellation
+            parcellated_laminar_thickness = parcellated_laminar_thickness.divide(parcellated_laminar_thickness.sum(axis=1), axis=0)
+        elif self.matrix_obj.dataset == 'economo':
+            parcellated_laminar_thickness = self.matrix_obj._parcellated_input_data
         for gradient_num in range(1, self._n_components_report+1):
             binned_parcels_laminar_thickness = parcellated_laminar_thickness.copy()
             binned_parcels_laminar_thickness['bin'] = pd.qcut(self.parcellated_data.iloc[:, gradient_num-1], n_bins)
@@ -899,13 +1055,13 @@ class CurvatureMap(ContCorticalSurface):
         if laminar_data['L'].shape[0] == datasets.N_VERTICES_HEM_BB:
             laminar_data = helpers.downsample(laminar_data)
         laminar_data = np.concatenate([laminar_data['L'], laminar_data['R']])
-        # 1. Correlation with deep laminar ratio
-        deep_ratio_obj = ContCorticalSurface(
+        # 1. Correlation with superficial laminar ratio
+        superficial_ratio_obj = ContCorticalSurface(
             laminar_data[:, :3].sum(axis=1) / laminar_data.sum(axis=1), 
-            columns = ['Deep laminar ratio'],
-            label = f'Deep laminar ratio {correct_curvature}'
+            columns = ['Superficial laminar thickness ratio'],
+            label = f'Superficial laminar thickness ratio {correct_curvature}'
         )
-        self.correlate(deep_ratio_obj, parcellated=False)
+        self.correlate(superficial_ratio_obj, parcellated=False)
         # 2. Plotting laminar profile per bin
         # convert to dataframe and rename columns
         laminar_data = pd.DataFrame(laminar_data,
@@ -1063,6 +1219,7 @@ class EffectiveConnectivityMaps(ContCorticalSurface):
     strength as well as their difference (hierarchy strength)
     """
     label = 'Effective connectivity maps'
+    cmap = 'YlGnBu_r'
     def __init__(self, dataset='hcp'):
         """
         Loads the EC matrix and calculates the three
@@ -1292,7 +1449,7 @@ class CatCorticalSurface:
         with open(os.path.join(out_dir, 'anova.txt'), 'w') as anova_res_file:
             anova_res_file.write(anova_res_str)
     
-    def spin_compare(self, other, parcellation_name, n_perm=1000):
+    def spin_compare(self, other, other_columns=None, n_perm=1000):
         """
         Compares the difference of `other.surf_data` across `self.included_categories` 
         while correcting for spatial autocorrelation
@@ -1313,10 +1470,15 @@ class CatCorticalSurface:
         assert n_perm <= 1000
         helpers.create_bigbrain_spin_permutations(n_perm=n_perm, is_downsampled=True)
         logging.info(f"Comparing surface data across {self.label} with spin test ({n_perm} permutations)")
+        if other_columns is None:
+            other_columns = other.columns
+            surf_data = other.surf_data
+        else:
+            surf_data = pd.DataFrame(other.surf_data, columns=other.columns).loc[:, other_columns].values
         # split the other surface in two hemispheres
-        surf_data = {
-            'L': other.surf_data[:other.surf_data.shape[0]//2],
-            'R': other.surf_data[other.surf_data.shape[0]//2:]
+        split_surf_data = {
+            'L': surf_data[:surf_data.shape[0]//2],
+            'R': surf_data[surf_data.shape[0]//2:]
         }
         # load the spin permutation indices
         spin_indices = np.load(os.path.join(
@@ -1324,26 +1486,26 @@ class CatCorticalSurface:
             )) # n_perm * n_vert arrays for 'lh' and 'rh'
         # create the lh and rh surrogates and concatenate them
         surrogates = np.concatenate([
-            surf_data['L'][spin_indices['lh']], 
-            surf_data['R'][spin_indices['rh']]
+            split_surf_data['L'][spin_indices['lh']], 
+            split_surf_data['R'][spin_indices['rh']]
             ], axis=1) # n_perm * n_vert * n_features
         # add the original surf_data at the beginning
         downsampled_surf_data_and_surrogates = np.concatenate([
-            other.surf_data[np.newaxis, :, :],
+            surf_data[np.newaxis, :, :],
             surrogates
             ], axis = 0)
-        all_anova_results = {column:[] for column in other.columns}
+        all_anova_results = {column:[] for column in other_columns}
         for perm in range(n_perm+1):
             logging.info(perm)
             # get the F stat and T stats for each permutation
             curr_data = downsampled_surf_data_and_surrogates[perm, :, :]
-            curr_parcelated_data = self._parcellate_and_categorize(curr_data, other.columns, parcellation_name)
-            for column in other.columns:
+            curr_parcelated_data = self._parcellate_and_categorize(curr_data, other_columns, other.parcellation_name)
+            for column in other_columns:
                 all_anova_results[column].append(
                     self._anova(curr_parcelated_data, column, output='stats', force_posthocs=True)
                 )
         spin_pvals = pd.DataFrame()
-        for column in other.columns:
+        for column in other_columns:
             # calculate the two-sided non-parametric p-values as the
             #  ratio of permutated F stat and T stats more extreme
             #  to the non-permutated values (in index -1)
@@ -1388,7 +1550,6 @@ class CorticalTypes(CatCorticalSurface):
                 parcellated_cortical_types.isin(self.included_categories)
                 ].cat.codes.to_frame()
             self.parcellated_data.columns = self.columns
-
 
     def load_parcels_categories(self, parcellation_name, downsampled):
         return datasets.load_cortical_types(parcellation_name, downsampled=downsampled)

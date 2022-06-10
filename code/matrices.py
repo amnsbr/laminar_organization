@@ -9,7 +9,10 @@ import scipy.spatial.distance
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
+import statsmodels.formula.api as smf
 import statsmodels.stats.multitest
+import statsmodels.stats.anova
+import statsmodels.api as sm
 import cmcrameri.cm # color maps
 import bct
 import PIL
@@ -32,13 +35,16 @@ class Matrix:
     """
     split_hem = False # set to False by default and only change for GD and SC
     cmap = 'rocket' # default cmap
-    def __init__(self, matrix, parcellation_name, label, dir_path, cmap=None):
+    def __init__(self, matrix, parcellation_name, label, dir_path, short_label=None, cmap=None):
         """
         Initialize any custom matrix
         """
         self.matrix = matrix
         self.parcellation_name = parcellation_name
         self.label = label
+        self.short_label = short_label
+        if self.short_label is None:
+            self.short_label = self.label
         self.dir_path = dir_path
         if cmap is not None:
             self.cmap = cmap
@@ -119,7 +125,7 @@ class Matrix:
             vrange=vrange
             )
 
-    def correlate_edge_wise(self, other, test='pearson', plot_half_matrices=False):
+    def correlate_edge_wise(self, other, test='pearson', plot_half_matrices=False, regress_out_gd=False):
         """
         Calculates and plots the correlation between the edges of two matrices
         self and other which are assumed to be square and symmetric. The correlation
@@ -137,31 +143,22 @@ class Matrix:
         assert self.parcellation_name == other.parcellation_name
         # match the matrices in the order and selection of parcels
         # + convert them to np.ndarray
-        shared_parcels = self.matrix.index.intersection(other.matrix.index)
-        X = self.matrix.loc[shared_parcels, shared_parcels]
-        Y = other.matrix.loc[shared_parcels, shared_parcels]
-        # if L and R should be investigated separately
-        # make interhemispheric pairs of the lower triangle
-        # NaN so it could be then removed
-        # it may be already NaN in these matrices
-        if self.split_hem or other.split_hem:
-            hem_parcels = helpers.get_hem_parcels(
-                self.parcellation_name, 
-                limit_to_parcels=shared_parcels.tolist()
-                )
-            X.loc[hem_parcels['R'], hem_parcels['L']] = np.NaN
-            Y.loc[hem_parcels['R'], hem_parcels['L']] = np.NaN
-            X.loc[hem_parcels['L'], hem_parcels['R']] = np.NaN
-            Y.loc[hem_parcels['L'], hem_parcels['R']] = np.NaN
+        if regress_out_gd:
+            gd = DistanceMatrix(self.parcellation_name)
+            X = gd.regress_out(self, save_plot=False)
+            Y = gd.regress_out(other, save_plot=False)
+        else:
+            X = self.matrix
+            Y = other.matrix
+        shared_parcels = X.index.intersection(Y.index)
+        X = X.loc[shared_parcels, shared_parcels]
+        Y = Y.loc[shared_parcels, shared_parcels]
         # get the index for lower triangle
         tril_index = np.tril_indices_from(X.values, -1)
         x = X.values[tril_index]
         y = Y.values[tril_index]
-        # remove NaNs (e.g. interhemispheric pairs) and 0s
-        # as when Y matrix is zeroed out 0
-        # has lost its meaning and there's a lot of zeros which
-        # have been actually the negative values
-        mask = ~((x==0) | np.isnan(x) | (y==0) | np.isnan(y))
+        # remove NaNs (e.g. interhemispheric pairs)
+        mask = ~(np.isnan(x) | np.isnan(y))
         x = x[mask]
         y = y[mask]
         # correlation
@@ -188,8 +185,8 @@ class Matrix:
             ax=ax, ci=None, scatter=False, 
             color='red', line_kws=dict(alpha=0.6)
             )
-        ax.set_xlim((np.quantile(x, 0.025), np.quantile(x, 0.975)))
-        ax.set_ylim((np.quantile(y, 0.025), np.quantile(y, 0.975))),
+        # ax.set_xlim((np.quantile(x, 0.025), np.quantile(x, 0.975)))
+        # ax.set_ylim((np.quantile(y, 0.025), np.quantile(y, 0.975))),
         # add rho on the figure
         text_x = ax.get_xlim()[0]+(ax.get_xlim()[1]-ax.get_xlim()[0])*0.05
         text_y = ax.get_ylim()[0]+(ax.get_ylim()[1]-ax.get_ylim()[0])*0.95
@@ -206,7 +203,6 @@ class Matrix:
         jp.fig.savefig(out_path+'.png', dpi=192)
         if plot_half_matrices:
             # plotting half-half matrix
-            X, Y = self._get_x_y(other, return_matrix=True)
             uhalf_X = X.values
             uhalf_X[np.tril_indices_from(X, 0)] = np.NaN
             lhalf_Y = Y.values
@@ -253,15 +249,6 @@ class Matrix:
         # make interhemispheric pairs of the lower triangle
         # NaN so it could be then removed
         # it may be already NaN in these matrices
-        if self.split_hem or other.split_hem:
-            hem_parcels = helpers.get_hem_parcels(
-                self.parcellation_name, 
-                limit_to_parcels=shared_parcels.tolist()
-                )
-            X.loc[hem_parcels['R'], hem_parcels['L']] = np.NaN
-            Y.loc[hem_parcels['R'], hem_parcels['L']] = np.NaN
-            X.loc[hem_parcels['L'], hem_parcels['R']] = np.NaN
-            Y.loc[hem_parcels['L'], hem_parcels['R']] = np.NaN
         X = X.values
         Y = Y.values
         # calculate the correlation at each row (node)
@@ -270,8 +257,8 @@ class Matrix:
         for row_idx in range(X.shape[0]):
             row_x = X[row_idx, :]
             row_y = Y[row_idx, :]
-            # remove NaNs and 0s
-            row_mask = ~((row_x==0) | np.isnan(row_x) | (row_y==0) | np.isnan(row_y)) 
+            # remove NaNs 
+            row_mask = ~(np.isnan(row_x) | np.isnan(row_y)) 
             row_x = row_x[row_mask]
             row_y = row_y[row_mask]
             # calculate correlation
@@ -357,7 +344,7 @@ class Matrix:
         matrix = self.matrix.loc[
             ~parcellated_cortical_types.isin(excluded_types), 
             ~parcellated_cortical_types.isin(excluded_types)
-            ] # this is probably not needed since excluded types are already excluded!
+            ]
         parcellated_cortical_types = (
             parcellated_cortical_types
             .loc[~parcellated_cortical_types.isin(excluded_types)]
@@ -382,9 +369,9 @@ class Matrix:
         if stats:
             # quantify intra and intertype similarity
             intra_intertype = pd.DataFrame(
-                np.zeros((n_types, 2)),
+                np.zeros((n_types+1, 2)),
                 columns=['intra', 'inter'],
-                index=included_types
+                index=included_types+['All']
                 )
             for group_idx, group_df in matrix.groupby(parcellated_cortical_types):
                 intra_intertype.loc[group_idx, 'intra'] = \
@@ -398,8 +385,18 @@ class Matrix:
                     .mean() # take average of cortical types for each row (parcel)
                     .drop(index=group_idx) # remove the same type
                     .values.mean()) # take the average of average of rows in each cortical type
+            # calculate intra and inter type similarity across all types
+            ## create a matrix indicating edges belonging to the same
+            ## cortical type
+            same_type_mat = (
+                parcellated_cortical_types.to_numpy()[:, np.newaxis] \
+                == parcellated_cortical_types.to_numpy()[np.newaxis, :]
+                )
+            ## average matrix values across edges with the same or different types
+            intra_intertype.loc['All', 'intra'] = np.nanmean(matrix.to_numpy()[same_type_mat])
+            intra_intertype.loc['All', 'inter'] = np.nanmean(matrix.to_numpy()[~same_type_mat])
             # test significance using permutation
-            null_dist_intra_intertype = np.zeros((1000, n_types, 2))
+            null_dist_intra_intertype = np.zeros((1000, n_types+1, 2))
             if null_method == 'bct':
                 surrogates = self.create_or_load_surrogates()
             logging.info("Calculating p-value with permutation testing (1000 permutations)")
@@ -414,9 +411,9 @@ class Matrix:
                 surrogate.index = matrix.index
                 surrogate.columns = matrix.columns
                 null_intra_intertype = pd.DataFrame(
-                    np.zeros((n_types, 2)),
+                    np.zeros((n_types+1, 2)),
                     columns=['intra', 'inter'],
-                    index=included_types)
+                    index=included_types+['All'])
                 for group_idx, group_df in surrogate.groupby(parcellated_cortical_types):
                     null_intra_intertype.loc[group_idx, 'intra'] = \
                         (group_df
@@ -430,11 +427,77 @@ class Matrix:
                         .drop(index=group_idx) # remove the same type
                         .dropna() # drop unknown and ALO
                         .values.mean()) # take the average of average of rows in each cortical type
+                null_intra_intertype.loc['All', 'intra'] = np.nanmean(surrogate.to_numpy()[same_type_mat])
+                null_intra_intertype.loc['All', 'inter'] = np.nanmean(surrogate.to_numpy()[~same_type_mat])
                 null_dist_intra_intertype[perm_idx, :, :] = null_intra_intertype.values
             null_dist_diff_intra_inter = null_dist_intra_intertype[:, :, 0] - null_dist_intra_intertype[:, :, 1]
             diff_intra_inter = (intra_intertype.iloc[:, 0] - intra_intertype.iloc[:, 1]).values.reshape(1, -1)
             intra_intertype['pvals'] = (null_dist_diff_intra_inter > diff_intra_inter).mean(axis=0)
             intra_intertype.to_csv(self.file_path + '_intra_intertype_diff.txt')
+
+    def compare_fit(self, other1, other2, regress_out_gd=False):
+        """
+        Evaluates whether the the fit between `self` and
+        `other1` or `other2` will improve if both `other1`
+        and `other2` are included in the model.
+
+        Parameters
+        ----------
+        self, other1, other2: (Matrix)
+        regress_out_gd: 
+            regress out geodesic distance from all matrices
+            using exponential fit (doesn't work is 
+            CorticalTypeDiffMatrix is one of the matrices)
+        """
+        # make sure they have the same parcellation and mask
+        assert self.parcellation_name == other1.parcellation_name == other2.parcellation_name
+        # match the matrices in the order and selection of parcels
+        # + convert them to np.ndarray
+        if regress_out_gd:
+            gd = DistanceMatrix(self.parcellation_name)
+            X1 = gd.regress_out(other1, save_plot=False)
+            X2 = gd.regress_out(other2, save_plot=False)
+            Y = gd.regress_out(self, save_plot=False)
+        else:
+            X1 = other1.matrix
+            X2 = other2.matrix
+            Y = self.matrix
+        shared_parcels = Y.index.intersection(X1.index.intersection(X2.index))
+        tril_index = np.tril_indices_from(X1.values, -1)
+        X1 = X1.loc[shared_parcels, shared_parcels]
+        X2 = X2.loc[shared_parcels, shared_parcels]
+        Y = Y.loc[shared_parcels, shared_parcels]
+        # get the index for lower triangle
+        tril_index = np.tril_indices_from(X1.values, -1)
+        x1 = X1.values[tril_index]
+        x2 = X2.values[tril_index]
+        y = Y.values[tril_index]
+        # remove NaNs (e.g. interhemispheric pairs)
+        mask = ~(np.isnan(x1) | np.isnan(x2) | np.isnan(y))
+        series = []
+        for (array, matrix_obj) in zip(
+            [x1, x2, y],
+            [other1, other2, self]):
+            array = array[mask]
+            series.append(
+                pd.Series(
+                    array,
+                    name = matrix_obj.label.replace(' ', '_'),
+                    dtype = matrix_obj.matrix.iloc[:, 0].dtype.name)
+            )
+        df = pd.concat(series, axis=1)
+        m1 = smf.ols(formula=f'{df.columns[-1]} ~ {df.columns[0]}', data=df).fit()
+        m2 = smf.ols(formula=f'{df.columns[-1]} ~ {df.columns[1]}', data=df).fit()
+        m_both = smf.ols(formula=f'{df.columns[-1]} ~ {df.columns[0]} + {df.columns[1]}', data=df).fit()
+        res_str = f'Fit improvement after adding {df.columns[1]} to {df.columns[0]}\n\n'
+        res_str += str(statsmodels.stats.anova.anova_lm(m1, m_both))
+        res_str += f'\n\nFit improvement after adding {df.columns[0]} to {df.columns[1]}\n\n'
+        res_str += str(statsmodels.stats.anova.anova_lm(m2, m_both))
+        res_str += '\n\n' + '\n\n'.join([str(m.summary()) for m in [m1, m2, m_both]])
+        out_path = os.path.join(self.dir_path, f'compare_fit_{df.columns[0]}_{df.columns[1]}')
+        with open(out_path+'.txt', 'w') as res_file:
+            res_file.write(res_str)
+        print(res_str)
 
 class CurvatureSimilarityMatrix(Matrix):
     """
@@ -679,10 +742,10 @@ class DistanceMatrix(Matrix):
         ED_matrix = pd.DataFrame(ED_matrix, columns=parcels, index=parcels)
         return ED_matrix
 
-    def regress_out(self, other):
+    def regress_out(self, other, save_plot=True):
         """
         Regresses out GD matrix from another matrix (e.g. LTC)
-        using a 2nd degree polynomial regression
+        using a exponential fit
         """
         # make sure they have the same parcellation and mask
         assert self.parcellation_name == other.parcellation_name
@@ -691,35 +754,21 @@ class DistanceMatrix(Matrix):
         shared_parcels = self.matrix.index.intersection(other.matrix.index)
         GD = self.matrix.loc[shared_parcels, shared_parcels]
         Y = other.matrix.loc[shared_parcels, shared_parcels]
-        # if L and R should be investigated separately
-        # make interhemispheric pairs of the lower triangle
-        # NaN so it could be then removed
-        # it may be already NaN in these matrices
-        if self.split_hem or other.split_hem:
-            hem_parcels = helpers.get_hem_parcels(
-                self.parcellation_name, 
-                limit_to_parcels=shared_parcels.tolist()
-                )
-            GD.loc[hem_parcels['R'], hem_parcels['L']] = np.NaN
-            Y.loc[hem_parcels['R'], hem_parcels['L']] = np.NaN
-            GD.loc[hem_parcels['L'], hem_parcels['R']] = np.NaN
-            Y.loc[hem_parcels['L'], hem_parcels['R']] = np.NaN
         # get the index for lower triangle
         tril_index = np.tril_indices_from(GD.values, -1)
         gd = GD.values[tril_index]
         y = Y.values[tril_index]
-        # remove NaNs (e.g. interhemispheric pairs) and 0s
-        # as when Y matrix is zeroed out 0
-        # has lost its meaning and there's a lot of zeros which
-        # have been actually the negative values
-        mask = ~((gd==0) | np.isnan(gd) | (y==0) | np.isnan(y))
+        # remove NaNs (e.g. interhemispheric pairs)
+        mask = ~(np.isnan(gd) | np.isnan(y))
+        # keep track of which items are in the mask which will be needed
+        # when reconstructing unmasked full matrix
         mask_idx = np.arange(mask.shape[0])[mask]
         gd = gd[mask]
         y = y[mask]
-        # the polynomial fit
-        coefs = np.polyfit(gd, y, deg=2)
+        # the exponential fit
+        coefs = helpers.exponential_fit(gd, y)
         # get the reisd
-        y_hat = coefs[2] + coefs[1]*gd + coefs[0]*gd**2
+        y_hat = helpers.exponential_eval(gd, *coefs)
         y_resid = y - y_hat
         # calculate R2
         r2 = 1 - (y_resid.var() / y.var())
@@ -727,7 +776,7 @@ class DistanceMatrix(Matrix):
         fig, ax = plt.subplots(figsize=(6, 4))
         ax = sns.scatterplot(gd, y, s=1, alpha=0.2, color='grey')
         line_x = np.linspace(0, gd.max(), 500)
-        line_y = coefs[2] + coefs[1]*line_x + coefs[0]*line_x**2
+        line_y = helpers.exponential_eval(line_x, *coefs)
         ax.plot(line_x, line_y, color='red')
         ax.set_xlabel('Geodesic distance')
         ax.set_ylabel(other.label)
@@ -737,8 +786,9 @@ class DistanceMatrix(Matrix):
             f'R2 = {r2:.2f}',
             color='black', size=12,
             multialignment='left')
-        fig.tight_layout()
-        fig.savefig(other.file_path+'_gd_regression')
+        if save_plot:
+            fig.tight_layout()
+            fig.savefig(other.file_path+'_gd_regression')
         # convert it back to the matrix
         lhalf_matrix = np.zeros_like(tril_index[0]).astype('float64')
         lhalf_matrix[mask_idx] = y_resid
@@ -752,10 +802,13 @@ class DistanceMatrix(Matrix):
             Y_RES, index=shared_parcels, columns=shared_parcels
         )
         # set interhemispheric edges to NaN
+        hem_parcels = helpers.get_hem_parcels(
+            self.parcellation_name, 
+            limit_to_parcels=shared_parcels.tolist()
+            )
         Y_RES.loc[hem_parcels['R'], hem_parcels['L']] = np.NaN
         Y_RES.loc[hem_parcels['L'], hem_parcels['R']] = np.NaN
         return Y_RES
-
 
 class ConnectivityMatrix(Matrix):
     """
@@ -804,19 +857,16 @@ class ConnectivityMatrix(Matrix):
             + f'_data-{dataset}'
             )
         self.file_path = os.path.join(self.dir_path, 'matrix')
-        if os.path.exists(self.file_path + '.npz'):
-            self._load(make_symmetric=(self.kind != 'effective'))
-        else:
-            os.makedirs(self.dir_path, exist_ok=True)
-            self.matrix = datasets.load_conn_matrix(self.kind, self.parcellation_name, dataset)
-            if (self.kind == 'structural') & self.sc_zero_contra:
-                hem_parcels = helpers.get_hem_parcels(
-                    self.parcellation_name, 
-                    limit_to_parcels=self.matrix.index.tolist()
-                    )
-                self.matrix.loc[hem_parcels['L'], hem_parcels['R']] = np.NaN
-                self.matrix.loc[hem_parcels['R'], hem_parcels['L']] = np.NaN
-            self._save()
+        os.makedirs(self.dir_path, exist_ok=True)
+        self.matrix = datasets.load_conn_matrix(self.kind, self.parcellation_name, dataset)
+        self.matrix.values[np.isclose(self.matrix, 0)] = np.NaN
+        if (self.kind == 'structural') & self.sc_zero_contra:
+            hem_parcels = helpers.get_hem_parcels(
+                self.parcellation_name, 
+                limit_to_parcels=self.matrix.index.tolist()
+                )
+            self.matrix.loc[hem_parcels['L'], hem_parcels['R']] = np.NaN
+            self.matrix.loc[hem_parcels['R'], hem_parcels['L']] = np.NaN
         # remove the adysgranular parcels after the matrix is created
         # to avoid unncessary waste of computational resources
         # note this is not saved
@@ -845,9 +895,11 @@ class ConnectivityMatrix(Matrix):
         if columns is None:
             columns = surf_obj.columns
         for column in columns:
-            # create a difference matrix where the lower triangle
-            # shows how higher the value of row parcel is compared
-            # to the column parcel
+            # create a difference matrix shows how higher the value of 
+            # column parcel is compared to the row parcel
+            # note that this is not a symmetric matrix and then
+            # it's correlation to the EC difference matrix is
+            # only evaluated at the lower triangle
             surf_diff_matrix = (
                 surf_obj.parcellated_data[column].values[np.newaxis, :]
                 - surf_obj.parcellated_data[column].values[:, np.newaxis]
@@ -857,10 +909,11 @@ class ConnectivityMatrix(Matrix):
                 index=surf_obj.parcellated_data.index, 
                 columns=surf_obj.parcellated_data.index
                 )
-            # create an EC difference matrix where the lower triangle
-            # shows how higher the efferent connectivity of row to column
-            # is compared to the afferent connectivity from column to row
-            # which can be a marker of relative hierarchy of any two parcels
+            # create an EC difference matrix which
+            # shows how higher the connectivity from row to column
+            # is compared to the connectivity from column to row
+            # which, if positive, indicates higher hierarchy of
+            # the row parcel compared to the column parcel
             ec_diff_matrix = self.matrix.values - self.matrix.values.T
             ec_diff_matrix = pd.DataFrame(
                 ec_diff_matrix, 
@@ -883,8 +936,81 @@ class ConnectivityMatrix(Matrix):
                 dir_path = os.path.join(self.dir_path, 'diff_matrix'),
                 cmap = cmcrameri.cm.bamako
             )
-            surf_diff_matrix_obj.correlate_edge_wise(ec_diff_matrix_obj)
+            surf_diff_matrix_obj.correlate_edge_wise(ec_diff_matrix_obj, plot_half_matrices=True)
             surf_diff_matrix_obj.correlate_node_wise(ec_diff_matrix_obj)
+
+    def binarize(self, fc_pthreshold=0.25):
+        """
+        Binarize the SC or FC
+        """
+        if self.kind == 'structural':
+            mat_binned = pd.DataFrame(
+                        self.matrix.values > 0,
+                        index = self.matrix.index,
+                        columns = self.matrix.columns
+                    )
+            if self.sc_zero_contra:
+                hem_parcels = helpers.get_hem_parcels(
+                    self.parcellation_name, 
+                    limit_to_parcels=self.matrix.index.tolist()
+                    )
+                mat_binned.loc[hem_parcels['L'], hem_parcels['R']] = np.NaN
+                mat_binned.loc[hem_parcels['R'], hem_parcels['L']] = np.NaN
+        elif self.kind == 'functional':
+            mat_binned = pd.DataFrame(
+                bct.binarize(bct.threshold_proportional(self.matrix.values, fc_pthreshold)),
+                index = self.matrix.index,
+                columns = self.matrix.columns
+            )
+        else:
+            raise NotImplementedError
+        return mat_binned
+
+    def binarized_association(self, other, threshold=0.25):
+        """
+        Binarize the SC or FC matrix and compare the likelihood
+        of connectivity based on another categorical matrix (e.g. 
+        CorticalTypeDiffMatrix) using a stacked bar plot
+        """
+        Y = self.binarize()
+        X = other.matrix
+        shared_parcels = X.index.intersection(Y.index)
+        X = X.loc[shared_parcels, shared_parcels]
+        Y = Y.loc[shared_parcels, shared_parcels]
+        # get the index for lower triangle
+        tril_index = np.tril_indices_from(X.values, -1)
+        x = X.values[tril_index]
+        y = Y.values[tril_index]
+        # remove NaNs (e.g. interhemispheric pairs)
+        mask = ~(np.isnan(x) | np.isnan(y))
+        x = x[mask]
+        y = y[mask].astype('bool')
+        df = pd.DataFrame({'Categories': x, 'Connected': y})
+        # stacked bar plot of existing vs absent connections grouped by categories
+        ## calculate the percentage of existing and absent connections per category
+        percentages = (
+            df.groupby('Categories')['Connected']
+            .value_counts(normalize=True)
+            .mul(100).rename('percentage')
+            .reset_index()
+        )
+        ## add categories with no existing or absent connections
+        ## to the percentages to prevent errors when creating the barplots
+        for single_bin_cat in percentages.value_counts('Categories')[percentages.value_counts('Categories') == 1].keys():
+            bin_w_100_percent = percentages.loc[percentages['Categories']==single_bin_cat, 'Connected'].values[0]
+            bin_w_0_percent = ~bin_w_100_percent
+            percentages = percentages.append({'Categories': single_bin_cat, 'Connected': bin_w_0_percent, 'percentage':0.0}, ignore_index=True)
+        ## create the bar plots
+        fig, ax = plt.subplots()
+        existing_conn = percentages[percentages['Connected']]
+        absent_conn = percentages[~percentages['Connected']]
+        ax.bar(existing_conn['Categories'], height=existing_conn['percentage'], facecolor='black', edgecolor='black', width = 0.5)
+        ax.bar(absent_conn['Categories'], bottom=existing_conn['percentage'], height=absent_conn['percentage'], facecolor='white', edgecolor='black', width = 0.5)
+        ax.set_xticks(percentages['Categories'].unique())
+        # logistic regression (this only makes sense for ordered 'Categories')
+        lgr = sm.Logit(df['Connected'], df['Categories']).fit()
+        res_str = str(lgr.summary())
+        print(res_str)
 
 class MicrostructuralCovarianceMatrix(Matrix):
     """
@@ -984,13 +1110,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
         """
         Creates microstructural covariance matrix
         """
-        print(f"""
-        Creating microstructural covariance matrix:
-            - input_type: {self.input_type},
-            - correct_curvature: {self.correct_curvature}
-            - parcellation_name: {self.parcellation_name},
-            - exc_regions: {self.exc_regions}
-        """)
+        print("Creating microstructural covariance matrix")
         if self.input_type == 'thickness-density':
             matrices = []
             for input_type in ['thickness', 'density']:
@@ -1424,12 +1544,12 @@ class MicrostructuralCovarianceMatrix(Matrix):
         fig.tight_layout()
         fig.savefig(os.path.join(self.dir_path,'parcels_profile'), dpi=192)
 
-class CorticalTypeSimilarityMatrix(Matrix):
-    label = "Cortical type similarity"
+class CorticalTypeDiffMatrix(Matrix):
+    label = "Cortical type difference"
     cmap = 'YlOrRd'
-    def __init__(self, parcellation_name, exc_regions):
+    def __init__(self, parcellation_name, exc_regions=None):
         """
-        Initializes cortical type similarity matrix object for the given `parcellation_name`
+        Initializes cortical type difference matrix object for the given `parcellation_name`
 
         Parameters
         ---------
@@ -1440,36 +1560,33 @@ class CorticalTypeSimilarityMatrix(Matrix):
         self.exc_regions = exc_regions
         self.dir_path = os.path.join(
             OUTPUT_DIR, 'ctypes', 
-            f'similarity_parc-{self.parcellation_name}'\
+            f'diff_parc-{self.parcellation_name}'\
             + (f'_exc-{self.exc_regions}' if self.exc_regions else '')
             )
         self.file_path = os.path.join(self.dir_path, 'matrix')
-        if os.path.exists(self.file_path + '.npz'):
-            self._load()
-        else:
-            os.makedirs(self.dir_path, exist_ok=True)
-            self._create()
-            if self.exc_regions:
-                self.matrix = self._remove_parcels(self.exc_regions)
-            self._save()
-            self.plot()            
+        os.makedirs(self.dir_path, exist_ok=True)
+        self._create()
+        self.plot(vrange=(0, 1))
+        # convert dtype to category (important for compare_fit function)
+        self.matrix = self.matrix.astype('int').astype('category')
 
     def _create(self):
         """
-        Create cortical type similarity matrix
+        Create cortical type difference matrix
         """
         # load cortical types per parcel
-        parcellated_cortical_types = datasets.load_cortical_types(self.parcellation_name)
-        parcellated_cortical_types = parcellated_cortical_types.dropna()
+        cortical_types = surfaces.CorticalTypes(
+            self.exc_regions, 
+            parcellation_name=self.parcellation_name)
+        parcellated_cortical_types = cortical_types.parcellated_data['Cortical Type']
         # get the magnitude of difference between the cortical types
         ctype_diff = np.abs(
-            parcellated_cortical_types.cat.codes.values[:, np.newaxis] \
-            - parcellated_cortical_types.cat.codes.values[np.newaxis, :]
+            parcellated_cortical_types.values[:, np.newaxis] \
+            - parcellated_cortical_types.values[np.newaxis, :]
             )
-        # reverse it to make it a similarity matrix in the range of (1, 7)
-        ctype_similarity = 7 - ctype_diff
+        # label the matrix
         self.matrix = pd.DataFrame(
-            ctype_similarity,
+            ctype_diff,
             index=parcellated_cortical_types.index,
             columns=parcellated_cortical_types.index,
         )
@@ -1690,6 +1807,8 @@ class NeuronalSubtypesCovarianceMatrix(Matrix):
         Gets the ContCorticalSurface object of subtypes expression
         maps
         """
+        # TODO: this is not very clean. There should be a 
+        # separate surface class for these subtypes in surfaces.py
         if not hasattr(self, '_parcellated_input_data'):
             self._parcellated_input_data = self._load_input_data()
         surf_data = helpers.deparcellate(
@@ -1705,4 +1824,5 @@ class NeuronalSubtypesCovarianceMatrix(Matrix):
             label = self.label.replace(' covariance', ''),
             dir_path = os.path.join(self.dir_path, 'input_maps'),
             cmap = self.cmap,
+            parcellation_name = self.parcellation_name
         )

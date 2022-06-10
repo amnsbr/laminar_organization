@@ -1027,57 +1027,83 @@ def variogram_test(X, Y, parcellation_name, n_perm=1000, surrogates_path=None):
     test_r = test_r[0, :, :]
     return test_r, p_val, null_distribution
 
+def exponential_eval(x, a, b, c):
+    """
+    Evaluates y given x and exponential fit parameters
+    in form y = a + b * exp(c*x)
+    """
+    return a + b * np.exp(c * x)
+
+def exponential_fit(x, y):
+    """
+    Computes an exponential decay fit to two vectors of x and y data
+    result is in form y = a + b * exp(c*x).
+    It first calculates an analytical approximation based on 
+    https://math.stackexchange.com/questions/2318418/initial-guess-for-fitting-exponential-with-offset
+    (which is originally based on "Regressions et Equations integrales" by Jean Jacquelin 
+    [https://www.scribd.com/doc/14674814/Regressions-et-equations-integrales])
+    and is converted to Python by https://gist.github.com/johanvdw/443a820a7f4ffa7e9f8997481d7ca8b3.
+    Then uses the analytical solution as the primer to scipy.optimize.curve_fit
+    """
+    # TODO: add comments to the code copied from the gist
+    #>>> start of the gist
+    n = np.size(x)
+    # sort the data into ascending x order
+    y = y[np.argsort(x)]
+    x = x[np.argsort(x)]
+    Sk = np.zeros(n)
+    for n in range(1,n):
+        Sk[n] = Sk[n-1] + (y[n] + y[n-1])*(x[n]-x[n-1])/2
+    dx = x - x[0]
+    dy = y - y[0]
+    m1 = np.matrix([[np.sum(dx**2), np.sum(dx*Sk)],
+                    [np.sum(dx*Sk), np.sum(Sk**2)]])
+    m2 = np.matrix([np.sum(dx*dy), np.sum(dy*Sk)])
+    [d, c] = (m1.I * m2.T).flat
+    m3 = np.matrix([[n,                  np.sum(np.exp(  c*x))],
+                    [np.sum(np.exp(c*x)),np.sum(np.exp(2*c*x))]])
+    m4 = np.matrix([np.sum(y), np.sum(y*np.exp(c*x).T)])
+    [a, b] = (m3.I * m4.T).flat
+    coefs  = [a, b, c]
+    #<<< end of the gist
+    # try improving the analytical coefs
+    try:
+        coefs, _ = scipy.optimize.curve_fit(exponential_eval, x, y, p0=coefs, maxfev=10000)
+    except RuntimeError: 
+        # if it failed to convergence after 10000 iterations
+        # use the original analytical solution
+        print("curve_fit failed to converge after 10000 iterations")
+        pass
+    return coefs
+
+    
+
 def fsa_annot_to_fsa5_gii(parcellation_name):
     """
     Converts a parcellation from fsaverage space to fsaverage5
     simply by taking first 10242 vertices and saving it again
     as .annot and .label.gii files
+    It is needed for abagen 
     """
     for hem in ['lh', 'rh']:
+        # load parcellation map, ctab and names of the original annot file
         ico7_annot_path = os.path.join(SRC_DIR, f'{hem}_{parcellation_name}.annot')
         labels_ico7, ctab, names = nibabel.freesurfer.io.read_annot(ico7_annot_path)
+        # select the first 10k vertices of ico7 to get ico5 parcellation map
         labels_ico5 = labels_ico7[:datasets.N_VERTICES_HEM_BB_ICO5]
+        if parcellation_name == 'aparc':
+            # the background in aparc has the value -1
+            # but abagen assumes in every parcellation for
+            # 0 to be the value for the background
+            labels_ico5[labels_ico5==-1] = 0
+        # save as annot
         nibabel.freesurfer.io.write_annot(
             ico7_annot_path.replace('.annot', '_fsa5.annot'),
             labels_ico5, ctab, names
         )
+        # convert to gifti and save it
         gifti_img = abagen.images.annot_to_gifti(ico7_annot_path.replace('.annot', '_fsa5.annot'))
         nibabel.save(
             gifti_img,
             ico7_annot_path.replace('.annot', '_fsa5.label.gii')
             )
-
-def fix_brodmann_annot():
-    """
-    The original .annot file from FreeSurfer for Brodmann
-    includes non-brodmann regions as well. This function 
-    fixes this issue by replacing non-Brodmann parcels with
-    '???' (background)
-    """
-    for hem in ['lh', 'rh']:
-        annot_path = os.path.join(SRC_DIR, f'{hem}_brodmann_orig.annot')
-        labels, ctab, names = nibabel.freesurfer.io.read_annot(annot_path)
-        # identify Brodmann parcels
-        brodmann_parcel_indices = []
-        for idx, name in enumerate(names):
-            if 'Brodmann.' in name.decode():
-                brodmann_parcel_indices.append(idx)
-        # Convert parcel id of non-Brodmann areas to 0
-        brodmann_areas_mask = np.in1d(labels, np.array(brodmann_parcel_indices))
-        labels_brodmann_only = np.where(brodmann_areas_mask, labels, 0)
-        # Change the parcel ids to range(0, n_Brodmann_parcels+1)
-        parcels_new_idx = {old_idx: new_idx for new_idx, old_idx in enumerate(np.unique(labels_brodmann_only))}
-        labels = np.vectorize(parcels_new_idx.get)(labels_brodmann_only)
-        # Select ctab and names for the selected parcels (+ others: parcel id 0)
-        included_parcel_indices = [0] + brodmann_parcel_indices
-        ## parcel 93 (Brodmann.33) does not exist in the map => remove it
-        included_parcel_indices = list(
-            set(included_parcel_indices) \
-            - (set(brodmann_parcel_indices) - set(np.unique(labels_brodmann_only)))
-        )
-        ctab = ctab[included_parcel_indices]
-        names = np.array(names)[included_parcel_indices]
-        nibabel.freesurfer.io.write_annot(
-            annot_path.replace('_orig', ''),
-            labels, ctab, names
-        )

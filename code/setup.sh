@@ -1,8 +1,8 @@
 #!/bin/bash
 cd "$(dirname "$0")/.."
 PROJECT_DIR="$(realpath .)"
-## TODO: conda installation
-## TODO: install wb_command
+## TODO: conda installation (4.12.0)
+## TODO: install wb_command (1.5.0)
 
 # Install conda and pip dependencies based on environment.yml
 echo "Installing conda env in ${PROJECT_DIR}/laminar_gradients_conda"

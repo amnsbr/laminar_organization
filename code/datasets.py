@@ -172,6 +172,8 @@ def load_cortical_types(parcellation_name=None, downsampled=False):
     cortical_types_map = cortical_types_map.cat.reorder_categories(['ALO', 'AG', 'DG', 'EU1', 'EU2', 'EU3', 'KO'])
     if parcellation_name:
         # load parcellation map
+        # TODO: may return different types for some parcels depending on wether the surface should
+        # be downsampled (e.g. parcel 315 of sjh)
         parcellation_map = load_parcellation_map(parcellation_name, concatenate=True, downsampled=downsampled)
         parcellated_cortical_types_map = (
             #> create a dataframe of surface map including both cortical type and parcel index
@@ -399,7 +401,7 @@ def load_economo_laminar_thickness(normalize_by_total_thickness=True):
             SRC_DIR, 
             'von_economo_laminar_thickness.csv'
             ), 
-        delimiter=";").set_index('area_name')
+        delimiter=";").set_index('parcel')
     if normalize_by_total_thickness:
         parcellated_laminar_thickness = parcellated_laminar_thickness.divide(
             parcellated_laminar_thickness.sum(axis=1),
@@ -793,7 +795,8 @@ def load_conn_matrix(kind, parcellation_name='schaefer400', dataset='hcp'):
     else:
         # match parcellation name with the enigmatoolbox
         ENIGMATOOLBOX_PARC_NAMES = {
-            'schaefer400': 'schaefer_400'
+            'aparc': 'aparc',
+            'schaefer400': 'schaefer_400',
         }
         enigma_parcellation_name = ENIGMATOOLBOX_PARC_NAMES.get(parcellation_name, None)
         if enigma_parcellation_name == None:
@@ -851,8 +854,17 @@ def fetch_ahba_data(parcellation_name, return_donors=False,
         data_dir = ABAGEN_DIR
     else:
         data_dir = None
-    atlas = (os.path.join(SRC_DIR, f'lh_{parcellation_name}_fsa5.label.gii'),
-            os.path.join(SRC_DIR, f'rh_{parcellation_name}_fsa5.label.gii'))
+    if parcellation_name == 'aparc':
+        # with the original dk parcellation from freesurfer
+        # abagen throws an error, so I will use the dk parcellation
+        # that is included in abagen
+        aparc = abagen.fetch_desikan_killiany(surface=True)
+        atlas = aparc['image']
+        atlas_info = pd.read_csv(aparc['info'], index_col='id')
+    else:
+        atlas = (os.path.join(SRC_DIR, f'lh_{parcellation_name}_fsa5.label.gii'),
+                os.path.join(SRC_DIR, f'rh_{parcellation_name}_fsa5.label.gii'))
+        _, atlas_info = abagen.images.check_surface(atlas)
     if return_donors:
         # avoid normalizing across samples before aggregate for subtypes are calculated
         gene_norm = None
@@ -861,6 +873,7 @@ def fetch_ahba_data(parcellation_name, return_donors=False,
     # get the data as dict
     expression_data = abagen.get_expression_data(
         atlas = atlas,
+        atlas_info = atlas_info,
         data_dir = data_dir,
         gene_norm = gene_norm, 
         return_donors = return_donors,
@@ -871,12 +884,19 @@ def fetch_ahba_data(parcellation_name, return_donors=False,
         expression_data = {'all': expression_data}
     # replace the index with parcel labels and remove the
     # midline and rename the parcels similar to load_parcellation_map if needed
-    _, atlas_info = abagen.images.check_surface(atlas)
     if parcellation_name == 'sjh':
         # remove sjh_ from the lable
         atlas_info['label'] = atlas_info['label'].map(lambda l: int(l.replace('sjh_','')))
-    parcels_mask = ~(atlas_info['label'].isin(helpers.MIDLINE_PARCELS['sjh']))
+    elif parcellation_name == 'aparc':
+        # add hemisphere to the labels
+        atlas_info['label'] = atlas_info['hemisphere'] + '_' + atlas_info['label']
+    # exclude midline parcels
+    parcels_mask = ~(atlas_info['label'].isin(helpers.MIDLINE_PARCELS[parcellation_name]))
+    if parcellation_name == 'aparc':
+        # aparc from abagen also includes subcortical parcels: remove them
+        parcels_mask = parcels_mask & (atlas_info['structure']=='cortex')
     if discard_rh:
+        # additionally exclude R hemisphere parcels
         parcels_mask = parcels_mask & (atlas_info['hemisphere']=='L')
     for donor in expression_data.keys():
         expression_data[donor] = expression_data[donor].loc[parcels_mask]
@@ -1046,10 +1066,22 @@ def fetch_pet(parcellation_name, receptor):
     return parcellated_data
 
 
-def fetch_autoradiography():
+def fetch_autoradiography(depth='all'):
     """
     Loads the parcellated map of receptors based on autoradiography
+
+    Parameters
+    ----------
+    depth: (str)
+        - 'all'
+        - 'supragranular'
+        - 'granular'
+        - 'infragranular'
     
+    Returns
+    --------
+    autorad_data: (df) n_aparc_parcels x n_receptors
+
     Credit
     ------
     Original data from Zilles 2017 (10.3389/fnana.2017.00078)
@@ -1090,16 +1122,22 @@ def fetch_autoradiography():
     mapping_df.loc[:,'receptor_region'] = receptor_regions
     mapping_df.loc[:,'receptor_region_idx'] = receptor_regions_idx
     mapping_df = mapping_df.set_index('receptor_region_idx')
-    # load the original data and take average across 
-    # cortical depth before any normalization
-    autorad_data_orig = []
-    for depth in ['S', 'G', 'I']: # supragranular, granular, infragranular
-        autorad_data_orig.append(
-            np.load(os.path.join(
-                SRC_DIR, 'autoradiography', f'ReceptData_{depth}.npy' 
+    # load the original data
+    if depth == 'all':
+        # take average across cortical depth before any normalization
+        autorad_data_orig = []
+        for layer in ['S', 'G', 'I']: # supragranular, granular, infragranular
+            autorad_data_orig.append(
+                np.load(os.path.join(
+                    SRC_DIR, 'autoradiography', f'ReceptData_{layer}.npy' 
+                ))
+            )
+        autorad_data_orig = sum(autorad_data_orig) / 3
+    else:
+        layer = depth[0].upper()
+        autorad_data_orig = np.load(os.path.join(
+                    SRC_DIR, 'autoradiography', f'ReceptData_{layer}.npy' 
             ))
-        )
-    autorad_data_orig = sum(autorad_data_orig) / 3
     receptor_names = np.load(
         os.path.join(SRC_DIR, 'autoradiography', 'ReceptorNames.npy')
         ).tolist()
@@ -1119,3 +1157,49 @@ def fetch_autoradiography():
         .apply(scipy.stats.zscore, axis=0)
     )
     return autorad_data
+
+def fetch_parvalbumin(parcellation_name, subject='all'):
+    """
+    Fetches parvalbumin staining density of Ahead dataset
+    and parcellates it
+
+    Reference: Alkemade & Bazin 2022
+    https://www.science.org/doi/10.1126/sciadv.abj7892
+    """
+    if subject=='all':
+        subjects = ['122017', '152017']
+    else:
+        subjects = [subject]
+    parvalbumin_parcellated_sum = {}
+    for sub_id in subjects:
+        file_path = os.path.join(
+            SRC_DIR, f'Ahead_brain_{sub_id}_parvalbumin-mni2009b.nii.gz')
+        # prepare the parcellation masker
+        # Warning: Background label is by default set to
+        # 0. Make sure this is the case for all the parcellation
+        # maps and zero corresponds to background / midline
+        # Also note that the Ahead maps are not perfectly
+        # registered to MNI and are only approximately
+        # matched, which is fine as long as we are parcellating it
+        masker = NiftiLabelsMasker(
+            os.path.join(
+                SRC_DIR, 
+                f'tpl-MNI152_desc-{parcellation_name}_parcellation.nii.gz'
+                ), 
+            strategy='mean',
+            resampling_target='data',
+            background_label=0)
+        # TODO: limit the averaging to voxels in gray matter
+        parvalbumin_parcellated = masker.fit_transform(file_path).flatten()
+        # get the parvalbumin staining intensity zscore
+        parvalbumin_parcellated_sum[sub_id] = (
+            scipy.stats.zscore(parvalbumin_parcellated)
+        )
+    # average across the subjects
+    parcellated_data = sum(parvalbumin_parcellated_sum.values()) / len(subjects)
+    # add labels of the parcels
+    parcellated_data = pd.Series(
+        parcellated_data,
+        index = load_volumetric_parcel_labels(parcellation_name)
+    )
+    return parcellated_data

@@ -4,7 +4,7 @@ The `src` directory includes local and external input data used in the analyses.
 |---|---|---|---|
 |`*h_aparc.annot`|DK parcellation in fsaverage space|[DevelopmentalImagingMCRI / freesurfer_statsurf_display](https://github.com/DevelopmentalImagingMCRI/freesurfer_statsurf_display/tree/master/fsaverage_fs6/label)| |
 |`*h_economo.annot`|von Economo parcellation in fsaverage space|[DevelopmentalImagingMCRI / freesurfer_statsurf_display](https://github.com/DevelopmentalImagingMCRI/freesurfer_statsurf_display/tree/master/fsaverage_fs6/label)| |
-|`economo_cortical_types.csv`|Cortical type of each von Economo region|Local|Created manually based on [García-Cabezas 2020](https://doi.org/10.3389/fnana.2020.576015). Labels correspond to `*h_economo.annot`|
+|`economo_cortical_types.csv`|Cortical type of each von Economo region|Local|Created manually based on [García-Cabezas 2020](https://doi.org/10.3389/fnana.2020.576015) (Tables 4-7). Labels correspond to `*h_economo.annot`|
 |`*h_schaefer*.annot`|Schaefer-N parcellation in fsaverage space|[ThomasYeoLab / CBIG](https://github.com/ThomasYeoLab/CBIG/tree/master/stable_projects/brain_parcellation/Schaefer2018_LocalGlobal/Parcellations/FreeSurfer5.3/fsaverage/label)|Originally named `*h.Schaefer2018_*Parcels_7Networks_order.annot`|
 |`*h_sjh.annot`|SJH parcellation in fsaverage space|[MICA-MNI / micaopen](https://github.com/MICA-MNI/micaopen/tree/master/MPC/maps)| |
 |`*h_brodmann.label.gii`|Brodmann regions in fsaverage space|[Pijnenburg 2021](https://www.sciencedirect.com/science/article/pii/S1053811921005504#sec0031)|Supplementary zip file|
