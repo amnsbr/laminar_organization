@@ -482,7 +482,7 @@ class Matrix:
             series.append(
                 pd.Series(
                     array,
-                    name = matrix_obj.label.replace(' ', '_'),
+                    name = matrix_obj.label.lower().replace(' ', '_'),
                     dtype = matrix_obj.matrix.iloc[:, 0].dtype.name)
             )
         df = pd.concat(series, axis=1)
@@ -966,51 +966,106 @@ class ConnectivityMatrix(Matrix):
             raise NotImplementedError
         return mat_binned
 
-    def binarized_association(self, other, threshold=0.25):
+    def binarized_association(self, others, fc_pthreshold=0.25):
         """
-        Binarize the SC or FC matrix and compare the likelihood
-        of connectivity based on another categorical matrix (e.g. 
-        CorticalTypeDiffMatrix) using a stacked bar plot
+        Binarize the SC or FC matrix and performs logistic regression
+        with FC/SC as DV and `others` as IV. If `other` is categorical
+        (e.g. CorticalTypeDiffMatrix) it also plots a stacked bar plot
+        of existing vs absent connections per category
         """
-        Y = self.binarize()
-        X = other.matrix
-        shared_parcels = X.index.intersection(Y.index)
-        X = X.loc[shared_parcels, shared_parcels]
+        if not isinstance(others, list):
+            others = [others]
+        # binarize connectivity
+        Y = self.binarize(fc_pthreshold=fc_pthreshold)
+        # get the shared parcels across self and all others
+        shared_parcels = Y.index
+        for other in others:
+            shared_parcels = shared_parcels.intersection(other.matrix.index)
+        # get shared parcels of Y and convert its lower triangle into 1d array
         Y = Y.loc[shared_parcels, shared_parcels]
-        # get the index for lower triangle
-        tril_index = np.tril_indices_from(X.values, -1)
-        x = X.values[tril_index]
+        tril_index = np.tril_indices_from(Y.values, -1)
         y = Y.values[tril_index]
-        # remove NaNs (e.g. interhemispheric pairs)
-        mask = ~(np.isnan(x) | np.isnan(y))
-        x = x[mask]
+        # create a mask for removing NaNs (e.g. interhemispheric pairs)
+        ## converting array to float because
+        ## np.isnan(boolean_array_with_nans) throws an error
+        mask = ~(np.isnan(y.astype('float')))
+        x_arrays = {}
+        x_dtypes = {}
+        for other in others:
+            # get shared parcels of X and its lower triangle
+            X = other.matrix.loc[shared_parcels, shared_parcels]
+            x = X.values[tril_index]
+            x_name = other.label.lower().replace(' ', '_')
+            x_arrays[x_name] = x
+            x_dtypes[x_name] = other.matrix.iloc[:, 0].dtype.name
+            # remove NaN values of x from the mask
+            mask = mask & ~(np.isnan(x.astype('float')))
+        # apply the mask
         y = y[mask].astype('bool')
-        df = pd.DataFrame({'Categories': x, 'Connected': y})
-        # stacked bar plot of existing vs absent connections grouped by categories
-        ## calculate the percentage of existing and absent connections per category
-        percentages = (
-            df.groupby('Categories')['Connected']
-            .value_counts(normalize=True)
-            .mul(100).rename('percentage')
-            .reset_index()
-        )
-        ## add categories with no existing or absent connections
-        ## to the percentages to prevent errors when creating the barplots
-        for single_bin_cat in percentages.value_counts('Categories')[percentages.value_counts('Categories') == 1].keys():
-            bin_w_100_percent = percentages.loc[percentages['Categories']==single_bin_cat, 'Connected'].values[0]
-            bin_w_0_percent = ~bin_w_100_percent
-            percentages = percentages.append({'Categories': single_bin_cat, 'Connected': bin_w_0_percent, 'percentage':0.0}, ignore_index=True)
-        ## create the bar plots
-        fig, ax = plt.subplots()
-        existing_conn = percentages[percentages['Connected']]
-        absent_conn = percentages[~percentages['Connected']]
-        ax.bar(existing_conn['Categories'], height=existing_conn['percentage'], facecolor='black', edgecolor='black', width = 0.5)
-        ax.bar(absent_conn['Categories'], bottom=existing_conn['percentage'], height=absent_conn['percentage'], facecolor='white', edgecolor='black', width = 0.5)
-        ax.set_xticks(percentages['Categories'].unique())
-        # logistic regression (this only makes sense for ordered 'Categories')
-        lgr = sm.Logit(df['Connected'], df['Categories']).fit()
-        res_str = str(lgr.summary())
-        print(res_str)
+        for x_name, x in x_arrays.items():
+            x_arrays[x_name] = x[mask]
+        # create a dataframe
+        df = pd.DataFrame(x_arrays)
+        df['Connected'] = y
+        # logistic regression
+        # if others is > 1 this will perform a nested
+        # logistic regression adding each matrix to the
+        # model one by one, and tests fit improvement with
+        # likelihood ratio test
+        lgrs = []
+        for x_idx in range(len(others)):
+            lgr = sm.Logit(
+                df['Connected'], # dependent variable 
+                sm.add_constant(df.iloc[:, :x_idx+1]) # independent variable(s)
+                ).fit()
+            res_str = str(lgr.summary())
+            print(res_str)
+            # perform likelihood ratio test after the
+            # second model with its previous model
+            if x_idx > 0:
+                likelihood_ratio = -2*(lgrs[-1].llf - lgr.llf)
+                # do chi-squared test with df = 1 (as only one
+                # IV is added with respect to the previous model)
+                p_val = scipy.stats.chi2.sf(likelihood_ratio, 1)
+                print(f"\n\nLikelihood ratio: {likelihood_ratio}, p-value: {p_val}\n\n")
+            lgrs.append(lgr)
+        for x_name in x_arrays.keys():
+            # convert non-category IVs into category by qcutting them
+            if x_dtypes[x_name] != 'category':
+                df[x_name] = pd.qcut(df[x_name], 10)
+                # cat_labels = [f'{interval.left:.1f} - {interval.right:.1f}' for interval in df[x_name].cat.categories]
+                cat_labels = [f'{(interval.left + interval.right)/2:.1f}' for interval in df[x_name].cat.categories]
+                df[x_name] = df[x_name].cat.codes
+                df.loc[(df[x_name]== -1), x_name] = np.NaN
+            # stacked bar plot of existing vs absent connections grouped by categories
+            ## calculate the percentage of existing and absent connections per category
+            percentages = (
+                df.groupby(x_name)['Connected']
+                .value_counts(normalize=True)
+                .mul(100).rename('percentage')
+                .reset_index()
+            )
+            ## add categories with no existing or absent connections
+            ## to the percentages to prevent errors when creating the barplots
+            for single_bin_cat in percentages.value_counts(x_name)[percentages.value_counts(x_name) == 1].keys():
+                bin_w_100_percent = percentages.loc[percentages[x_name]==single_bin_cat, 'Connected'].values[0]
+                bin_w_0_percent = ~bin_w_100_percent
+                percentages = percentages.append({x_name: single_bin_cat, 'Connected': bin_w_0_percent, 'percentage':0.0}, ignore_index=True)
+            print(percentages)
+            ## create the bar plots
+            fig, ax = plt.subplots()
+            existing_conn = percentages[percentages['Connected']]
+            absent_conn = percentages[~percentages['Connected']]
+            ax.bar(existing_conn[x_name], height=existing_conn['percentage'], facecolor='black', edgecolor='black', width = 0.5)
+            ax.bar(absent_conn[x_name], bottom=existing_conn['percentage'], height=absent_conn['percentage'], facecolor='white', edgecolor='black', width = 0.5)
+            ax.set_xticks(percentages[x_name].unique())
+            if x_dtypes[x_name] != 'category':
+                ax.set_xticklabels(cat_labels)
+                ax.set_xlabel(f'{x_name.replace("_"," ").title()} Deciles')
+            else:
+                ax.set_xlabel(f'{x_name.replace("_"," ").title()}')
+            ax.set_ylabel('Connected %')
+        return lgrs
 
 class MicrostructuralCovarianceMatrix(Matrix):
     """
