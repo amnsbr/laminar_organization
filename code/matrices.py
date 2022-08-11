@@ -14,8 +14,10 @@ import statsmodels.stats.multitest
 import statsmodels.stats.anova
 import statsmodels.api as sm
 import cmcrameri.cm # color maps
+import ptitprince
 import bct
 import PIL
+import abagen
 import logging, sys
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 
@@ -80,7 +82,7 @@ class Matrix:
         """
         logging.info(f"Loading the matrix from {self.file_path}.npz")
         npz = np.load(self.file_path+'.npz', allow_pickle=True)
-        parcels = npz['parcels']
+        parcels = npz['parcels'].tolist()
         matrix = npz['matrix'].astype('float64') # many functions have problems with float16
         n_sq_matrix = matrix.shape[1] // matrix.shape[0]
         if make_symmetric:
@@ -125,7 +127,9 @@ class Matrix:
             vrange=vrange
             )
 
-    def correlate_edge_wise(self, other, test='pearson', plot_half_matrices=False, regress_out_gd=False):
+    def correlate_edge_wise(self, other, test='pearson', plot_half_matrices=False, 
+                            regress_out_gd=False, figsize=(6, 4), axis_off=False,
+                            stats_on_plot=True, half_matrix_vrange=(0.025, 0.975)):
         """
         Calculates and plots the correlation between the edges of two matrices
         self and other which are assumed to be square and symmetric. The correlation
@@ -172,35 +176,32 @@ class Matrix:
         with open(out_path+'.txt', 'w') as res_file:
             res_file.write(res_str)
         # plotting
-        # TODO: plot it as scatter plot
-        jp = sns.jointplot(
-            x = x, y = y, kind = "hex", 
-            color = "grey", height = 4,
-            marginal_kws = {'bins':35}, 
-            joint_kws = {'gridsize':35},
-        )
-        ax = jp.ax_joint
+        fig, ax = plt.subplots(1, figsize=figsize)
+        ax.hexbin(x, y, cmap='gist_heat_r')
         sns.regplot(
             x = x, y = y, 
             ax=ax, ci=None, scatter=False, 
-            color='red', line_kws=dict(alpha=0.6)
+            color='black', line_kws=dict(alpha=0.6)
             )
         # ax.set_xlim((np.quantile(x, 0.025), np.quantile(x, 0.975)))
-        # ax.set_ylim((np.quantile(y, 0.025), np.quantile(y, 0.975))),
-        # add rho on the figure
-        text_x = ax.get_xlim()[0]+(ax.get_xlim()[1]-ax.get_xlim()[0])*0.05
-        text_y = ax.get_ylim()[0]+(ax.get_ylim()[1]-ax.get_ylim()[0])*0.95
-        if test == 'pearson':
-            text = f'r = {coef:.2f}'
-        else:
-            text = f'rho = {coef:.2f}'
-        ax.text(text_x, text_y, text,
-                color='black', size=16,
-                multialignment='left')
+        # ax.set_ylim((np.quantile(y, 0.025), np.quantile(y, 0.975)))
+        if stats_on_plot:
+            # add rho on the figure
+            text_x = ax.get_xlim()[0]+(ax.get_xlim()[1]-ax.get_xlim()[0])*0.05
+            text_y = ax.get_ylim()[0]+(ax.get_ylim()[1]-ax.get_ylim()[0])*0.90
+            if test == 'pearson':
+                text = f'r = {coef:.2f}'
+            else:
+                text = f'rho = {coef:.2f}'
+            ax.text(text_x, text_y, text,
+                    color='black', size=16,
+                    multialignment='left')
         ax.set_xlabel(self.label)
         ax.set_ylabel(other.label)
-        jp.fig.tight_layout()
-        jp.fig.savefig(out_path+'.png', dpi=192)
+        if axis_off:
+            ax.axis('off')
+        fig.tight_layout()
+        fig.savefig(out_path+'.png', dpi=192)
         if plot_half_matrices:
             # plotting half-half matrix
             uhalf_X = X.values
@@ -210,12 +211,14 @@ class Matrix:
             helpers.plot_matrix(
                 uhalf_X, 
                 os.path.join(f'{out_path}_{self.label}_uhalf'),
-                cmap = self.cmap
+                cmap = self.cmap,
+                vrange = half_matrix_vrange
                 )
             helpers.plot_matrix(
                 lhalf_Y, 
                 os.path.join(f'{out_path}_{other.label}_lhalf'),
-                cmap = other.cmap
+                cmap = other.cmap,
+                vrange = half_matrix_vrange
                 )        
 
     def correlate_node_wise(self, other, test='pearson', plot=True, 
@@ -435,69 +438,104 @@ class Matrix:
             intra_intertype['pvals'] = (null_dist_diff_intra_inter > diff_intra_inter).mean(axis=0)
             intra_intertype.to_csv(self.file_path + '_intra_intertype_diff.txt')
 
-    def compare_fit(self, other1, other2, regress_out_gd=False):
+    def nested_lr(self, others, create_plots=False):
         """
-        Evaluates whether the the fit between `self` and
-        `other1` or `other2` will improve if both `other1`
-        and `other2` are included in the model.
+        Evaluates whether the the fit between DV `self` and
+        IVs `others` is improved when adding the IVs are added
+        one by one in a nested fasion.
 
         Parameters
         ----------
-        self, other1, other2: (Matrix)
-        regress_out_gd: 
-            regress out geodesic distance from all matrices
-            using exponential fit (doesn't work is 
-            CorticalTypeDiffMatrix is one of the matrices)
+        self: (Matrix)
+        others: (Matrix | list(Matrix))
         """
-        # make sure they have the same parcellation and mask
-        assert self.parcellation_name == other1.parcellation_name == other2.parcellation_name
-        # match the matrices in the order and selection of parcels
-        # + convert them to np.ndarray
-        if regress_out_gd:
-            gd = DistanceMatrix(self.parcellation_name)
-            X1 = gd.regress_out(other1, save_plot=False)
-            X2 = gd.regress_out(other2, save_plot=False)
-            Y = gd.regress_out(self, save_plot=False)
-        else:
-            X1 = other1.matrix
-            X2 = other2.matrix
-            Y = self.matrix
-        shared_parcels = Y.index.intersection(X1.index.intersection(X2.index))
-        tril_index = np.tril_indices_from(X1.values, -1)
-        X1 = X1.loc[shared_parcels, shared_parcels]
-        X2 = X2.loc[shared_parcels, shared_parcels]
+        if not isinstance(others, list):
+            others = [others]
+        # make sure they have the same parcellation
+        for other in others:
+            assert self.parcellation_name == other.parcellation_name
+        # get the shared parcels across self and all others
+        Y = self.matrix
+        shared_parcels = Y.index
+        for other in others:
+            shared_parcels = shared_parcels.intersection(other.matrix.index)
+        # get shared parcels of Y and convert its lower triangle into 1d array
         Y = Y.loc[shared_parcels, shared_parcels]
-        # get the index for lower triangle
-        tril_index = np.tril_indices_from(X1.values, -1)
-        x1 = X1.values[tril_index]
-        x2 = X2.values[tril_index]
+        tril_index = np.tril_indices_from(Y.values, -1)
         y = Y.values[tril_index]
-        # remove NaNs (e.g. interhemispheric pairs)
-        mask = ~(np.isnan(x1) | np.isnan(x2) | np.isnan(y))
-        series = []
-        for (array, matrix_obj) in zip(
-            [x1, x2, y],
-            [other1, other2, self]):
-            array = array[mask]
-            series.append(
-                pd.Series(
-                    array,
-                    name = matrix_obj.label.lower().replace(' ', '_'),
-                    dtype = matrix_obj.matrix.iloc[:, 0].dtype.name)
-            )
-        df = pd.concat(series, axis=1)
-        m1 = smf.ols(formula=f'{df.columns[-1]} ~ {df.columns[0]}', data=df).fit()
-        m2 = smf.ols(formula=f'{df.columns[-1]} ~ {df.columns[1]}', data=df).fit()
-        m_both = smf.ols(formula=f'{df.columns[-1]} ~ {df.columns[0]} + {df.columns[1]}', data=df).fit()
-        res_str = f'Fit improvement after adding {df.columns[1]} to {df.columns[0]}\n\n'
-        res_str += str(statsmodels.stats.anova.anova_lm(m1, m_both))
-        res_str += f'\n\nFit improvement after adding {df.columns[0]} to {df.columns[1]}\n\n'
-        res_str += str(statsmodels.stats.anova.anova_lm(m2, m_both))
-        res_str += '\n\n' + '\n\n'.join([str(m.summary()) for m in [m1, m2, m_both]])
-        out_path = os.path.join(self.dir_path, f'compare_fit_{df.columns[0]}_{df.columns[1]}')
-        with open(out_path+'.txt', 'w') as res_file:
-            res_file.write(res_str)
-        print(res_str)
+        # create a mask for removing NaNs (e.g. interhemispheric pairs)
+        mask = ~(np.isnan(y))
+        x_arrays = {}
+        x_dtypes = {}
+        for other in others:
+            # get shared parcels of X and its lower triangle
+            X = other.matrix.loc[shared_parcels, shared_parcels]
+            x = X.values[tril_index]
+            x_name = other.label.lower().replace(' ', '_')
+            x_arrays[x_name] = x
+            x_dtypes[x_name] = other.matrix.iloc[:, 0].dtype.name
+            # remove NaN values of x from the mask
+            mask = mask & ~(np.isnan(x.astype('float')))
+        # apply the mask
+        y = y[mask]
+        for x_name, x in x_arrays.items():
+            x_arrays[x_name] = x[mask]
+        # create a dataframe
+        df = pd.DataFrame(x_arrays)
+        for x_name, dtype in x_dtypes.items():
+            df[x_name] = df[x_name].astype(dtype)
+        y_name = self.label.lower().replace(' ', '_')
+        df[y_name] = y
+        # linear regression
+        # if others is > 1 this will perform a nested
+        # logistic regression adding each matrix to the
+        # model one by one, and tests fit improvement with
+        # likelihood ratio test
+        lrs = []
+        for x_idx in range(len(others)):
+            lr = sm.OLS(
+                df[y_name], # dependent variable 
+                sm.add_constant(df.iloc[:, :x_idx+1]) # independent variable(s)
+                ).fit()
+            res_str = str(lr.summary())
+            print(res_str)
+            # perform anova test after the
+            # second model with its previous model
+            if x_idx > 0:
+                likelihood_ratio = -2*(lrs[-1].llf - lr.llf)
+                # do chi-squared test with df = 1 (as only one
+                # IV is added with respect to the previous model)
+                p_val = scipy.stats.chi2.sf(likelihood_ratio, 1)
+                print(f"\n\nLikelihood ratio: {likelihood_ratio}, p-value: {p_val}\n\n")
+            lrs.append(lr)
+        # if create_plots:
+        #     for x_name, dtype in x_dtypes.items():
+        #         if dtype == 'category':
+        #             fig, ax = plt.subplots(figsize=(5, 5))
+        #             ax = ptitprince.RainCloud(
+        #                 data=df, 
+        #                 y=y_name,
+        #                 x=x_name,
+        #                 palette='Greys',
+        #                 bw = 0.2, width_viol = 1, 
+        #                 orient = 'v', move = 0.2, alpha = 0.4,
+        #                 ax=ax)
+        #             sns.despine(ax=ax, offset=10, trim=True)
+    
+    def binned_average(self, surf, column, nbins=10):
+        """
+        Returns the matrix averaged per bins of surf[column]
+        """
+        bins = pd.qcut(surf.parcellated_data.loc[:, column], 10).cat.codes
+        shared_parcels = bins.index.intersection(self.matrix.index)
+        bins = bins.loc[shared_parcels]
+        matrix = self.matrix.loc[shared_parcels, shared_parcels]
+        matrix_collapsed = np.zeros((nbins, nbins))
+        for i in range(nbins):
+            for j in range(nbins):
+                matrix_collapsed[i, j] = \
+                    np.nanmean(matrix.loc[bins[bins==i].index, bins[bins==j].index].values)
+        return matrix_collapsed
 
 class CurvatureSimilarityMatrix(Matrix):
     """
@@ -773,6 +811,7 @@ class DistanceMatrix(Matrix):
         # calculate R2
         r2 = 1 - (y_resid.var() / y.var())
         # plot the polynomial fit
+        sns.set_style('ticks')
         fig, ax = plt.subplots(figsize=(6, 4))
         ax = sns.scatterplot(gd, y, s=1, alpha=0.2, color='grey')
         line_x = np.linspace(0, gd.max(), 500)
@@ -814,8 +853,9 @@ class ConnectivityMatrix(Matrix):
     """
     Structural or functional connectivity matrix
     """
-    def __init__(self, kind, exc_regions=None, sc_zero_contra=True, 
-                 parcellation_name='schaefer400', dataset='hcp', 
+    def __init__(self, kind, exc_regions=None, exc_contra=True, 
+                 parcellation_name='schaefer400', dataset='hcp',
+                 threshold = False, long_range = False,
                  create_plot=False):
         """
         Initializes structural/functional connectivity matrix
@@ -833,15 +873,19 @@ class ConnectivityMatrix(Matrix):
         dataset: (str)
             - hcp
             - mics (only for EC)
+        threshold: (bool)
+            keep only the values of connected edges
         create_plot: (bool)
         """
         self.kind = kind
         self.exc_regions = exc_regions
-        self.sc_zero_contra = sc_zero_contra
+        self.exc_contra = exc_contra
+        self.threshold = threshold
+        self.long_range = long_range
         if self.kind == 'structural':
             self.cmap = 'bone'
-            if self.sc_zero_contra:
-                self.split_hem = True
+        if self.exc_contra:
+            self.split_hem = True
         elif self.kind == 'functional':
             self.cmap = cmcrameri.cm.davos
         else:
@@ -858,9 +902,16 @@ class ConnectivityMatrix(Matrix):
             )
         self.file_path = os.path.join(self.dir_path, 'matrix')
         os.makedirs(self.dir_path, exist_ok=True)
+        # load the matrix
         self.matrix = datasets.load_conn_matrix(self.kind, self.parcellation_name, dataset)
-        self.matrix.values[np.isclose(self.matrix, 0)] = np.NaN
-        if (self.kind == 'structural') & self.sc_zero_contra:
+        # threshold it if indicated
+        if self.threshold:
+            if self.kind == 'functional':
+                connected_mask = self.binarize().values.astype('bool')
+                self.matrix.iloc[~(connected_mask)] = np.NaN
+            elif self.kind == 'structural':
+                self.matrix.values[np.isclose(self.matrix, 0)] = np.NaN
+        if self.exc_contra:
             hem_parcels = helpers.get_hem_parcels(
                 self.parcellation_name, 
                 limit_to_parcels=self.matrix.index.tolist()
@@ -872,6 +923,12 @@ class ConnectivityMatrix(Matrix):
         # note this is not saved
         if self.exc_regions:
             self.matrix = self._remove_parcels(self.exc_regions)
+        if self.long_range:
+            gd = DistanceMatrix(self.parcellation_name)
+            shared_parcels = self.matrix.index.intersection(gd.matrix.index)
+            gd = gd.matrix.loc[shared_parcels, shared_parcels]
+            self.matrix = self.matrix.loc[shared_parcels, shared_parcels]
+            self.matrix.values[(gd < 75).values] = np.NaN
         if create_plot:
             self.plot()
 
@@ -927,46 +984,45 @@ class ConnectivityMatrix(Matrix):
                 dir_path = os.path.join(
                     surf_obj.dir_path, 
                     f'{column.replace(" ", "_")}_diff_matrix'),
-                cmap = "YlGnBu_r",
+                cmap = "RdBu_r",
             )
             ec_diff_matrix_obj = Matrix(
                 matrix = ec_diff_matrix,
                 parcellation_name = 'schaefer400',
                 label = f'EC diff ({self.dataset})',
                 dir_path = os.path.join(self.dir_path, 'diff_matrix'),
-                cmap = cmcrameri.cm.bamako
+                cmap = 'PiYG'
             )
-            surf_diff_matrix_obj.correlate_edge_wise(ec_diff_matrix_obj, plot_half_matrices=True)
+            surf_diff_matrix_obj.correlate_edge_wise(ec_diff_matrix_obj, plot_half_matrices=True, half_matrix_vrange='sym')
             surf_diff_matrix_obj.correlate_node_wise(ec_diff_matrix_obj)
 
-    def binarize(self, fc_pthreshold=0.25):
+    def binarize(self, fc_pthreshold=0.2, plot=False):
         """
         Binarize the SC or FC
         """
+        # keep track of cells that are NaN
+        nan_mask = self.matrix.isna()
         if self.kind == 'structural':
             mat_binned = pd.DataFrame(
                         self.matrix.values > 0,
                         index = self.matrix.index,
                         columns = self.matrix.columns
                     )
-            if self.sc_zero_contra:
-                hem_parcels = helpers.get_hem_parcels(
-                    self.parcellation_name, 
-                    limit_to_parcels=self.matrix.index.tolist()
-                    )
-                mat_binned.loc[hem_parcels['L'], hem_parcels['R']] = np.NaN
-                mat_binned.loc[hem_parcels['R'], hem_parcels['L']] = np.NaN
         elif self.kind == 'functional':
-            mat_binned = pd.DataFrame(
-                bct.binarize(bct.threshold_proportional(self.matrix.values, fc_pthreshold)),
-                index = self.matrix.index,
-                columns = self.matrix.columns
-            )
+            mat_binned = self.matrix >= np.nanquantile(self.matrix.values.flatten(), 1-fc_pthreshold)
         else:
             raise NotImplementedError
+        mat_binned = mat_binned.mask(nan_mask, np.NaN)
+        if plot:
+            helpers.plot_matrix(
+                mat_binned.values.astype('float'),
+                self.file_path + '_bin',
+                cmap = 'binary',
+                vrange=(0, 1),
+            )
         return mat_binned
 
-    def binarized_association(self, others, fc_pthreshold=0.25):
+    def binarized_association(self, others, fc_pthreshold=0.2):
         """
         Binarize the SC or FC matrix and performs logistic regression
         with FC/SC as DV and `others` as IV. If `other` is categorical
@@ -976,7 +1032,7 @@ class ConnectivityMatrix(Matrix):
         if not isinstance(others, list):
             others = [others]
         # binarize connectivity
-        Y = self.binarize(fc_pthreshold=fc_pthreshold)
+        Y = self.binarize(fc_pthreshold=fc_pthreshold).astype('float')
         # get the shared parcels across self and all others
         shared_parcels = Y.index
         for other in others:
@@ -988,7 +1044,7 @@ class ConnectivityMatrix(Matrix):
         # create a mask for removing NaNs (e.g. interhemispheric pairs)
         ## converting array to float because
         ## np.isnan(boolean_array_with_nans) throws an error
-        mask = ~(np.isnan(y.astype('float')))
+        mask = ~(np.isnan(y))
         x_arrays = {}
         x_dtypes = {}
         for other in others:
@@ -1018,8 +1074,17 @@ class ConnectivityMatrix(Matrix):
                 df['Connected'], # dependent variable 
                 sm.add_constant(df.iloc[:, :x_idx+1]) # independent variable(s)
                 ).fit()
+            # print the results
             res_str = str(lgr.summary())
             print(res_str)
+            # print the ORs
+            print(
+                pd.DataFrame({
+                    'OR': np.exp(lgr.params),
+                    'L_CI': np.exp(lgr.params - (lgr.bse * 1.96)),
+                    'U_CI': np.exp(lgr.params + (lgr.bse * 1.96)),
+                })
+            )
             # perform likelihood ratio test after the
             # second model with its previous model
             if x_idx > 0:
@@ -1030,41 +1095,50 @@ class ConnectivityMatrix(Matrix):
                 print(f"\n\nLikelihood ratio: {likelihood_ratio}, p-value: {p_val}\n\n")
             lgrs.append(lgr)
         for x_name in x_arrays.keys():
-            # convert non-category IVs into category by qcutting them
+            # for continous x_arrays plot the probability of connection 
+            # per non-overlapping window of x value
             if x_dtypes[x_name] != 'category':
-                df[x_name] = pd.qcut(df[x_name], 10)
-                # cat_labels = [f'{interval.left:.1f} - {interval.right:.1f}' for interval in df[x_name].cat.categories]
-                cat_labels = [f'{(interval.left + interval.right)/2:.1f}' for interval in df[x_name].cat.categories]
-                df[x_name] = df[x_name].cat.codes
-                df.loc[(df[x_name]== -1), x_name] = np.NaN
-            # stacked bar plot of existing vs absent connections grouped by categories
-            ## calculate the percentage of existing and absent connections per category
-            percentages = (
-                df.groupby(x_name)['Connected']
-                .value_counts(normalize=True)
-                .mul(100).rename('percentage')
-                .reset_index()
-            )
-            ## add categories with no existing or absent connections
-            ## to the percentages to prevent errors when creating the barplots
-            for single_bin_cat in percentages.value_counts(x_name)[percentages.value_counts(x_name) == 1].keys():
-                bin_w_100_percent = percentages.loc[percentages[x_name]==single_bin_cat, 'Connected'].values[0]
-                bin_w_0_percent = ~bin_w_100_percent
-                percentages = percentages.append({x_name: single_bin_cat, 'Connected': bin_w_0_percent, 'percentage':0.0}, ignore_index=True)
-            print(percentages)
-            ## create the bar plots
-            fig, ax = plt.subplots()
-            existing_conn = percentages[percentages['Connected']]
-            absent_conn = percentages[~percentages['Connected']]
-            ax.bar(existing_conn[x_name], height=existing_conn['percentage'], facecolor='black', edgecolor='black', width = 0.5)
-            ax.bar(absent_conn[x_name], bottom=existing_conn['percentage'], height=absent_conn['percentage'], facecolor='white', edgecolor='black', width = 0.5)
-            ax.set_xticks(percentages[x_name].unique())
-            if x_dtypes[x_name] != 'category':
-                ax.set_xticklabels(cat_labels)
-                ax.set_xlabel(f'{x_name.replace("_"," ").title()} Deciles')
+                ## sort the edges by x values
+                sorted_df = df.sort_values(x_name).reset_index()
+                ## segment the df into 200 windows and take
+                ## the mean of x and y per segment
+                n_windows = 200
+                segmented_df = sorted_df.groupby(sorted_df.index // n_windows).mean()
+                ## create a line plot
+                fig, ax = plt.subplots()
+                ax.plot(segmented_df[x_name], segmented_df['Connected'], color='grey', marker='.', ls='')
+                ax.set_ylabel('Prob. Connected')
+            # for categorical x_arrays plot the stacked bar existing vs absent 
+            # connections grouped by categories
             else:
-                ax.set_xlabel(f'{x_name.replace("_"," ").title()}')
-            ax.set_ylabel('Connected %')
+                ## calculate the percentage of existing and absent connections per category
+                percentages = (
+                    df.groupby(x_name)['Connected']
+                    .value_counts(normalize=True)
+                    .mul(100).rename('percentage')
+                    .reset_index()
+                )
+                ## add categories with no existing or absent connections
+                ## to the percentages to prevent errors when creating the barplots
+                for single_bin_cat in percentages.value_counts(x_name)[percentages.value_counts(x_name) == 1].keys():
+                    bin_w_100_percent = percentages.loc[percentages[x_name]==single_bin_cat, 'Connected'].values[0]
+                    bin_w_0_percent = ~bin_w_100_percent
+                    percentages = percentages.append({x_name: single_bin_cat, 'Connected': bin_w_0_percent, 'percentage':0.0}, ignore_index=True)
+                print(percentages)
+                percentages_all = (df['Connected']
+                    .value_counts(normalize=True)
+                    .mul(100).rename('percentage')
+                    .reset_index())
+                print(percentages_all)
+                ## create the bar plots
+                fig, ax = plt.subplots()
+                existing_conn = percentages[percentages['Connected']]
+                absent_conn = percentages[~percentages['Connected']]
+                ax.bar(existing_conn[x_name], height=existing_conn['percentage'], facecolor='black', edgecolor='black', width = 0.5)
+                # ax.bar(absent_conn[x_name], bottom=existing_conn['percentage'], height=absent_conn['percentage'], facecolor='white', edgecolor='black', width = 0.5)
+                ax.set_xticks(percentages[x_name].unique())
+                ax.set_ylabel('Connected %')
+            ax.set_xlabel(f'{x_name.replace("_"," ").title()}')
         return lgrs
 
 class MicrostructuralCovarianceMatrix(Matrix):
@@ -1074,7 +1148,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
     """
     def __init__(self, input_type, parcellation_name='sjh', 
                  exc_regions='adysgranular', correct_curvature='smooth-10', 
-                 regress_out_geodesic_distance = False,
+                 regress_out_geodesic_distance = False, relative = True,
                  similarity_metric='parcor', similarity_scale='parcel',
                  dataset='bigbrain', zero_out_negative=False, create_plots=True):
         """
@@ -1086,7 +1160,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
             - 'thickness' [default]: laminar thickness from BigBrain
             - 'density': profile density from BigBrain
             - 'thickness-density': fused laminar thickness and profile density from BigBrain
-        parcellation_name: (str) (only for bigbrain)
+        parcellation_name: (str | None) (only for bigbrain)
         exc_regions: (str | None)
         correct_curvature: (str or None) ignored for 'density'
             - 'smooth-{radius}' [Default]: smooth the thickness using a disc on the inflated surface
@@ -1126,6 +1200,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
         self.exc_regions = exc_regions
         self.zero_out_negative = zero_out_negative
         self.dataset = dataset
+        self.relative = relative
         if self.dataset == 'economo':
             self.parcellation_name = 'economo'
             self.similarity_scale = 'parcel'
@@ -1167,7 +1242,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
         """
         print("Creating microstructural covariance matrix")
         if self.input_type == 'thickness-density':
-            matrices = []
+            self.children = {}
             for input_type in ['thickness', 'density']:
                 # create matrix_obj for each input_type
                 # by calling the same class
@@ -1181,10 +1256,10 @@ class MicrostructuralCovarianceMatrix(Matrix):
                     similarity_scale=self.similarity_scale,
                     zero_out_negative=self.zero_out_negative,
                 )
-                matrices.append(matrix_obj.matrix)
+                self.children[input_type] = matrix_obj
                 #TODO: it is unlikely but maybe valid parcels are different for each modality
                 # in that case this code won't work properly
-            self.matrix = self._fuse_matrices(matrices)
+            self.matrix = self._fuse_matrices([child.matrix for child in self.children.values()])
         else:
             # Load laminar thickness or density profiles
             self._load_input_data()
@@ -1209,21 +1284,21 @@ class MicrostructuralCovarianceMatrix(Matrix):
         if self.input_type == 'thickness':
             if self.dataset == 'economo':
                 self._parcellated_input_data = datasets.load_economo_laminar_thickness(
-                    normalize_by_total_thickness=True
+                    normalize_by_total_thickness=self.relative
                 )
             else:
                 if self.correct_curvature is None:
                     self._input_data = datasets.load_laminar_thickness(
                         exc_regions=self.exc_regions,
                         regress_out_curvature=False,
-                        normalize_by_total_thickness=True,
+                        normalize_by_total_thickness=self.relative,
                     )
                 elif 'smooth' in self.correct_curvature:
                     smooth_disc_radius = int(self.correct_curvature.split('-')[1])
                     self._input_data = datasets.load_laminar_thickness(
                         exc_regions=self.exc_regions,
                         regress_out_curvature=False,
-                        normalize_by_total_thickness=True,
+                        normalize_by_total_thickness=self.relative,
                         smooth_disc_radius=smooth_disc_radius
                     )
                     # note that in this case the input data is in ico5 space
@@ -1240,7 +1315,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
                     self._input_data = datasets.load_laminar_thickness(
                         exc_regions=self.exc_regions,
                         regress_out_curvature=True,
-                        normalize_by_total_thickness=True,
+                        normalize_by_total_thickness=self.relative,
                     )
         elif self.input_type == 'density':
             self._input_data = datasets.load_total_depth_density(
@@ -1285,7 +1360,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
                     averaging_method='median'
                     )
                 # renormalize the parcellated relative laminar thickness
-                if self.input_type == 'thickness':
+                if (self.input_type == 'thickness') & self.relative:
                     self._parcellated_input_data = \
                         self._parcellated_input_data.divide(
                             self._parcellated_input_data.sum(axis=1), 
@@ -1296,6 +1371,11 @@ class MicrostructuralCovarianceMatrix(Matrix):
                 # with parcellated ones convert input data to a
                 # dataframe and call it _parcellated_input_data
                 self._parcellated_input_data = pd.DataFrame(concat_input_data)
+        # remove NaNs. If there are NaN values in the parcellated_input_data there will
+        # be all-zero rows in the matrix and this will makes all the elements
+        # in the gradient = NaN. There shouldn't usually be NaNs at this point
+        # but still there is one parcel in schaefer1000. TODO: fix this in the source
+        self._parcellated_input_data = self._parcellated_input_data.dropna()
         if self.parcellation_name is not None:
             # get only the valid parcels outside of exc_regions or midline
             # which also exist in self._parcellated_input_data (the latter
@@ -1485,6 +1565,8 @@ class MicrostructuralCovarianceMatrix(Matrix):
         sub_dir = self.dataset
         if self.dataset == 'bigbrain':
             sub_dir += f'_parc-{self.parcellation_name}'
+        if not self.relative:
+            sub_dir += '_absolute'
         if (self.input_type != 'density') & (self.dataset == 'bigbrain'):
             sub_dir += f'_curv-{str(self.correct_curvature).lower()}'
         if self.regress_out_geodesic_distance:
@@ -1602,7 +1684,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
 class CorticalTypeDiffMatrix(Matrix):
     label = "Cortical type difference"
     cmap = 'YlOrRd'
-    def __init__(self, parcellation_name, exc_regions=None):
+    def __init__(self, parcellation_name, exc_regions=None, create_plot=False):
         """
         Initializes cortical type difference matrix object for the given `parcellation_name`
 
@@ -1621,7 +1703,8 @@ class CorticalTypeDiffMatrix(Matrix):
         self.file_path = os.path.join(self.dir_path, 'matrix')
         os.makedirs(self.dir_path, exist_ok=True)
         self._create()
-        self.plot(vrange=(0, 1))
+        if create_plot:
+            self.plot(vrange=(0, 1))
         # convert dtype to category (important for compare_fit function)
         self.matrix = self.matrix.astype('int').astype('category')
 
@@ -1881,3 +1964,49 @@ class NeuronalSubtypesCovarianceMatrix(Matrix):
             cmap = self.cmap,
             parcellation_name = self.parcellation_name
         )
+
+class CorrelatedGeneExpressionMatrix(Matrix):
+    """
+    Correlated gene expression (CGE) matrix
+    """
+    label = 'Correlated gene expression'
+    short_label = 'CGE'
+    cmap = 'YlOrRd'
+    def __init__(self, parcellation_name='sjh', brain_specific=True, create_plots=True):
+        self.parcellation_name = parcellation_name
+        self.dir_path = os.path.join(OUTPUT_DIR, 'cge', f'parc-{parcellation_name}')
+        self.file_path = os.path.join(self.dir_path, 'matrix')
+        os.makedirs(self.dir_path, exist_ok=True)
+        ahba_df = datasets.fetch_ahba_data(
+            parcellation_name=self.parcellation_name, 
+            ibf_threshold=0.5, missing='centroids')['all']
+        if brain_specific:
+            brain_specific_genes_in_ahba = ahba_df.columns.intersection(abagen.fetch_gene_group('brain'))
+            ahba_df = ahba_df.loc[:, brain_specific_genes_in_ahba]
+        matrix = np.corrcoef(ahba_df.values)
+        # zero out correlations of 1 (to avoid division by 0)
+        matrix[np.isclose(matrix, 1)] = 0
+        # Fisher's z-transformation
+        matrix = 0.5 * np.log((1 + matrix) /  (1 - matrix))
+        # zero out NaNs and inf
+        matrix[np.isnan(matrix) | np.isinf(matrix)] = 0
+        self.matrix = pd.DataFrame(matrix, columns=ahba_df.index, index=ahba_df.index)
+        if create_plots:
+            self.plot(vrange=(0,1))
+
+
+class StructuralCovarianceMatrix(Matrix):
+    label = 'Structural covariance'
+    short_label = 'StrCov'
+    cmap = 'RdBu_r'
+    def __init__(self, create_plots=True):
+        self.parcellation_name = 'schaefer400'
+        self.dir_path = os.path.join(OUTPUT_DIR, 'strcov')
+        self.file_path = os.path.join(self.dir_path, 'matrix')
+        os.makedirs(self.dir_path, exist_ok=True)
+        matrix = scipy.io.loadmat(os.path.join(SRC_DIR, 'scov_Valk2020.mat'), simplify_cells=True)['SCOV']['strcov']
+        schaefer400_labels = datasets.load_volumetric_parcel_labels('schaefer400')
+        self.matrix = pd.DataFrame(matrix, index=schaefer400_labels, columns=schaefer400_labels)
+        if create_plots:
+            self.plot(vrange='sym')
+

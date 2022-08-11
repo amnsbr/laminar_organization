@@ -12,13 +12,15 @@ import seaborn as sns
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import brainspace.mesh, brainspace.plotting, brainspace.null_models
 import brainsmash.mapgen
+import enigmatoolbox.permutation_testing
 import nilearn.surface
 import nilearn.plotting
+from nilearn.input_data import NiftiLabelsMasker
 import nibabel
 import statsmodels.api as sm
 import scipy.io
 import abagen
-import logging, sys
+import logging, sys, itertools
 logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 
 
@@ -90,7 +92,7 @@ def download_bigbrain_ftp(ftp_dir, ftp_filename, out_filename=None, copy_to=None
 ###### Data manipulation ######
 
 def parcellate(surface_data, parcellation_name, averaging_method='median', 
-               na_midline=True):
+               na_midline=True, space='bigbrain'):
     """
     Parcellates `surface data` using `parcellation` and by taking the
     median or mean (specified via `averaging_method`) of the vertices within each parcel.
@@ -104,6 +106,9 @@ def parcellate(surface_data, parcellation_name, averaging_method='median',
         - 'mean'
         - None (will return groupby object)
     na_midline: (bool) make midline vertices NaN
+    space: (str)
+        - 'bigbrain' (default)
+        - 'fsaverage'
 
     Returns
     ---------
@@ -116,7 +121,8 @@ def parcellate(surface_data, parcellation_name, averaging_method='median',
         labeled_parcellation_maps = datasets.load_parcellation_map(
             parcellation_name, 
             concatenate=False,
-            downsampled=is_downsampled)
+            downsampled=is_downsampled,
+            space=space)
         parcellated_data = {}
         for hem in ['L', 'R']:
             # parcellate
@@ -146,7 +152,8 @@ def parcellate(surface_data, parcellation_name, averaging_method='median',
         labeled_parcellation_maps = datasets.load_parcellation_map(
             parcellation_name, 
             concatenate=True,
-            downsampled=is_downsampled)
+            downsampled=is_downsampled,
+            space=space)
         # parcellate
         parcellated_vertices = (
             pd.DataFrame(surface_data, index=labeled_parcellation_maps)
@@ -166,6 +173,30 @@ def parcellate(surface_data, parcellation_name, averaging_method='median',
             parcellated_data = parcellated_vertices.mean()
         else:
             parcellated_data = parcellated_vertices
+    return parcellated_data
+
+def parcellate_volumetric(img_path, parcellation_name):
+    """
+    Parcellated volumetric image
+    """
+    # prepare the parcellation masker
+    # Warning: Background label is by default set to
+    # 0. Make sure this is the case for all the parcellation
+    # maps and zero corresponds to background / midline
+    masker = NiftiLabelsMasker(
+        os.path.join(
+            SRC_DIR, 
+            f'tpl-MNI152_desc-{parcellation_name}_parcellation.nii.gz'
+            ), 
+        strategy='mean',
+        resampling_target='data',
+        background_label=0)
+    parcellated_data = masker.fit_transform(img_path).flatten()
+    # add labels of the parcels
+    parcellated_data = pd.Series(
+        parcellated_data,
+        index = datasets.load_volumetric_parcel_labels(parcellation_name)
+    )
     return parcellated_data
 
 def concat_hemispheres(parcellated_data, dropna=False):
@@ -196,7 +227,7 @@ def concat_hemispheres(parcellated_data, dropna=False):
         concat_data = concat_data.dropna()
     return concat_data
 
-def downsample(surface_data):
+def downsample(surface_data, space='bigbrain'):
     """
     Downsamples `surface data` in bigbrain ico7 space to ico5 by treating the mapping
     between ico7 and ico5 (previously calculated in `local/downsample_bb.m`) as a
@@ -222,40 +253,43 @@ def downsample(surface_data):
         concat_output = True
     downsampled_surface_data = {}
     for hem in ['L', 'R']:
-        # load the downsampled surface from matlab results
-        mat = scipy.io.loadmat(
-            os.path.join(
-                SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-pial_downsampled.mat'
-                )
-        )
-        # load the "parcellation map" of downsampled bigbrain surface
-        #  indicating the index for the center vertex of each parcel
-        #  in the original ico7 (320k) BB surface
-        downsample_parcellation = mat['nn_bb'][0, :]-1 #1-indexing to 0-indexing
-        # then "parcellate" the ico7 data to ico5 by taking
-        #  the average of center vertices and their neighbors
-        #  indicated in 'nn_bb'
-        downsampled = (
-            pd.DataFrame(surface_data[hem], index=downsample_parcellation)
-            .reset_index(drop=False)
-            .groupby('index')
-            .mean()
-        )
-        # if there is a single NaN value around a downsampled vertex
-        # set that vertex to NaN
-        any_nan = (
-            pd.DataFrame(surface_data[hem], index=downsample_parcellation)
-            .isna()
-            .reset_index(drop=False)
-            .groupby('index')
-            .sum()
-            .any(axis=1)
-        )
-        downsampled.loc[any_nan] = np.NaN
-        # load correctly ordered indices of center vertices
-        #  and reorder downsampled data to the correct order alligned with ico5 surface
-        bb_downsample_indices = mat['bb_downsample'][:, 0]-1 #1-indexing to 0-indexing
-        downsampled_surface_data[hem] = downsampled.loc[bb_downsample_indices].values
+        if space == 'bigbrain':
+            # load the downsampled surface from matlab results
+            mat = scipy.io.loadmat(
+                os.path.join(
+                    SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-pial_downsampled.mat'
+                    )
+            )
+            # load the "parcellation map" of downsampled bigbrain surface
+            #  indicating the index for the center vertex of each parcel
+            #  in the original ico7 (320k) BB surface
+            downsample_parcellation = mat['nn_bb'][0, :]-1 #1-indexing to 0-indexing
+            # then "parcellate" the ico7 data to ico5 by taking
+            #  the average of center vertices and their neighbors
+            #  indicated in 'nn_bb'
+            downsampled = (
+                pd.DataFrame(surface_data[hem], index=downsample_parcellation)
+                .reset_index(drop=False)
+                .groupby('index')
+                .mean()
+            )
+            # if there is a single NaN value around a downsampled vertex
+            # set that vertex to NaN
+            any_nan = (
+                pd.DataFrame(surface_data[hem], index=downsample_parcellation)
+                .isna()
+                .reset_index(drop=False)
+                .groupby('index')
+                .sum()
+                .any(axis=1)
+            )
+            downsampled.loc[any_nan] = np.NaN
+            # load correctly ordered indices of center vertices
+            #  and reorder downsampled data to the correct order alligned with ico5 surface
+            bb_downsample_indices = mat['bb_downsample'][:, 0]-1 #1-indexing to 0-indexing
+            downsampled_surface_data[hem] = downsampled.loc[bb_downsample_indices].values
+        elif space == 'fsaverage':
+            downsampled_surface_data[hem] = surface_data[hem][:datasets.N_VERTICES_HEM_BB_ICO5]
     if concat_output:
         return np.concatenate([
             downsampled_surface_data['L'],
@@ -388,7 +422,7 @@ def disc_smooth(surface_data, smooth_disc_radius):
                 smoothed_surface_data[hem][vertex, :] = np.nanmean(surface_data[hem][disc, :], axis=0)
     return smoothed_surface_data, discs
 
-def deparcellate(parcellated_data, parcellation_name, downsampled=False):
+def deparcellate(parcellated_data, parcellation_name, downsampled=False, space='bigbrain'):
     """
     Project the parcellated data to surface vertices while handling empty parcels
     (parcels that are not in the parcellated data but are in the parcellation map)
@@ -398,6 +432,9 @@ def deparcellate(parcellated_data, parcellation_name, downsampled=False):
     parcellated_data: (pd.DataFrame | pd.Series) n_parcels x n_features
     parcellation_name: (str)
     downsampled: (bool)
+    space: (str)
+        - 'bigbrain'
+        - 'fsaverage'
 
     Returns
     -------
@@ -405,18 +442,17 @@ def deparcellate(parcellated_data, parcellation_name, downsampled=False):
     """
     # load concatenated parcellation map
     concat_parcellation_map = datasets.load_parcellation_map(
-        parcellation_name, concatenate=True, downsampled=downsampled)
+        parcellation_name, concatenate=True, downsampled=downsampled, space=space)
     # load dummy parcellated data covering the whole brain
     if downsampled:
-        dummy_surf_data = np.zeros(datasets.N_VERTICES_HEM_BB_ICO5)
+        dummy_surf_data = np.zeros(datasets.N_VERTICES_HEM_BB_ICO5 * 2)
     else:
-        dummy_surf_data = np.zeros(datasets.N_VERTICES_HEM_BB)
+        dummy_surf_data = np.zeros(datasets.N_VERTICES_HEM_BB * 2)
     parcellated_dummy = parcellate(
-        {'L': dummy_surf_data,
-         'R': dummy_surf_data,},
-         parcellation_name)
-    concat_parcellated_dummy = concat_hemispheres(parcellated_dummy, dropna=False)
-    all_parcels = concat_parcellated_dummy.index.to_series().rename('parcel')
+        dummy_surf_data,
+        parcellation_name,
+        space=space)
+    all_parcels = parcellated_dummy.index.to_series().rename('parcel')
     # create a dataframe including all parcels, where invalid parcels are NaN
     #   (this is necessary to be able to project it to the parcellation)
     labeled_parcellated_data = pd.concat(
@@ -586,7 +622,7 @@ def make_colorbar(vmin, vmax, cmap=None, bins=None, orientation='vertical', figs
     cax.xaxis.tick_bottom()
     return fig
 
-def plot_matrix(matrix, outpath, cmap="rocket", vrange=(0.025, 0.975), **kwargs):
+def plot_matrix(matrix, outpath=None, cmap="rocket", vrange=(0.025, 0.975), **kwargs):
     """
     Plot the matrix as heatmap
 
@@ -595,11 +631,20 @@ def plot_matrix(matrix, outpath, cmap="rocket", vrange=(0.025, 0.975), **kwargs)
     matrix: (np.ndarray) square matrix or horizontally concatenated
         square matrices
     cmap: (str or colormap objects) colormap recognizable by seaborn
-    vrange: (tuple of size 2) vmin and vmax as percentiles (for whole range put (0, 1))
+    vrange: 
+        - (tuple): vmin and vmax as percentiles (for whole range put (0, 1))
+        - 'sym'
     """
     n_square_matrices = matrix.shape[1] // matrix.shape[0]
-    vmin = np.nanquantile(matrix.flatten(),vrange[0])
-    vmax = np.nanquantile(matrix.flatten(),vrange[1])
+    if vrange == 'sym':
+        vmin = min(np.nanmin(matrix.flatten()), -np.nanmax(matrix.flatten()))
+        if vmin < 0:
+            vmax = -vmin
+        else:
+            vmax = np.nanmax(matrix.flatten())
+    else:
+        vmin = np.nanquantile(matrix.flatten(),vrange[0])
+        vmax = np.nanquantile(matrix.flatten(),vrange[1])
     fig, ax = plt.subplots(figsize=(7 * n_square_matrices,7))
     sns.heatmap(
         matrix,
@@ -607,13 +652,15 @@ def plot_matrix(matrix, outpath, cmap="rocket", vrange=(0.025, 0.975), **kwargs)
         cmap=cmap, cbar=False,
         ax=ax)
     ax.axis('off')
-    fig.tight_layout()
-    fig.savefig(outpath, dpi=192)
     clbar_fig = make_colorbar(
         vmin=vmin, vmax=vmax,
         cmap=cmap, orientation='horizontal'
         )
-    clbar_fig.savefig(outpath+'_clbar', dpi=192)
+    if outpath:
+        fig.tight_layout()
+        fig.savefig(outpath, dpi=192)
+        clbar_fig.savefig(outpath+'_clbar', dpi=192)
+
 
 def plot_surface(surface_data, filename=None, space='bigbrain', inflate=True, 
                  plot_downsampled=True, layout_style='row', cmap='viridis',
@@ -664,30 +711,12 @@ def plot_surface(surface_data, filename=None, space='bigbrain', inflate=True,
     # specify the mesh and downsample the data if needed
     if plot_downsampled:
         if (surface_data['L'].shape[0] == datasets.N_VERTICES_HEM_BB):
-            surface_data = downsample(surface_data)
-        if inflate:
-            mesh_paths = datasets.load_downsampled_surface_paths('inflated')
-        else:
-            mesh_paths = datasets.load_downsampled_surface_paths('orig')
+            surface_data = downsample(surface_data, space=space)
+    if inflate:
+        kind = 'inflated'
     else:
-        if inflate:
-            mesh_paths = {
-                'L': os.path.join(
-                    SRC_DIR, 'tpl-bigbrain_hemi-L_desc-mid.surf.inflate.gii'
-                    ),
-                'R': os.path.join(
-                    SRC_DIR, 'tpl-bigbrain_hemi-R_desc-mid.surf.inflate.gii'
-                    )
-            }
-        else:
-            mesh_paths = {
-                'L': os.path.join(
-                    SRC_DIR, 'tpl-bigbrain_hemi-L_desc-mid.surf.gii'
-                    ),
-                'R': os.path.join(
-                    SRC_DIR, 'tpl-bigbrain_hemi-R_desc-mid.surf.gii'
-                    )
-            }
+        kind = 'orig'
+    mesh_paths = datasets.load_mesh_paths(kind=kind, space=space, downsampled=plot_downsampled)
     # plot the colorbar
     if cbar:
         clbar_fig = make_colorbar(*vrange, cmap)
@@ -783,6 +812,39 @@ def _plot_nilearn(surface_data, mesh_paths, filename, layout_style, cmap, vrange
     else:
         return figure
 
+def plot_csea_res_table(csea_res_txt, pSI_thresh=0.05, color='red', cmap=None):
+    sns.set_style('ticks')
+    csea_res = pd.DataFrame([line.split('\t') for line in csea_res_txt.splitlines()])
+    # set the columns and indices
+    csea_res.columns = map(str.strip, csea_res.iloc[0, :])
+    csea_res = csea_res.iloc[1:, :]
+    csea_res = csea_res.set_index('Brain Regions and Development and P-Values')
+    # select the FDR-corrected p-vals
+    csea_res = csea_res.applymap(lambda c: float(c.split('(')[-1][:-2]))
+    csea_res = csea_res.loc[:, [str(pSI_thresh)]]
+    csea_res['Structure'] = csea_res.index.to_series().apply(lambda s: s.split('.')[0].strip())
+    csea_res['Stage'] = csea_res.index.to_series().apply(lambda s: ' '.join(s.split('.')[1:]))
+    csea_res['Stage'] = csea_res['Stage'].str.strip()
+    csea_res = csea_res.reset_index(drop=True).set_index(['Stage', 'Structure'])[str(pSI_thresh)].unstack()
+    stages_order = [
+        'Early Fetal', 'Early Mid Fetal', 'Late Mid Fetal', 'Late Fetal',
+        'Neotal Early Infancy', 'Late Infancy', 'Early Childhood',
+        'Middle Late Childhood', 'Adolescence', 'Young Adulthood'
+    ]
+    regions_order = [
+        'Cortex', 'Thalamus', 'Cerebellum', 'Striatum', 'Hippocampus', 'Amygdala'
+    ]
+    csea_res = csea_res.loc[stages_order, regions_order]
+    csea_res[csea_res > 0.05] = np.NaN
+    fig, ax = plt.subplots(1, figsize=(8,4))
+    if cmap is None:
+        cmap = f'{color.title()}s'
+    sns.heatmap(-np.log(csea_res).T, cmap=cmap, vmin=-np.log(0.05), ax=ax)
+    for _, spine in ax.spines.items():
+        spine.set_visible(True)
+    fig, ax = plt.subplots(1, figsize=(8,2))
+    ax.bar(x = csea_res.index, height = -np.log(csea_res).T.sum(axis=0), color=color, alpha=1)
+    ax.set_xticklabels(stages_order, rotation=90);
 
 #### Spin permutation functions ####
 def create_bigbrain_spin_permutations(is_downsampled=True, n_perm=1000, batch_size=20):
@@ -927,6 +989,139 @@ def spin_test(surface_data_to_spin, surface_data_target, n_perm, is_downsampled)
     test_r = test_r[0, :, :]
     return test_r, p_val, null_distribution
 
+def get_rotated_parcels(parcellation_name, n_perm, return_indices=True):
+    """
+    Uses ENIGMA Toolbox approach to spin parcel centroids on the cortical sphere instead
+    of spinning all the vertices.
+    """
+    rotated_parcels_path = os.path.join(
+        SRC_DIR,
+        f'tpl-bigbrain_downsampled_parc-{parcellation_name}_desc-rotated_parcels_n-{n_perm}.npz')
+    if os.path.exists(rotated_parcels_path):
+        if return_indices:
+            return np.load(rotated_parcels_path, allow_pickle=True)['rotated_indices']
+        else:
+            return np.load(rotated_parcels_path, allow_pickle=True)['rotated_parcels']
+    # get the coordinates for the centroids of each parcel
+    # on cortical sphere of bigbrain
+    centroids = {}
+    for hem in ['L', 'R']:
+        surf_path = datasets.load_downsampled_surface_paths('sphere')[hem]
+        vertices = nilearn.surface.load_surf_mesh(surf_path).coordinates           
+        parc = datasets.load_parcellation_map(parcellation_name, False, downsampled=True)[hem]
+        centroids[hem] = pd.DataFrame(columns=['x','y','z'])
+        for parcel_name in np.unique(parc):
+            if parcel_name not in MIDLINE_PARCELS.get(parcellation_name, []):
+                this_parc = np.where(parc == parcel_name)[0]
+                centroids[hem].loc[parcel_name] = np.mean(vertices[this_parc, :], axis=0)
+    # rotate the parcels
+    np.random.seed(921)
+    rotated_indices = enigmatoolbox.permutation_testing.rotate_parcellation(
+        centroids['L'].values.astype('float'),
+        centroids['R'].values.astype('float'),
+        n_perm
+    ).astype('int')
+    # get the rotated parcel names
+    rotated_parcels = (
+        pd.concat([centroids['L'], centroids['R']], axis=0)
+        .index.to_numpy()
+        [rotated_indices]
+    )
+    # save/return
+    np.savez_compressed(
+        rotated_parcels_path, 
+        rotated_parcels=rotated_parcels,
+        rotated_indices=rotated_indices)
+    if return_indices:
+        return rotated_indices
+    else:
+        return rotated_parcels
+
+def spin_test_parcellated(X, Y, parcellation_name, n_perm=1000):
+    """
+    Uses ENIGMA Toolbox approach to spin parcel centroids on the cortical sphere instead
+    of spinning all the vertices. Ideally spin the parcellated data with less NaN values
+    by assigining it to X.
+
+    Parameters
+    ---------
+    X, Y: (pd.DataFrame) n_parcel x n_features
+    parcellation_name: (str)
+    n_perm: (int)
+    surrogates_path: (str | None)
+    """
+    # calculate test correlation coefficient between all pairs of columns between surface_data_to_spin and surface_data_target
+    coefs = (
+        pd.concat([X, Y], axis=1)
+        # calculate the correlation coefficient between all pairs of columns within and between X and Y
+        .corr()
+        # select only the correlations we are interested in
+        .iloc[:X.shape[1], -Y.shape[1]:] 
+        # convert it to shape (1, n_features_Y, n_features_surface_X)
+        .T.values[np.newaxis, :] 
+    )
+    # get the spin rotated parcel indices
+    rotated_indices = get_rotated_parcels(parcellation_name, n_perm, return_indices=True)
+    # add NaN parcels back to X and Y so that the number of parcels
+    # in them and rotated parcels is the same (to make sure the unlabeled
+    # numpy arrays are aligned)
+    X_all_parcels = (parcellate(deparcellate(X, parcellation_name, downsampled=True), parcellation_name))
+    X_all_parcels = X_all_parcels.loc[~X_all_parcels.index.isin(MIDLINE_PARCELS.get(parcellation_name, []))]
+    X_all_parcels.columns = X.columns
+    Y_all_parcels = (parcellate(deparcellate(Y, parcellation_name, downsampled=True), parcellation_name))
+    Y_all_parcels = Y_all_parcels.loc[~Y_all_parcels.index.isin(MIDLINE_PARCELS.get(parcellation_name, []))]
+    Y_all_parcels.columns = Y.columns
+    assert X_all_parcels.shape[0] == Y_all_parcels.shape[0] == rotated_indices.shape[0]
+    # # get the surrogates for X columns all at once using fancy indexing
+    # # this is much faster than a for loop, but not more readable or
+    # # easy to explain
+    # surrogates = np.zeros((X_all_parcels.shape[0], n_perm, X_all_parcels.shape[1]))
+    # surrogates[
+    #     rotated_indices.T.flatten(),
+    #     np.arange(0, n_perm).reshape(n_perm, 1).repeat(repeats=X_all_parcels.shape[0], axis=1).flatten(),
+    #     :
+    # ] = np.tile(X_all_parcels.values.T, n_perm).T
+    # # get the correlation of all surrogates of all x columns with actual values
+    # # of y columns at once by having all of them in one dataframe
+    # named_surrogates = pd.DataFrame(
+    #     surrogates.reshape(-1, X.shape[1]*n_perm, order='F'),
+    #     columns = [f'{col}_surrogate{i}' for col, i in itertools.product(X.columns, np.arange(n_perm))]
+    # )
+    # null_corrs = pd.concat([named_surrogates, Y_all_parcels.reset_index(drop=True)], axis=1).corr().iloc[:-Y.shape[1], -Y.shape[1]:]
+    # # reshape the null correlations dataframe to (n_perm, n_features_Y, n_features_X)
+    # # this is too complicated but also much faster than the alternatives
+    # null_distribution = np.swapaxes(null_corrs.values.reshape(X.shape[1], n_perm, Y.shape[1]).T, 0, 1)
+    null_distribution = np.zeros((n_perm, Y.shape[1], X.shape[1]))
+    for x_col in range(X_all_parcels.shape[1]):
+        # get all surrogate parcellated maps at once.
+        # this involves complicated indexing but the is best way
+        # to achieve this extremely more efficiently than loops.
+        # if the first permutation in surrogates is e.g. [335, 212, ...]
+        # it basically assigns the X 0th value to 335th parcel and
+        # its 1st to 212th parcel and so on, and does the same across
+        # all the permutations
+        surrogates = np.zeros((X_all_parcels.shape[0], n_perm))
+        surrogates[
+            rotated_indices.T.flatten(),
+            np.arange(0, n_perm).reshape(n_perm, 1).repeat(repeats=X_all_parcels.shape[0], axis=1).flatten(),
+        ] = np.tile(X_all_parcels.values[:, x_col], n_perm)
+        surrogates = pd.DataFrame(surrogates)
+        surrogates.columns = [f'surrogate_{i}' for i in range(n_perm)]
+        null_distribution[:, :, x_col] = (
+            pd.concat([surrogates, Y_all_parcels.reset_index(drop=True)], axis=1)
+            .corr()
+            .iloc[:surrogates.shape[1], -Y.shape[1]:]
+            .values
+        )
+    # calculate p value
+    pvals = (np.abs(null_distribution) > np.abs(coefs)).mean(axis=0)
+    # remove unnecessary dimension of test_r
+    coefs = coefs[0, :, :]
+    pvals = pd.DataFrame(pvals, index=Y.columns, columns=X.columns)
+    coefs = pd.DataFrame(coefs, index=Y.columns, columns=X.columns)
+    return coefs, pvals, null_distribution
+
+
 def variogram_test(X, Y, parcellation_name, n_perm=1000, surrogates_path=None):
     """
     Calculates non-parametric p-value of correlation between the columns in X and Y
@@ -940,7 +1135,6 @@ def variogram_test(X, Y, parcellation_name, n_perm=1000, surrogates_path=None):
     ----------
     X, Y: (pd.DataFrame) n_parcel x n_features
     parcellation_name: (str)
-    exc_regions: (str)
     n_perm: (int)
     surrogates_path: (str | None)
     """
@@ -995,7 +1189,7 @@ def variogram_test(X, Y, parcellation_name, n_perm=1000, surrogates_path=None):
         if surrogates_path:
             np.savez_compressed(surrogates_path, surrogates=surrogates, parcels=X.index.values)
     # calculate test correlation coefficient between all pairs of columns between surface_data_to_spin and surface_data_target
-    test_r = (
+    coefs = (
         pd.concat([X, Y], axis=1)
         # calculate the correlation coefficient between all pairs of columns within and between X and Y
         .corr() 
@@ -1004,28 +1198,31 @@ def variogram_test(X, Y, parcellation_name, n_perm=1000, surrogates_path=None):
         # convert it to shape (1, n_features_Y, n_features_surface_X)
         .T.values[np.newaxis, :] 
     )
-    # keep track of null distribution of correlation coefficients
-    null_distribution = test_r.copy() # will have the shape (n_perms, n_features_surface_data_target, n_features_surface_data_to_spin)
-    for surrogate_idx in range(n_perm):
-        curr_surrogate = pd.DataFrame(surrogates[surrogate_idx, :, :], index=X.index)
-        # calculate null correlation coefficient between all pairs of columns between surface_data_to_spin and surface_data_target
-        null_r = (
-            pd.concat([curr_surrogate, Y], axis=1)
+    null_distribution = np.zeros((n_perm, Y.shape[1], X.shape[1]))
+    for x_col in range(X.shape[1]):
+        # get all surrogate parcellated maps at once.
+        # this involves complicated indexing but the is best way
+        # to achieve this extremely more efficiently than loops.
+        # if the first permutation in surrogates is e.g. [335, 212, ...]
+        # it basically assigns the X 0th value to 335th parcel and
+        # its 1st to 212th parcel and so on, and does the same across
+        # all the permutations
+        x_col_surrogates = pd.DataFrame(surrogates[:, :, x_col].T)
+        x_col_surrogates.columns = [f'surrogate_{i}' for i in range(n_perm)]
+        null_distribution[:, :, x_col] = (
+            pd.concat([x_col_surrogates, Y], axis=1)
             .corr()
-            .iloc[:curr_surrogate.shape[1], -Y.shape[1]:]
-            .T.values[np.newaxis, :]
+            .iloc[:x_col_surrogates.shape[1], -Y.shape[1]:]
+            .values
         )
-        # add this to the null distribution
-        null_distribution = np.concatenate([null_distribution, null_r], axis=0)
-        # free up memory
-        gc.collect()
-    # remove the test_r from null_distribution
-    null_distribution = null_distribution[1:, :, :]
     # calculate p value
-    p_val = (np.abs(null_distribution) > np.abs(test_r)).mean(axis=0)
+    pvals = (np.abs(null_distribution) > np.abs(coefs)).mean(axis=0)
     # remove unnecessary dimension of test_r
-    test_r = test_r[0, :, :]
-    return test_r, p_val, null_distribution
+    coefs = coefs[0, :, :]
+    pvals = pd.DataFrame(pvals, index=Y.columns, columns=X.columns)
+    coefs = pd.DataFrame(coefs, index=Y.columns, columns=X.columns)
+
+    return coefs, pvals, null_distribution
 
 def exponential_eval(x, a, b, c):
     """
@@ -1076,7 +1273,6 @@ def exponential_fit(x, y):
         pass
     return coefs
 
-    
 
 def fsa_annot_to_fsa5_gii(parcellation_name):
     """

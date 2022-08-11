@@ -37,9 +37,9 @@ LAYERS_COLORS = {
     'wagstyl': ['#3a6aa6ff', '#f8f198ff', '#f9bf87ff', '#beaed3ff', '#7fc47cff','#e31879ff']
 }
 
-def load_downsampled_surface_paths(kind='orig'):
+def load_mesh_paths(kind='orig', space='bigbrain', downsampled=True):
     """
-    Loads or creates downsampled surfaces of bigbrain left and right hemispheres
+    Loads or creates surfaces of bigbrain/fsa left and right hemispheres
     (from ico7 to ico5)
     The actual downsampling is done in `local/downsample_bb.m` in matlab and this
     function just makes it python-readable
@@ -57,44 +57,65 @@ def load_downsampled_surface_paths(kind='orig'):
     """
     paths = {}
     for hem in ['L', 'R']:
-        paths[hem] = os.path.join(
-            SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-pial_downsampled_{kind}.surf.gii'
-            )
-        if os.path.exists(paths[hem]):
-            continue
-        # load the faces and coords of downsampled surface from matlab results
-        mat = scipy.io.loadmat(
-            os.path.join(
-                SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-pial_downsampled.mat'
+        if space=='bigbrain':
+            if downsampled:
+                paths[hem] = os.path.join(
+                    SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-pial_downsampled_{kind}.surf.gii'
+                    )
+                if os.path.exists(paths[hem]):
+                    continue
+                # load the faces and coords of downsampled surface from matlab results
+                mat = scipy.io.loadmat(
+                    os.path.join(
+                        SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-pial_downsampled.mat'
+                        )
                 )
-        )
-        faces = mat['BB10'][0,0][0]-1 # 1-indexing of matlab to 0-indexing of python
-        coords = mat['BB10'][0,0][1].T
-        if kind != 'orig':
-            # load the sphere|inflated ico7 surface to use their coordinates
-            if kind == 'sphere':
-                deformed_path = os.path.join(SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-sphere_rot_fsaverage.surf.gii')
+                faces = mat['BB10'][0,0][0]-1 # 1-indexing of matlab to 0-indexing of python
+                coords = mat['BB10'][0,0][1].T
+                if kind != 'orig':
+                    # load the sphere|inflated ico7 surface to use their coordinates
+                    if kind == 'sphere':
+                        deformed_path = os.path.join(SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-sphere_rot_fsaverage.surf.gii')
+                    else:
+                        deformed_path = os.path.join(SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-mid.surf.inflate.gii')
+                    deformed_ico7 = nilearn.surface.load_surf_mesh(deformed_path)
+                    # get the coordinates of central vertices which are in both ico7 and ico5.
+                    #  Note that for faces we will use the faces of non-deformed version of ico5
+                    #  surface, as it wouldn be the same regardless of the shape of surface (i.e.,
+                    #  the position of vertices)
+                    bb_downsample_indices = mat['bb_downsample'][:, 0]-1 #1-indexing to 0-indexing
+                    coords = deformed_ico7.coordinates[bb_downsample_indices]
+                # save it as gifti by using ico7 gifti as a template
+                # and modifying it
+                bb10_gifti = nibabel.load(
+                    os.path.join(
+                        SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-mid.surf.inflate.gii'
+                    )
+                )
+                bb10_gifti.darrays[0].data = coords
+                bb10_gifti.darrays[0].dims = list(coords.shape)
+                bb10_gifti.darrays[1].data = faces
+                bb10_gifti.darrays[1].dims = list(faces.shape)
+                nibabel.save(bb10_gifti, paths[hem])
             else:
-                deformed_path = os.path.join(SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-mid.surf.inflate.gii')
-            deformed_ico7 = nilearn.surface.load_surf_mesh(deformed_path)
-            # get the coordinates of central vertices which are in both ico7 and ico5.
-            #  Note that for faces we will use the faces of non-deformed version of ico5
-            #  surface, as it wouldn be the same regardless of the shape of surface (i.e.,
-            #  the position of vertices)
-            bb_downsample_indices = mat['bb_downsample'][:, 0]-1 #1-indexing to 0-indexing
-            coords = deformed_ico7.coordinates[bb_downsample_indices]
-        # save it as gifti by using ico7 gifti as a template
-        # and modifying it
-        bb10_gifti = nibabel.load(
-            os.path.join(
-                SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-mid.surf.inflate.gii'
-            )
-        )
-        bb10_gifti.darrays[0].data = coords
-        bb10_gifti.darrays[0].dims = list(coords.shape)
-        bb10_gifti.darrays[1].data = faces
-        bb10_gifti.darrays[1].dims = list(faces.shape)
-        nibabel.save(bb10_gifti, paths[hem])
+                if kind=='orig':
+                    paths[hem] = os.path.join(
+                        SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-mid.surf.gii'
+                    )
+                elif kind=='inflated':
+                    paths[hem] = os.path.join(
+                        SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-mid.surf.inflate.gii'
+                    )
+        elif space == 'fsaverage':
+            hem_fullname = {'L':'left', 'R':'right'}
+            if downsampled:
+                fsa_version = 'fsaverage5'
+            else:
+                fsa_version = 'fsaverage'
+            if kind=='orig':
+                paths[hem] = nilearn.datasets.fetch_surf_fsaverage(fsa_version)[f'pial_{hem_fullname[hem]}']
+            elif kind=='inflated':
+                paths[hem] = nilearn.datasets.fetch_surf_fsaverage(fsa_version)[f'infl_{hem_fullname[hem]}']      
     return paths
 
 
@@ -604,7 +625,7 @@ def load_hcp1200_myelin_map(exc_regions=None, downsampled=False):
     return myelin_map
 
 
-def load_parcellation_map(parcellation_name, concatenate, downsampled=False, load_indices=False):
+def load_parcellation_map(parcellation_name, concatenate, downsampled=False, load_indices=False, space='bigbrain'):
     """
     Loads parcellation maps of L and R hemispheres, correctly relabels them
     and concatenates them if `concatenate` is True
@@ -615,6 +636,9 @@ def load_parcellation_map(parcellation_name, concatenate, downsampled=False, loa
     concatenate: (bool) cocnatenate the hemispheres
     downsampled: (bool) load a downsampled version of parcellation map
     load_indices: (bool) return the parcel indices instead of their names
+    space: (str)
+        - 'bigbrain' (default)
+        - 'fsaverage'
 
     Returns
     -------
@@ -623,13 +647,20 @@ def load_parcellation_map(parcellation_name, concatenate, downsampled=False, loa
     parcellation_map = {}
     for hem in ['L', 'R']:
         # load parcellation map
-        parcellation_map[hem] = nilearn.surface.load_surf_data(
-            os.path.join(
-                SRC_DIR, 
-                f'tpl-bigbrain_hemi-{hem}_desc-{parcellation_name}_parcellation.label.gii')
-            )
+        if space == 'bigbrain':
+            parcellation_map[hem] = nilearn.surface.load_surf_data(
+                os.path.join(
+                    SRC_DIR, 
+                    f'tpl-bigbrain_hemi-{hem}_desc-{parcellation_name}_parcellation.label.gii')
+                )
+        elif space == 'fsaverage':
+            parcellation_map[hem], _, _ = nibabel.freesurfer.io.read_annot(
+                    os.path.join(
+                        SRC_DIR, 
+                        f'{hem.lower()}h_{parcellation_name}.annot')
+                )
+        # label parcellation map if indicated
         if not load_indices:
-            # label parcellation map
             if parcellation_name == 'brodmann':
                 # the source (fsaverage) is a gifti file
                 orig_gifti = nibabel.load(
@@ -658,16 +689,19 @@ def load_parcellation_map(parcellation_name, concatenate, downsampled=False, loa
                 transdict = dict(enumerate(sorted_labels))
             parcellation_map[hem] = np.vectorize(transdict.get)(parcellation_map[hem])
         if downsampled:
-            # select only the vertices corresponding to the downsampled ico5 surface
-            # Warning: For fine grained parcels such as sjh this approach leads to
-            # a few parcels being removed
-            mat = scipy.io.loadmat(
-                os.path.join(
-                    SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-pial_downsampled.mat'
+            if space == 'bigbrain':
+                # select only the vertices corresponding to the downsampled ico5 surface
+                # Warning: For fine grained parcels such as sjh this approach leads to
+                # a few parcels being removed
+                mat = scipy.io.loadmat(
+                    os.path.join(
+                        SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-pial_downsampled.mat'
+                    )
                 )
-            )
-            bb_downsample_indices = mat['bb_downsample'][:, 0]-1 #1-indexing to 0-indexing
-            parcellation_map[hem] = parcellation_map[hem][bb_downsample_indices]
+                bb_downsample_indices = mat['bb_downsample'][:, 0]-1 #1-indexing to 0-indexing
+                parcellation_map[hem] = parcellation_map[hem][bb_downsample_indices]
+            elif space == 'fsaverage':
+                parcellation_map[hem] = parcellation_map[hem][:N_VERTICES_HEM_BB_ICO5]
     if concatenate:
         return np.concatenate([parcellation_map['L'], parcellation_map['R']])
     else:

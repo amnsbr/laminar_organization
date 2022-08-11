@@ -20,5 +20,6 @@ dependencies:
     - dominance-analysis==1.1.7
     - pycortex==1.2.3
     - netneurotools==0.2.3
+    - yellowbrick==1.4
     - palettable
     - bctpy
