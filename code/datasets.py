@@ -1,5 +1,4 @@
 import os
-import logging
 import sys
 import numpy as np
 import pandas as pd
@@ -19,8 +18,6 @@ import netneurotools.datasets
 
 import helpers
 
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
-
 # specify the data dir
 abspath = os.path.abspath(__file__)
 cwd = os.path.dirname(abspath)
@@ -31,7 +28,7 @@ ABAGEN_DIR = '/data/group/cng/abagen-data'
 # constants / configs
 N_VERTICES_HEM_BB = 163842
 N_VERTICES_HEM_BB_ICO5 = 10242
-
+N_VERTICES_HEM_FSLR = 32492
 LAYERS_COLORS = {
     'bigbrain': ['#abab6b', '#dabcbc', '#dfcbba', '#e1dec5', '#66a6a6','#d6c2e3'], # layer 1 to 6
     'wagstyl': ['#3a6aa6ff', '#f8f198ff', '#f9bf87ff', '#beaed3ff', '#7fc47cff','#e31879ff']
@@ -50,11 +47,18 @@ def load_mesh_paths(kind='orig', space='bigbrain', downsampled=True):
         - 'orig'
         - 'inflated'
         - 'sphere'
+    
+    space: (str)
+        - 'bigbrain'
+        - 'fsaverage'
+        - 'fs_LR'
+        - 'yerkes' (macaque)
 
     Returns
     ------
     paths: (dict of str) path to downsampled surfaces of L and R
     """
+    # TODO: add sphere and inflated for the other spaces
     paths = {}
     for hem in ['L', 'R']:
         if space=='bigbrain':
@@ -116,6 +120,15 @@ def load_mesh_paths(kind='orig', space='bigbrain', downsampled=True):
                 paths[hem] = nilearn.datasets.fetch_surf_fsaverage(fsa_version)[f'pial_{hem_fullname[hem]}']
             elif kind=='inflated':
                 paths[hem] = nilearn.datasets.fetch_surf_fsaverage(fsa_version)[f'infl_{hem_fullname[hem]}']      
+        elif space == 'fs_LR':
+            paths[hem] = os.path.join(SRC_DIR, f'S1200.{hem}.pial_MSMAll.32k_fs_LR.surf.gii')
+        elif space == 'yerkes':
+            if kind == 'orig':
+                paths[hem] = os.path.join(SRC_DIR, f'MacaqueYerkes19.{hem}.pial.32k_fs_LR.surf.gii')
+            elif kind == 'inflated':
+                paths[hem] = os.path.join(SRC_DIR, f'MacaqueYerkes19.{hem}.inflated.32k_fs_LR.surf.gii')
+            elif kind == 'sphere':
+                paths[hem] = os.path.join(SRC_DIR, f'MacaqueYerkes19.{hem}.sphere.32k_fs_LR.surf.gii')
     return paths
 
 
@@ -644,64 +657,79 @@ def load_parcellation_map(parcellation_name, concatenate, downsampled=False, loa
     -------
     parcellation_map: (np.ndarray or dict of np.ndarray)
     """
-    parcellation_map = {}
-    for hem in ['L', 'R']:
-        # load parcellation map
-        if space == 'bigbrain':
-            parcellation_map[hem] = nilearn.surface.load_surf_data(
-                os.path.join(
-                    SRC_DIR, 
-                    f'tpl-bigbrain_hemi-{hem}_desc-{parcellation_name}_parcellation.label.gii')
-                )
-        elif space == 'fsaverage':
-            parcellation_map[hem], _, _ = nibabel.freesurfer.io.read_annot(
-                    os.path.join(
-                        SRC_DIR, 
-                        f'{hem.lower()}h_{parcellation_name}.annot')
-                )
-        # label parcellation map if indicated
-        if not load_indices:
-            if parcellation_name == 'brodmann':
-                # the source (fsaverage) is a gifti file
-                orig_gifti = nibabel.load(
-                    os.path.join(
-                        SRC_DIR,
-                        f'{hem.lower()}h_{parcellation_name}.label.gii'
-                    )
-                )
-                transdict = orig_gifti.labeltable.get_labels_as_dict()
-            else:
-                # for others its an annot file
-                _, _, sorted_labels = nibabel.freesurfer.io.read_annot(
-                    os.path.join(
-                        SRC_DIR, 
-                        f'{hem.lower()}h_{parcellation_name}.annot')
-                )
-                # labels post-processing for each specific parcellation
-                if parcellation_name == 'sjh':
-                    # remove sjh_ from the label
-                    sorted_labels = list(map(lambda l: int(l.decode().replace('sjh_','')), sorted_labels))
-                elif parcellation_name in ['aparc', 'economo']:
-                    # add hemisphere to the labels to have distinct parcel labels in each hemisphere
-                    sorted_labels = list(map(lambda l: f'{hem}_{l.decode()}', sorted_labels))
-                else:
-                    sorted_labels = list(map(lambda l: l.decode(), sorted_labels)) # b'name' => 'name'
-                transdict = dict(enumerate(sorted_labels))
-            parcellation_map[hem] = np.vectorize(transdict.get)(parcellation_map[hem])
-        if downsampled:
+    if space == 'yerkes':
+        yerkes_cifti = nibabel.load(os.path.join(SRC_DIR, 'Yerkes19_Parcellations_v2.32k_fs_LR.dlabel.nii'))
+        if parcellation_name == 'M132':
+            concat_parcellation_map = yerkes_cifti.get_fdata()[5, :]
+            parcellation_map = {
+                'L': concat_parcellation_map[:N_VERTICES_HEM_FSLR],
+                'R': concat_parcellation_map[N_VERTICES_HEM_FSLR:],
+            }
+            if not load_indices:
+                raw_labels = yerkes_cifti.header.get_axis(0).label[5]
+                for hem in ['L', 'R']:
+                    labels = [hem+'_'+l[0].replace('_M132', '') for l in raw_labels.values()]
+                    transdict = dict(enumerate(labels))
+                    parcellation_map[hem] = np.vectorize(transdict.get)(parcellation_map[hem])
+    else:
+        parcellation_map = {}
+        for hem in ['L', 'R']:
+            # load parcellation map
             if space == 'bigbrain':
-                # select only the vertices corresponding to the downsampled ico5 surface
-                # Warning: For fine grained parcels such as sjh this approach leads to
-                # a few parcels being removed
-                mat = scipy.io.loadmat(
+                parcellation_map[hem] = nilearn.surface.load_surf_data(
                     os.path.join(
-                        SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-pial_downsampled.mat'
+                        SRC_DIR, 
+                        f'tpl-bigbrain_hemi-{hem}_desc-{parcellation_name}_parcellation.label.gii')
                     )
-                )
-                bb_downsample_indices = mat['bb_downsample'][:, 0]-1 #1-indexing to 0-indexing
-                parcellation_map[hem] = parcellation_map[hem][bb_downsample_indices]
             elif space == 'fsaverage':
-                parcellation_map[hem] = parcellation_map[hem][:N_VERTICES_HEM_BB_ICO5]
+                parcellation_map[hem], _, _ = nibabel.freesurfer.io.read_annot(
+                        os.path.join(
+                            SRC_DIR, 
+                            f'{hem.lower()}h_{parcellation_name}.annot')
+                    )
+            # label parcellation map if indicated
+            if not load_indices:
+                if parcellation_name == 'brodmann':
+                    # the source (fsaverage) is a gifti file
+                    orig_gifti = nibabel.load(
+                        os.path.join(
+                            SRC_DIR,
+                            f'{hem.lower()}h_{parcellation_name}.label.gii'
+                        )
+                    )
+                    transdict = orig_gifti.labeltable.get_labels_as_dict()
+                else:
+                    # for others its an annot file
+                    _, _, sorted_labels = nibabel.freesurfer.io.read_annot(
+                        os.path.join(
+                            SRC_DIR, 
+                            f'{hem.lower()}h_{parcellation_name}.annot')
+                    )
+                    # labels post-processing for each specific parcellation
+                    if parcellation_name == 'sjh':
+                        # remove sjh_ from the label
+                        sorted_labels = list(map(lambda l: int(l.decode().replace('sjh_','')), sorted_labels))
+                    elif parcellation_name in ['aparc', 'economo']:
+                        # add hemisphere to the labels to have distinct parcel labels in each hemisphere
+                        sorted_labels = list(map(lambda l: f'{hem}_{l.decode()}', sorted_labels))
+                    else:
+                        sorted_labels = list(map(lambda l: l.decode(), sorted_labels)) # b'name' => 'name'
+                    transdict = dict(enumerate(sorted_labels))
+                parcellation_map[hem] = np.vectorize(transdict.get)(parcellation_map[hem])
+            if downsampled:
+                if space == 'bigbrain':
+                    # select only the vertices corresponding to the downsampled ico5 surface
+                    # Warning: For fine grained parcels such as sjh this approach leads to
+                    # a few parcels being removed
+                    mat = scipy.io.loadmat(
+                        os.path.join(
+                            SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-pial_downsampled.mat'
+                        )
+                    )
+                    bb_downsample_indices = mat['bb_downsample'][:, 0]-1 #1-indexing to 0-indexing
+                    parcellation_map[hem] = parcellation_map[hem][bb_downsample_indices]
+                elif space == 'fsaverage':
+                    parcellation_map[hem] = parcellation_map[hem][:N_VERTICES_HEM_BB_ICO5]
     if concatenate:
         return np.concatenate([parcellation_map['L'], parcellation_map['R']])
     else:
@@ -992,7 +1020,7 @@ def fetch_aggregate_gene_expression(gene_list, parcellation_name, discard_rh=Tru
         # of all genes to 1
         gene_list = pd.Series(1, index=gene_list)
     exist_gene_list = (set(gene_list.index) & set(ahba_genes))
-    logging.info(f'{gene_list.shape[0] - len(exist_gene_list)} of {gene_list.shape[0]} genes do not exist')
+    print(f'{gene_list.shape[0] - len(exist_gene_list)} of {gene_list.shape[0]} genes do not exist')
     gene_list = gene_list.loc[exist_gene_list]
     # get the aggregate expression for each donor
     # (in the case of return_donors==False there's
@@ -1053,7 +1081,7 @@ def fetch_pet(parcellation_name, receptor):
     # group the images with the same recetpro-tracer
     for group, group_df in metadata.groupby(['receptor', 'tracer']):
         group_name = '_'.join(group)
-        logging.info(group_name)
+        print(group_name)
         # take a weighted average of PET value z-scores
         # across images with the same receptor-tracer
         # (weighted by N of subjects)
@@ -1237,3 +1265,41 @@ def fetch_parvalbumin(parcellation_name, subject='all'):
         index = load_volumetric_parcel_labels(parcellation_name)
     )
     return parcellated_data
+
+def load_macaque_hierarchy():
+    """
+    Hierarchy of macaque parcels based on Burt 2018 in M132
+    parcellation
+    """
+    # load and label the parcellated hierarchy map
+    cifti = nibabel.load(os.path.join(
+        SRC_DIR, 'monkey_hierarchy.pscalar.nii'
+    ))
+    hierarchy = pd.Series(
+        cifti.get_fdata()[0, :], 
+        index=cifti.header.get_axis(1).name
+        )
+    # rename some parcels to the names that are
+    # in the M132 parcellation file
+    rename_dict = {
+        '29/30': '29_30',
+        '9/46d': '9_46d',
+        '9/46v': '9_46v',
+        'CORE': 'Core',
+        'ENTORHINAL': 'Ento',
+        'INSULA': 'Ins',
+        'OPRO': 'Opro',
+        'PERIRHINAL': 'Peri',
+        'PIRIFORM': 'Pir',
+        'Parainsula': 'Pi',
+        'Pro.St': 'Pro. St.',
+        'SII': 'S2',
+        'SUBICULUM': 'Sub',
+        'TEMPORAL_POLE': 'TEMPORAL-POLE',
+        'TEa/ma': 'TEa_m-a',
+        'TEa/mp': 'TEa_m-p'
+        }
+    hierarchy = hierarchy.rename(index=rename_dict)
+    # assign them to the left hemisphere
+    hierarchy.index = 'L_' + hierarchy.index.to_series()
+    return hierarchy

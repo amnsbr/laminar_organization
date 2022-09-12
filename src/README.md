@@ -24,6 +24,7 @@ The `src` directory includes local and external input data used in the analyses.
 |`tpl-bigbrain_hemi_*_desc-{pial/white}.area.npy`|Pial/WM surface area of BigBrain|Local|Created using CIVET in `code/local/calculate_surface_area.py`|
 |`tpl-bigbrain_hemi-*_desc-Yeo2011_7Networks_N1000.label.gii`|Yeo 7 functional networks in BigBrain surface space|[caseypaquola / BigBrainWarp](https://github.com/caseypaquola/BigBrainWarp)| |
 |`spin_batches/`|BigBrain surface sphere spun for permutation testing|Local|Created in `code/helpers.py` > `create_bigbrain_spin_permutations`. Each batch includes 20 random spins.|
+|`tpl-*_parc-*_desc-rotated_parcels_n-*`|Spun parcel indices and labels for n spins|Local|Created in `code/helpers.py` > `get_rotated_parcels`.|
 |`PET`|Receptors volumetric PET maps|[netneurolab / hansen_receptors](https://github.com/netneurolab/hansen_receptors/tree/main/data/PET_nifti_images)| |
 |`PET_metadata.csv`|Metdata for volumetric PET maps|Local|Created based on filenames and the information provided in Hansen et al. 2021 and the source papers for some|
 |`ahba_*`|Expression of genes in each parcellation based on AHBA|Local|Created using `helpers.py` > `fetch_ahba_data` via [abagen](https://abagen.readthedocs.io/en/stable/)|
@@ -32,3 +33,9 @@ The `src` directory includes local and external input data used in the analyses.
 |`{misc/hcp}_rDCM_sch400.mat`|Effective connectivity matrices|[caseypaquola / DMN](https://github.com/caseypaquola/DMN/tree/main/data)|From [Paquola 2021](https://www.biorxiv.org/content/10.1101/2021.11.22.469533v1)|
 |`source-hcps1200_desc-myelinmap_space-fsLR_den-32k_hemi-*_feature.func.gii`|HCP S1200 group-averaged myelin map in fsLR space|[netneurolab / neuromaps](https://netneurolab.github.io/neuromaps)| |
 |`tpl-bigbrain_hemi-*_desc-hcp1200_myelinmap.shape.gii`|HCP S1200 group-averaged myelin map in bigbrain space|Local|Created using `code/local/transform_to_bigbrain.sh`|
+|`macaque_hierarchy.pscalar.nii`|Laminar-based hierarchy of macaque (M132 parcellation)|[Burt 2018](https://doi.org/10.1038/s41593-018-0195-0)|[Associated data in BALSA](https://balsa.wustl.edu/study/Kx5n)|
+|`MacaqueYerkes19.*`|Surface meshes of macaque in fs_LR 32k space|[TingsterX/alignment_macaque-human](https://github.com/TingsterX/alignment_macaque-human)| |
+|`S1200.{L/R}.{pial_MSMAll/sphere}.32k_fs_LR.surf.gii`|Surface meshes of human in fs_LR 32k space|[TingsterX/alignment_macaque-human](https://github.com/TingsterX/alignment_macaque-human)| |
+|`{L/R}.human-to-macaque.sphere.reg.32k_fs_LR.surf.gii`|Human to macaque registration|[TingsterX/alignment_macaque-human](https://github.com/TingsterX/alignment_macaque-human)| |
+|`{L/R}.macaque-to-human.sphere.reg.32k_fs_LR.surf.gii`|Human to macaque registration|[TingsterX/alignment_macaque-human](https://github.com/TingsterX/alignment_macaque-human)| |
+|`Yerkes19_Parcellations_v2.32k_fs_LR.dlabel.nii`|Macaque parcellations (including M132)|[Donahue 2016](https://doi.org/10.1523/JNEUROSCI.0493-16.2016)|[Associated data in BALSA](https://balsa.wustl.edu/reference/976nz)
