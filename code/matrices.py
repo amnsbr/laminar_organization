@@ -36,7 +36,7 @@ class Matrix:
     """
     split_hem = False # set to False by default and only change for GD and SC
     cmap = 'rocket' # default cmap
-    def __init__(self, matrix, parcellation_name, label, dir_path, short_label=None, cmap=None):
+    def __init__(self, matrix, parcellation_name, label, dir_path=None, short_label=None, cmap=None):
         """
         Initialize any custom matrix
         """
@@ -44,14 +44,13 @@ class Matrix:
         self.parcellation_name = parcellation_name
         self.label = label
         self.short_label = short_label
-        if self.short_label is None:
-            self.short_label = self.label
+        self.short_label = self.label
+        self.cmap = cmap
         self.dir_path = dir_path
-        if cmap is not None:
-            self.cmap = cmap
-        os.makedirs(self.dir_path, exist_ok=True)
-        self.file_path = os.path.join(self.dir_path, 'matrix')
-        self._save()
+        if self.dir_path:
+            os.makedirs(self.dir_path, exist_ok=True)
+            self.file_path = os.path.join(self.dir_path, 'matrix')
+            self._save()
 
     def _save(self):
         """
@@ -126,10 +125,11 @@ class Matrix:
             vrange=vrange
             )
 
-    def correlate_edge_wise(self, other, test='pearson', plot_half_matrices=False, 
+    def correlate_edge_wise(self, other, test='pearson', test_approach='spin', 
+            n_perm=1000, plot_regplot=True, plot_half_matrices=False, 
             regress_out_gd=False, figsize=(6, 4), axis_off=False,
             stats_on_plot=True, half_matrix_vrange=(0.025, 0.975),
-            save_files=False):
+            save_files=False, verbose=True):
         """
         Calculates and plots the correlation between the edges of two matrices
         self and other which are assumed to be square and symmetric. The correlation
@@ -141,6 +141,12 @@ class Matrix:
         test: (str)
             - pearson
             - spearman
+        test_approach: (str)
+            - spin: create null distribution by rotating parcels
+            - shuffle: create null distribution by shuffling parcels
+            - param: parameteric
+        n_perm: (int)
+            number of permutations in case test_approach other than `param` is selected
         plot_half_matrices: (bool) plot upper/lower half of each matrix for using in the paper
         """
         # make sure they have the same parcellation and mask
@@ -170,39 +176,49 @@ class Matrix:
             coef, p_val = scipy.stats.pearsonr(x, y)
         else:
             coef, p_val = scipy.stats.spearmanr(x, y)
-        res_str = f"{test.title()} correlation with {other.label}\nCoef: {coef}; Parametric p-value: {p_val}"
+        if test_approach != 'param':
+            surrogate_matrices = self.get_surrogates(method=test_approach, n_perm=n_perm)
+            null_dist = np.zeros(n_perm)
+            for i, surrogate in enumerate(surrogate_matrices):
+                null_dist[i], _ = surrogate.correlate_edge_wise(other, test=test, test_approach='param',
+                    plot_regplot=False, save_files=False, verbose=False)
+            p_val = (np.abs(null_dist) >= np.abs(coef)).mean()
+        res_str = f"{test.title()} correlation with {other.label}\nCoef: {coef}; p-value ({test_approach}): {p_val}"
+        if verbose:
+            print(res_str)
         if save_files:
             out_path = os.path.join(self.dir_path, f'correlation_{other.label.lower().replace(" ", "_")}')
             with open(out_path+'.txt', 'w') as res_file:
                 res_file.write(res_str)
-        # plotting
-        fig, ax = plt.subplots(1, figsize=figsize, dpi=192)
-        ax.hexbin(x, y, cmap='gist_heat_r')
-        sns.regplot(
-            x = x, y = y, 
-            ax=ax, ci=None, scatter=False, 
-            color='black', line_kws=dict(alpha=0.6)
-            )
-        # ax.set_xlim((np.quantile(x, 0.025), np.quantile(x, 0.975)))
-        # ax.set_ylim((np.quantile(y, 0.025), np.quantile(y, 0.975)))
-        if stats_on_plot:
-            # add rho on the figure
-            text_x = ax.get_xlim()[0]+(ax.get_xlim()[1]-ax.get_xlim()[0])*0.05
-            text_y = ax.get_ylim()[0]+(ax.get_ylim()[1]-ax.get_ylim()[0])*0.90
-            if test == 'pearson':
-                text = f'r = {coef:.2f}'
-            else:
-                text = f'rho = {coef:.2f}'
-            ax.text(text_x, text_y, text,
-                    color='black', size=16,
-                    multialignment='left')
-        ax.set_xlabel(self.label)
-        ax.set_ylabel(other.label)
-        if axis_off:
-            ax.axis('off')
-        if save_files:
-            fig.tight_layout()
-            fig.savefig(out_path+'.png', dpi=192)
+        if plot_regplot:
+            # plotting
+            fig, ax = plt.subplots(1, figsize=figsize, dpi=192)
+            ax.hexbin(x, y, cmap='gist_heat_r')
+            sns.regplot(
+                x = x, y = y, 
+                ax=ax, ci=None, scatter=False, 
+                color='black', line_kws=dict(alpha=0.6)
+                )
+            # ax.set_xlim((np.quantile(x, 0.025), np.quantile(x, 0.975)))
+            # ax.set_ylim((np.quantile(y, 0.025), np.quantile(y, 0.975)))
+            if stats_on_plot:
+                # add rho on the figure
+                text_x = ax.get_xlim()[0]+(ax.get_xlim()[1]-ax.get_xlim()[0])*0.05
+                text_y = ax.get_ylim()[0]+(ax.get_ylim()[1]-ax.get_ylim()[0])*0.90
+                if test == 'pearson':
+                    text = f'r = {coef:.2f}'
+                else:
+                    text = f'rho = {coef:.2f}'
+                ax.text(text_x, text_y, text,
+                        color='black', size=16,
+                        multialignment='left')
+            ax.set_xlabel(self.label)
+            ax.set_ylabel(other.label)
+            if axis_off:
+                ax.axis('off')
+            if save_files:
+                fig.tight_layout()
+                fig.savefig(out_path+'.png', dpi=192)
         if plot_half_matrices:
             # plotting half-half matrix
             uhalf_X = X.values
@@ -220,7 +236,8 @@ class Matrix:
                 (os.path.join(f'{out_path}_{other.label}_lhalf') if save_files else None),
                 cmap = other.cmap,
                 vrange = half_matrix_vrange
-                )        
+                ) 
+        return coef, p_val       
 
     def correlate_node_wise(self, other, test='pearson', plot=True, 
             plot_sig=False, plot_layout='grid', save=False):
@@ -314,7 +331,7 @@ class Matrix:
             )
             
     def associate_categorical_surface(self, categorical_surface, stats=True, 
-            null_method='shuffle', save=False):
+            null_method='shuffle', n_perm=1000, save=False):
         """
         Calculates within and between categorical surface of the matrix 
         values and plots a collapsed matrix by its categories. 
@@ -325,8 +342,12 @@ class Matrix:
         stats: (bool)
             whether to do statistical test in addition to the plotting
         null_method: (str)
-            - bct: uses bct.randmio_und_signed for creating surrogates
+            - spin: rotates parcels
             - shuffle: uses np.shuffle for creating surrogates
+        n_perm: (int)
+            only used when stats=True
+        save: (bool)
+            save results as text and figure
 
         Returns
         ---------
@@ -385,20 +406,13 @@ class Matrix:
             intra_intertype.loc['All', 'intra'] = np.nanmean(matrix.to_numpy()[same_type_mat])
             intra_intertype.loc['All', 'inter'] = np.nanmean(matrix.to_numpy()[~same_type_mat])
             # test significance using permutation
-            null_dist_intra_intertype = np.zeros((1000, n_categories+1, 2))
-            if null_method == 'bct':
-                surrogates = self.create_or_load_surrogates()
-            print("Calculating p-value with permutation testing (1000 permutations)")
-            for perm_idx in range(1000):
+            null_dist_intra_intertype = np.zeros((n_perm, n_categories+1, 2))
+            surrogates = self.get_surrogates(null_method, n_perm)
+            print(f"Calculating p-value with permutation testing ({n_perm} permutations)")
+            for perm_idx in range(n_perm):
                 if perm_idx % 100 == 0:
                     print("Perm", perm_idx)
-                if null_method == 'bct':
-                    surrogate = pd.DataFrame(surrogates[perm_idx])
-                elif null_method == 'shuffle':
-                    shuffled_parcels = np.random.permutation(matrix.index.tolist())
-                    surrogate = matrix.loc[shuffled_parcels, shuffled_parcels]
-                surrogate.index = matrix.index
-                surrogate.columns = matrix.columns
+                surrogate = surrogates[perm_idx].matrix.loc[matrix.index, matrix.columns]
                 null_intra_intertype = pd.DataFrame(
                     np.zeros((n_categories+1, 2)),
                     columns=['intra', 'inter'],
@@ -425,6 +439,50 @@ class Matrix:
             if save:
                 intra_intertype.to_csv(self.file_path + f'_{categorical_surface.short_label}_intra_inter_diff.txt')
             return intra_intertype
+
+    def get_surrogates(self, method='spin', n_perm=1000):
+        """
+        Create surrogate matrices by rotating parcels
+
+        Parameters
+        ---------
+        method: (str)
+            - spin
+            - shuffle
+        n_perm: (int)
+
+        Returns
+        -------
+        surrogates: (list of Matrix)
+        """
+        if method == 'spin':
+            # get the list of parcels excluded from the matrix
+            all_parcels = helpers.parcellate(
+                helpers.deparcellate(self.matrix.iloc[:,0], self.parcellation_name, downsampled=True), 
+                self.parcellation_name
+            ).drop(index=helpers.MIDLINE_PARCELS.get(self.parcellation_name, [])).index
+            excluded_parcels = all_parcels.difference(self.matrix.index).tolist()
+            # get rotated parcel surrogates
+            surrogate_parcel_orders = helpers.get_rotated_parcels(self.parcellation_name, n_perm, 
+                excluded_parcels=excluded_parcels, return_indices=False)
+        elif method == 'shuffle':
+            surrogate_parcel_orders = []
+            for perm_idx in range(n_perm):
+                surrogate_parcel_orders.append(
+                    np.random.permutation(self.matrix.index.tolist())[:, np.newaxis]
+                )
+            surrogate_parcel_orders = np.concatenate(surrogate_parcel_orders, axis=1)
+            print(surrogate_parcel_orders.shape)
+        # apply surrogate parcel orders
+        surrogates = []
+        for i in range(n_perm):
+            surrogate_matrix = self.matrix.copy()
+            surrogate_matrix.index = surrogate_matrix.columns = surrogate_parcel_orders[:, i]
+            surrogate_matrix = surrogate_matrix.loc[self.matrix.index, self.matrix.columns]
+            surrogate = Matrix(surrogate_matrix, self.parcellation_name, 
+                self.label+f'_surrogate{i}')
+            surrogates.append(surrogate)
+        return surrogates
     
     def binned_average(self, surf, column, nbins=10):
         """
@@ -847,12 +905,26 @@ class ConnectivityMatrix(Matrix):
             )
         return mat_binned
 
-    def binarized_association(self, others, fc_pthreshold=0.2, plot=True, stats_on_plot=True):
+    def binarized_association(self, others, fc_pthreshold=0.2, 
+            spin_test=False, n_perm=1000, verbose=True, 
+            plot=True, stats_on_plot=True):
         """
         Binarize the SC or FC matrix and performs logistic regression
         with FC/SC as DV and `others` as IV. If `other` is categorical
         (e.g. CorticalTypeDiffMatrix) it also plots a stacked bar plot
         of existing vs absent connections per category
+
+        Parameters
+        ---------
+
+
+        Returns
+        -------
+        lgrs: (list of statsmodels.discrete.discrete_model.Logit)
+        pvals: (list of float)
+            only if spin_test=True
+        null_lgrs: (list of list of statsmodels.discrete.discrete_model.Logit)
+            only if spin_test=True
         """
         if not isinstance(others, list):
             others = [others]
@@ -898,26 +970,27 @@ class ConnectivityMatrix(Matrix):
             lgr = sm.Logit(
                 df['Connected'], # dependent variable 
                 sm.add_constant(df.iloc[:, :x_idx+1]) # independent variable(s)
-                ).fit()
-            # print the results
-            res_str = str(lgr.summary())
-            print(res_str)
-            # print the ORs
-            print(
-                pd.DataFrame({
-                    'OR': np.exp(lgr.params),
-                    'L_CI': np.exp(lgr.params - (lgr.bse * 1.96)),
-                    'U_CI': np.exp(lgr.params + (lgr.bse * 1.96)),
-                })
-            )
-            # perform likelihood ratio test after the
-            # second model with its previous model
-            if x_idx > 0:
-                likelihood_ratio = -2*(lgrs[-1].llf - lgr.llf)
-                # do chi-squared test with df = 1 (as only one
-                # IV is added with respect to the previous model)
-                p_val = scipy.stats.chi2.sf(likelihood_ratio, 1)
-                print(f"\n\nLikelihood ratio: {likelihood_ratio}, p-value: {p_val}\n\n")
+                ).fit(disp=verbose)
+            if verbose:
+                # print the results
+                res_str = str(lgr.summary())
+                print(res_str)
+                # print the ORs
+                print(
+                    pd.DataFrame({
+                        'OR': np.exp(lgr.params),
+                        'L_CI': np.exp(lgr.params - (lgr.bse * 1.96)),
+                        'U_CI': np.exp(lgr.params + (lgr.bse * 1.96)),
+                    })
+                )
+                # perform likelihood ratio test after the
+                # second model with its previous model
+                if x_idx > 0:
+                    likelihood_ratio = -2*(lgrs[-1].llf - lgr.llf)
+                    # do chi-squared test with df = 1 (as only one
+                    # IV is added with respect to the previous model)
+                    p_val = scipy.stats.chi2.sf(likelihood_ratio, 1)
+                    print(f"\n\nLikelihood ratio: {likelihood_ratio}, p-value: {p_val}\n\n")
             lgrs.append(lgr)
         if plot:
             for x_name in x_arrays.keys():
@@ -975,6 +1048,24 @@ class ConnectivityMatrix(Matrix):
                             color='black', size=16,
                             multialignment='left')
                 ax.set_xlabel(f'{x_name.replace("_"," ").title()}')
+        if spin_test:
+            others_surrogates = []
+            for other in others:
+                others_surrogates.append(other.get_surrogates('spin', n_perm))
+            null_lgrs = []
+            null_dist_r2 = [np.zeros(n_perm) for _ in range(len(lgrs))]
+            for i in range(n_perm):
+                surrogate_others = []
+                for j in range(len(others)):
+                    surrogate_others.append(others_surrogates[j][i])
+                null_lgrs.append(self.binarized_association(surrogate_others, fc_pthreshold,
+                    spin_test=False, verbose=False, plot=False))
+                for lgr_i, null_lgr in enumerate(null_lgrs[-1]):
+                    null_dist_r2[lgr_i][i] = null_lgr.prsquared
+            pvals = []
+            for lgr_i in range(len(lgrs)):
+                pvals.append((null_dist_r2[lgr_i] >= lgrs[lgr_i].prsquared).mean())
+            return lgrs, pvals, null_lgrs
         return lgrs
 
 class MicrostructuralCovarianceMatrix(Matrix):
@@ -1094,7 +1185,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
             # Load laminar thickness or density profiles
             self._load_input_data()
             # create the similarity matrix
-            self.matrix = self._calculate_similarity()
+            self.matrix = self._calculate_similarity(self._parcellated_input_data)
             if self.regress_out_geodesic_distance:
                 GD = DistanceMatrix(
                     self.parcellation_name,
@@ -1152,29 +1243,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
         # (for homogeneity of different types of matrices)
         if self._input_data['L'].shape[0] == datasets.N_VERTICES_HEM_BB:
             self._input_data = helpers.downsample(self._input_data)
-
-
-    def _calculate_similarity(self, transform=True):
-        """
-        Creates laminar similarity matrix by taking Euclidean distance, Pearson's correlation
-        or partial correltation (with the average laminar data pattern as the covariate) between
-        average values of parcels
-
-        Note: Partial correlation is based on "Using recursive formula" subsection in the wikipedia
-        entry for "Partial correlation", which is also the same as Formula 2 in Paquola et al. PBio 2019
-        (https://doi.org/10.1371/journal.pbio.3000284)
-        Note 2: Euclidean distance is reversed (* -1) and rescaled to 0-1 (with 1 showing max similarity)
-
-        Parameter
-        --------
-        transform: (bool)
-            Whether to perfrom transformations on the raw matrix. Default: True.
-
-        Returns
-        -------
-        matrix: (np.ndarray) n_parcels x n_parcels: how similar are each pair of parcels in their
-                microstructure (laminar thickness or density profiles)
-        """
+        # parcellate input data
         concat_input_data = np.concatenate([self._input_data['L'], self._input_data['R']], axis=0)
         if self.parcellation_name is not None:
             # concatenate and parcellate
@@ -1203,29 +1272,52 @@ class MicrostructuralCovarianceMatrix(Matrix):
         if self.parcellation_name is not None:
             # get only the valid parcels outside of exc_regions or midline
             # which also exist in self._parcellated_input_data
-            valid_parcels = helpers.get_valid_parcels(
+            self.valid_parcels = helpers.get_valid_parcels(
                 self.parcellation_name, 
                 self.exc_regions, 
                 downsampled=True).intersection(self._parcellated_input_data.index)
         else:
             # get non-NA vertices
-            valid_parcels = self._parcellated_input_data[
+            self.valid_parcels = self._parcellated_input_data[
                 ~(self._parcellated_input_data.isna().any(axis=1))
             ].index
-        self._parcellated_input_data = self._parcellated_input_data.loc[valid_parcels]
+        self._parcellated_input_data = self._parcellated_input_data.loc[self.valid_parcels]
+
+    def _calculate_similarity(self, parcellated_input_data, transform=True):
+        """
+        Creates laminar similarity matrix by taking Euclidean distance, Pearson's correlation
+        or partial correltation (with the average laminar data pattern as the covariate) between
+        average values of parcels
+
+        Note: Partial correlation is based on "Using recursive formula" subsection in the wikipedia
+        entry for "Partial correlation", which is also the same as Formula 2 in Paquola et al. PBio 2019
+        (https://doi.org/10.1371/journal.pbio.3000284)
+        Note 2: Euclidean distance is reversed (* -1) and rescaled to 0-1 (with 1 showing max similarity)
+
+        Parameter
+        --------
+        parcellated_input_data: (pd.DataFrame) n_valid_parcels x n_features
+        transform: (bool)
+            Whether to perfrom transformations on the raw matrix. Default: True.
+
+        Returns
+        -------
+        matrix: (np.ndarray) n_parcels x n_parcels: how similar are each pair of parcels in their
+                microstructure (laminar thickness or density profiles)
+        """
         # Calculate parcel-wise similarity matrix
         if self.similarity_metric in ['parcor', 'pearson']:
             if self.similarity_metric == 'parcor':
                 # calculate partial correlation
-                r_ij = np.corrcoef(self._parcellated_input_data)
-                mean_input_data = self._parcellated_input_data.mean()
+                r_ij = np.corrcoef(parcellated_input_data)
+                mean_input_data = parcellated_input_data.mean()
                 r_ic = np.corrcoef(
-                    self._parcellated_input_data.values, 
+                    parcellated_input_data.values, 
                     mean_input_data.values[np.newaxis, :])[-1, :-1] # r_ic and r_jc are the same
                 r_icjc = np.outer(r_ic, r_ic) # the second r_ic is actually r_jc
                 matrix = (r_ij - r_icjc) / np.sqrt(np.outer((1-r_ic**2),(1-r_ic**2)))
             else:
-                matrix = np.corrcoef(self._parcellated_input_data.values)
+                matrix = np.corrcoef(parcellated_input_data.values)
             if transform:
                 # zero out negative correlations
                 if self.zero_out_negative:
@@ -1238,15 +1330,15 @@ class MicrostructuralCovarianceMatrix(Matrix):
                 matrix[np.isnan(matrix) | np.isinf(matrix)] = 0
         elif self.similarity_metric == 'euclidean':
             # calculate pair-wise euclidean distance
-            matrix = sk.metrics.pairwise.euclidean_distances(self._parcellated_input_data.values)
+            matrix = sk.metrics.pairwise.euclidean_distances(parcellated_input_data.values)
             if transform:
                 # make it negative (so higher = more similar) and rescale to range (0, 1)
                 matrix = sk.preprocessing.minmax_scale(-matrix, (0, 1))
         # label the matrix
         matrix = pd.DataFrame(
             matrix, 
-            index=valid_parcels,
-            columns=valid_parcels)
+            index=self.valid_parcels,
+            columns=self.valid_parcels)
         return matrix
 
     def _fuse_matrices(self, matrices):
@@ -1351,15 +1443,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
             different order of parcels (e.g. sorted by gradient values)
         """
         if not hasattr(self, '_parcellated_input_data'):
-            # this is the case if the matrix is loaded from the
-            # one created before
             self._load_input_data()
-            concat_input_data = np.concatenate([self._input_data['L'], self._input_data['R']], axis=0)
-            self._parcellated_input_data = helpers.parcellate(
-                concat_input_data,
-                self.parcellation_name,
-                averaging_method='median'
-                )
         # remove NaNs and reindex + apply order if indicated
         if order is None:
             concat_parcellated_input_data = self._parcellated_input_data.dropna().reset_index(drop=True)

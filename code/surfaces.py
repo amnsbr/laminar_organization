@@ -1735,8 +1735,8 @@ class MicrostructuralClusters(CatCorticalSurface):
 
     def _create(self, random_state=921):
         # get the input data which involves rerunning
-        # the ._create method of matrix object
-        self.matrix_obj._create()
+        # the ._load_input_data method of matrix object
+        self.matrix_obj._load_input_data()
         model = KMeans()
         # identify the optimal number of clusters
         visualizer = KElbowVisualizer(model, k=(2,10), timings= False)

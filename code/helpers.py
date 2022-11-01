@@ -1061,7 +1061,7 @@ def spin_test(surface_data_to_spin, surface_data_target, n_perm, is_downsampled)
     test_r = test_r[0, :, :]
     return test_r, p_val, null_distribution
 
-def get_rotated_parcels(parcellation_name, n_perm, return_indices=True, space='bigbrain'):
+def get_rotated_parcels(parcellation_name, n_perm, excluded_parcels=[], return_indices=True, space='bigbrain'):
     """
     Uses ENIGMA Toolbox approach to spin parcel centroids on the cortical sphere instead
     of spinning all the vertices.
@@ -1069,7 +1069,11 @@ def get_rotated_parcels(parcellation_name, n_perm, return_indices=True, space='b
     downsampled = space in ['bigbrain', 'fsaverage']
     rotated_parcels_path = os.path.join(
         SRC_DIR,
-        f'tpl-{space}_{"downsampled_" if downsampled else ""}parc-{parcellation_name}_desc-rotated_parcels_n-{n_perm}.npz')
+        f'tpl-{space}_{"downsampled_" if downsampled else ""}'\
+        +f'parc-{parcellation_name}_'\
+        +f'excparcs-{len(excluded_parcels)}_'\
+        +f'desc-rotated_parcels_n-{n_perm}.npz')
+    # TODO: check that excluded parcels are exactly the same
     if os.path.exists(rotated_parcels_path):
         if return_indices:
             return np.load(rotated_parcels_path, allow_pickle=True)['rotated_indices']
@@ -1084,7 +1088,7 @@ def get_rotated_parcels(parcellation_name, n_perm, return_indices=True, space='b
         parc = datasets.load_parcellation_map(parcellation_name, False, downsampled=downsampled, space=space)[hem]
         centroids[hem] = pd.DataFrame(columns=['x','y','z'])
         for parcel_name in np.unique(parc):
-            if parcel_name not in MIDLINE_PARCELS.get(parcellation_name, []):
+            if parcel_name not in (excluded_parcels + MIDLINE_PARCELS.get(parcellation_name, [])):
                 this_parc = np.where(parc == parcel_name)[0]
                 centroids[hem].loc[parcel_name] = np.mean(vertices[this_parc, :], axis=0)
     # rotate the parcels
