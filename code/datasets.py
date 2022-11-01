@@ -11,35 +11,27 @@ from cortex.polyutils import Surface
 import scipy.spatial.distance
 import scipy.io
 import abagen
-from nilearn.input_data import NiftiLabelsMasker
-from nilearn.image import math_img
-import netneurotools.datasets
 
-
-import helpers
-
-# specify the data dir
+# specify the directories and constants
 abspath = os.path.abspath(__file__)
 cwd = os.path.dirname(abspath)
 OUTPUT_DIR = os.path.join(cwd, '..', 'output')
 SRC_DIR = os.path.join(cwd, '..', 'src')
 ABAGEN_DIR = '/data/group/cng/abagen-data'
-
-# constants / configs
 N_VERTICES_HEM_BB = 163842
 N_VERTICES_HEM_BB_ICO5 = 10242
 N_VERTICES_HEM_FSLR = 32492
 LAYERS_COLORS = {
-    'bigbrain': ['#abab6b', '#dabcbc', '#dfcbba', '#e1dec5', '#66a6a6','#d6c2e3'], # layer 1 to 6
+    'bigbrain': ['#abab6b', '#dabcbc', '#dfcbba', '#e1dec5', '#66a6a6','#d6c2e3'], 
     'wagstyl': ['#3a6aa6ff', '#f8f198ff', '#f9bf87ff', '#beaed3ff', '#7fc47cff','#e31879ff']
 }
 
 def load_mesh_paths(kind='orig', space='bigbrain', downsampled=True):
     """
     Loads or creates surfaces of bigbrain/fsa left and right hemispheres
-    (from ico7 to ico5)
-    The actual downsampling is done in `local/downsample_bb.m` in matlab and this
-    function just makes it python-readable
+    For bigbrain downsampled the actual downsampling is done in 
+    `local/downsample_bb.m` in matlab and this function just makes 
+    it python-readable
 
     Parameters
     ----------
@@ -47,12 +39,12 @@ def load_mesh_paths(kind='orig', space='bigbrain', downsampled=True):
         - 'orig'
         - 'inflated'
         - 'sphere'
-    
     space: (str)
         - 'bigbrain'
         - 'fsaverage'
         - 'fs_LR'
         - 'yerkes' (macaque)
+    downsampled: (bool)
 
     Returns
     ------
@@ -121,7 +113,10 @@ def load_mesh_paths(kind='orig', space='bigbrain', downsampled=True):
             elif kind=='inflated':
                 paths[hem] = nilearn.datasets.fetch_surf_fsaverage(fsa_version)[f'infl_{hem_fullname[hem]}']      
         elif space == 'fs_LR':
-            paths[hem] = os.path.join(SRC_DIR, f'S1200.{hem}.pial_MSMAll.32k_fs_LR.surf.gii')
+            if kind == 'orig':
+                paths[hem] = os.path.join(SRC_DIR, f'S1200.{hem}.pial_MSMAll.32k_fs_LR.surf.gii')
+            else:
+                raise NotImplementedError
         elif space == 'yerkes':
             if kind == 'orig':
                 paths[hem] = os.path.join(SRC_DIR, f'MacaqueYerkes19.{hem}.pial.32k_fs_LR.surf.gii')
@@ -131,12 +126,15 @@ def load_mesh_paths(kind='orig', space='bigbrain', downsampled=True):
                 paths[hem] = os.path.join(SRC_DIR, f'MacaqueYerkes19.{hem}.sphere.32k_fs_LR.surf.gii')
     return paths
 
-
-
 def load_curvature_maps(downsampled=False, concatenate=False):
     """
     Creates the map of curvature for the bigbrain surface
     using pycortex or loads it if it already exist
+
+    Parameters
+    ---------
+    downsampled: (bool)
+    concatenate: (bool)
 
     Returns
     -------
@@ -153,13 +151,7 @@ def load_curvature_maps(downsampled=False, concatenate=False):
             curvature_maps[hem] = np.load(curvature_filepath)
             continue
         # load surface
-        if downsampled:
-            mesh_path = load_downsampled_surface_paths('orig')[hem]
-        else:
-            mesh_path = os.path.join(
-                SRC_DIR,
-                f'tpl-bigbrain_hemi-{hem}_desc-pial.surf.gii'
-                )
+        mesh_path = load_mesh_paths('orig', downsampled=downsampled)[hem]
         vertices, faces = nilearn.surface.load_surf_mesh(mesh_path)
         surface = Surface(vertices, faces)
         # calculate mean curvature; negative = sulci, positive = gyri
@@ -180,9 +172,7 @@ def load_cortical_types(parcellation_name=None, downsampled=False):
     Parameters
     ---------
     parcellation_name: (str or None)
-        - None: vertex-wise
-        - str: parcellation name (must exists in data/parcellation)
-    downsampled: (bool) load downsampled map of cortical types
+    downsampled: (bool)
 
     Returns
     --------
@@ -233,10 +223,7 @@ def load_yeo_map(parcellation_name=None, downsampled=False):
     Parameters
     ---------
     parcellation_name: (str or None)
-        - None: vertex-wise
-        - str: parcellation name (must exists in data/parcellation)
     downsampled: (bool) 
-        load downsampled map of cortical types
 
     Returns
     --------
@@ -313,22 +300,12 @@ def load_exc_masks(exc_regions, concatenate=False, downsampled=False):
     """
     # load cortical types surface map after/without parcellation
     cortical_types = load_cortical_types(downsampled=downsampled)
-    # # if it's parcellated project back to surface
-    # #  Why? because parcellation_map and economo parcellation do
-    # #  not fully overlap and we need a mask that is aligned with the parcellation_map
-    # if parcellation_name: 
-    #     cortical_types = pd.Series(helpers.deparcellate(cortical_types, parcellation_name).flatten())
-    # # match midlines of the `parcellation_name` and economo parcellation (sometimes e.g. in sjh
-    # #  they do not match) by makign their overlap NaN. The midline of `parcellation_name` is already
-    # #  NaN (from load_cortical_types). Therefore only load midline of economo and make it NaN
-    # economo_map = load_parcellation_map('economo', concatenate=True)
-    # economo_midline_mask = np.in1d(economo_map, ['unknown', 'corpuscallosum'])
-    # cortical_types[economo_midline_mask] = np.NaN
-    # create a mask of excluded cortical types
+    # specify list of excluded types
     if exc_regions == 'allocortex':
         exc_cortical_types = [np.NaN, 'ALO']
     elif exc_regions == 'adysgranular':
         exc_cortical_types = [np.NaN, 'ALO', 'DG', 'AG']
+    # create mask +/- concatenate
     exc_mask = cortical_types.isin(exc_cortical_types).values
     if concatenate:
         return exc_mask
@@ -339,24 +316,21 @@ def load_exc_masks(exc_regions, concatenate=False, downsampled=False):
         }
 
 def load_laminar_thickness(exc_regions=None, normalize_by_total_thickness=True, 
-                           regress_out_curvature=False, smooth_disc_radius=None):
+        regress_out_curvature=False, smooth_disc_radius=None):
     """
-    Loads laminar thickness data from 'data' folder and after masking out
-    `exc_mask` returns 6-d laminar thickness arrays for left and right hemispheres.
-    Also does normalization, regressing out of the curvature or disc smoothing
-    if indicated.
+    Loads BigBrain laminar thickness data, excludes `exc_regions`, performs 
+    smoothing or regression of curvature to correct for it, and normalizes by
+    total thickness.
 
     Parameters
     --------
     exc_regions: (str | None) 
     normalize_by_total_thickness: (bool) 
-        Normalize by total thickness. Default: True
     regress_out_curvature: (bool) 
-        Regress out curvature. Default: False
     smooth_disc_radius: (int | None) 
         Smooth the absolute thickness of each layer using a disc with the given radius.
 
-    Retruns
+    Returns
     --------
     laminar_thickness: (dict of np.ndarray) n_vertices [ico7 or ico5] x 6 for laminar thickness of L and R hemispheres
     """
@@ -407,7 +381,7 @@ def load_laminar_thickness(exc_regions=None, normalize_by_total_thickness=True,
         # regress out curvature
         if regress_out_curvature:
             if smooth_disc_radius:
-                logging.warning("Skipping regressing out of the curvature as laminar thickness is smoothed")
+                print("Skipping regressing out of the curvature as laminar thickness is smoothed")
             else:
                 cov_surf_data = load_curvature_maps()[hem]
                 laminar_thickness[hem] = helpers.regress_out_surf_covariates(
@@ -415,116 +389,6 @@ def load_laminar_thickness(exc_regions=None, normalize_by_total_thickness=True,
                     sig_only=False, renormalize=True
                     )
     return laminar_thickness
-
-def load_economo_laminar_thickness(normalize_by_total_thickness=True):
-    """
-    Loads laminar thickness data from von Economo atlas in von Economo
-    parcellation
-
-    Parameters
-    --------
-    normalize_by_total_thickness: (bool) 
-        Normalize by total thickness. Default: True
-
-    Retruns
-    --------
-    parcellated_laminar_thickness: (pd.DataFrame) n_parc x 6 layers
-    """
-    parcellated_laminar_thickness = pd.read_csv(
-        os.path.join(
-            SRC_DIR, 
-            'von_economo_laminar_thickness.csv'
-            ), 
-        delimiter=";").set_index('parcel')
-    if normalize_by_total_thickness:
-        parcellated_laminar_thickness = parcellated_laminar_thickness.divide(
-            parcellated_laminar_thickness.sum(axis=1),
-            axis=0
-            )
-    return parcellated_laminar_thickness
-
-def calculate_alphas(betas, aw, ap):
-    """
-    Compute volume fraction map, alphas, that will yield the desired
-    euclidean distance fraction map, betas, given vertex areas in the white matter surface, aw,
-    and on the pial surface, ap.
-    Based on Eq. 10 from https://doi.org/10.1016/j.neuroimage.2013.03.078 solved for alpha
-
-    Parameters
-    ----------
-    betas: (np.ndarray) n_vertices x n_features (6 for layers), euclidean distance fraction map from wm surface
-    aw: (np.ndarray) n_vertices, white matter surface area map
-    ap: (np.ndarray) n_vertices, pial surface area map
-
-    Returns
-    ---------
-    alphas: (np.ndarray) n_vertices x n_features (6 for layers), volume fraction map from wm surface
-    """
-    return ((aw + ((ap-aw)*betas))**2 - aw**2) / (ap**2 - aw**2)
-
-def load_laminar_volume(exc_regions=None):
-    """
-    To correct for the effect of curvature on laminar thickness, this function 
-    calculates relative volume of each layer at each vertex considering the
-    relative thickness of that layer, and the curvature at that vertex.
-    The conversion from relative thickness (or distance fraction, beta) 
-    to volume fraction, alpha, is done by using Eq. 10 from 
-    https://doi.org/10.1016/j.neuroimage.2013.03.078.
-    This equation originally calculates beta given alpha, and was implemented in
-    https://github.com/kwagstyl/surface_tools. To calculate alpha given beta, I've
-    simply solved and rearranged Eq. 10 for alpha.
-
-    This involves three steps:
-    1. Convert relative laminar thickness arrays to betas, i.e., calculate cumulative relative thickness of layers from wm boundarty (i.e. beta6 would be thick6, beta5 would be thick6+thick5 and so on).
-    2. Calculate the vertex-wise map of alphas for each layer (using vertex-wise pial and wm surface area calculated with CIVET in the original code & the function alpha). This will for each layer n be the volume of cortex from wm surface towards the layer boundary.
-    3. Calculate the relative volume of each layer based on alphas.
-
-    Parameters
-    ----------
-    exc_regions: (str | None)
-
-    Returns
-    --------
-    laminar_volume: (dict of np.ndarray) n_vertices x 6 for laminar volume of L and R hemispheres
-    """
-    # Load laminar thickness
-    laminar_thickness = load_laminar_thickness(
-        exc_regions=exc_regions, 
-        normalize_by_total_thickness=True,
-        regress_out_curvature=False
-        )
-    laminar_volume = {}
-    for hem in ['L','R']:
-        # Load wm and pial vertex areas
-        wm_vertexareas = np.load(
-            os.path.join(
-                SRC_DIR,
-                f'tpl-bigbrain_hemi-{hem}_desc-white.area.npy'
-            )
-        )
-        pia_vertexareas = np.load(
-            os.path.join(
-                SRC_DIR,
-                f'tpl-bigbrain_hemi-{hem}_desc-pial.area.npy'
-            )
-        )
-        # Step 1: Convert relative laminar thickness and convert it to betas
-        # (rho in Eq 10 or betas in the surface_tools)
-        laminar_boundary_distance_from_wm = laminar_thickness[hem][:, ::-1].cumsum(axis=1)
-        # Step 2: Convert relative distance from bottom (beta) to relative volume from bottom (alpha) based on curvature
-        alphas = np.zeros_like(laminar_boundary_distance_from_wm)
-        for lay_idx in range(6):
-            alphas[:, lay_idx] = calculate_alphas(
-                laminar_boundary_distance_from_wm[:, lay_idx], 
-                wm_vertexareas, 
-                pia_vertexareas
-            )
-        # Step 3: Convert cumulative fractional volume of stacked layers (alphas) to volume of individual layers
-        laminar_volume[hem] = np.concatenate([
-            alphas[:, 0][:, np.newaxis], # layer 6 is the first layer from bottom so its rel_vol = alpha
-            np.diff(alphas, axis=1) # un-cumsum layers 5 to 1
-            ], axis=1)[:,::-1] # reverse it from layer 6to1 to layer 1to6
-    return laminar_volume
 
 def load_total_depth_density(exc_regions=None):
     """
@@ -538,7 +402,8 @@ def load_total_depth_density(exc_regions=None):
 
     Returns
     -------
-    density_profiles (dict of np.ndarray) n_vert x 50 for L and R hemispheres
+    density_profiles (dict of np.ndarray) 
+        n_vert x 50 for L and R hemispheres
     """
     if exc_regions is not None:
         exc_masks = load_exc_masks(exc_regions)
@@ -554,15 +419,15 @@ def load_total_depth_density(exc_regions=None):
     if exc_regions is not None:
         for hem in ['L', 'R']:
             density_profiles[hem][exc_masks[hem], :] = np.NaN
-
     return density_profiles
 
 
 def load_laminar_density(exc_regions=None, method='mean'):
     """
-    Loads laminar density data from 'src' folder, takes the average of sample densities
+    Loads BigBrain laminar density data, takes the average of sample densities
     for each layer, and after masking out `exc_mask` returns 6-d average laminar density 
-    arrays for left and right hemispheres
+    arrays for left and right hemispheres.
+    The laminar density data is created by `local/create_laminar_density_profiles.sh`
 
     Parameters
     ----------
@@ -571,9 +436,10 @@ def load_laminar_density(exc_regions=None, method='mean'):
         - mean
         - median
 
-    Retruns
+    Returns
     --------
-    laminar_density: (dict of np.ndarray) n_vertices x 6 for laminar density of L and R hemispheres
+    laminar_density: (dict of np.ndarray) 
+        n_vertices x 6 for laminar density of L and R hemispheres
     """
     if exc_regions is not None:
         exc_masks = load_exc_masks(exc_regions)
@@ -594,7 +460,6 @@ def load_laminar_density(exc_regions=None, method='mean'):
         # remove the exc_mask
         if exc_regions is not None:
             laminar_density[hem][exc_masks[hem], :] = np.NaN
-        # TODO: also normalize density?
     return laminar_density
 
 def load_hcp1200_myelin_map(exc_regions=None, downsampled=False):
@@ -638,7 +503,8 @@ def load_hcp1200_myelin_map(exc_regions=None, downsampled=False):
     return myelin_map
 
 
-def load_parcellation_map(parcellation_name, concatenate, downsampled=False, load_indices=False, space='bigbrain'):
+def load_parcellation_map(parcellation_name, concatenate, downsampled=False, 
+        load_indices=False, space='bigbrain'):
     """
     Loads parcellation maps of L and R hemispheres, correctly relabels them
     and concatenates them if `concatenate` is True
@@ -719,7 +585,7 @@ def load_parcellation_map(parcellation_name, concatenate, downsampled=False, loa
             if downsampled:
                 if space == 'bigbrain':
                     # select only the vertices corresponding to the downsampled ico5 surface
-                    # Warning: For fine grained parcels such as sjh this approach leads to
+                    # Warning: For finer parcellation schemes such as sjh this approach leads to
                     # a few parcels being removed
                     mat = scipy.io.loadmat(
                         os.path.join(
@@ -744,6 +610,10 @@ def load_volumetric_parcel_labels(parcellation_name):
     Parameter
     --------
     parcellation_name: (str)
+
+    Returns
+    -------
+    labels: (np.ndarray)
     """
     if 'schaefer' in parcellation_name:
         # For schaefer load the names from color tables
@@ -769,63 +639,12 @@ def load_volumetric_parcel_labels(parcellation_name):
         labels = dk_labels[dk_info['structure']=='cortex'].values
     return labels
 
-def load_disease_maps(psych_only, rename=False):
-    """
-    Loads maps of cortical thickness difference in disorders.
-    Adult popultation, more general categories
-    of disorders (e.g. all epliepsy vs TLE) and meta-analyses
-    (over mega-analyses) are preferred
-
-    Parameters
-    ---------
-    psych_only: (bool)
-        only include psychiatric disorders
-    rename: (bool)
-        rename the disorders for publicationß
-
-    Returns
-    -------
-    parcellated_disorder_maps: (pd.DataFrame)
-    """
-    parcellated_disorder_maps = pd.DataFrame()
-    for disorder in ['adhd', 'bipolar', 'depression', 'ocd']:
-        parcellated_disorder_maps[disorder] = (
-            enigmatoolbox.datasets.load_summary_stats(disorder)
-            ['CortThick_case_vs_controls_adult']
-            .set_index('Structure')['d_icv'])
-    parcellated_disorder_maps['schizophrenia'] = (
-        enigmatoolbox.datasets.load_summary_stats('schizophrenia')
-        ['CortThick_case_vs_controls']
-        .set_index('Structure')['d_icv'])
-    parcellated_disorder_maps['asd'] = (
-        enigmatoolbox.datasets.load_summary_stats('asd')
-        ['CortThick_case_vs_controls_meta_analysis']
-        .set_index('Structure')['d_icv'])
-    if not psych_only:
-        parcellated_disorder_maps['epilepsy'] = (
-            enigmatoolbox.datasets.load_summary_stats('epilepsy')
-            ['CortThick_case_vs_controls_allepilepsy']
-            .set_index('Structure')['d_icv'])
-    if rename:
-        parcellated_disorder_maps = parcellated_disorder_maps.rename(
-            columns = {
-                'adhd': 'ADHD',
-                'bipolar': 'BD',
-                'depression': 'MDD',
-                'ocd': 'OCD',
-                'schizophrenia': 'SCZ',
-                'asd': 'ASD',
-                'epilepsy': 'Epilepsy'
-            }
-        )
-    return parcellated_disorder_maps
-
-
-def load_conn_matrix(kind, parcellation_name='schaefer400', dataset='hcp'):
+def fetch_conn_matrix(kind, parcellation_name='schaefer400', dataset='hcp'):
     """
     Loads FC or SC matrices in Schaefer parcellation (400) from ENIGMA toolbox
-    and reorders it according to `matrix_file`. For SC matrix also makes contralateral
-    values 0 (so that they are not included in correlations)
+    and EC matrix from Paquola 2021 (https://www.biorxiv.org/content/10.1101/2021.11.22.469533v1)
+    and reorders them according to the order in other matrices (alphabetically,
+    which is enforced in helpers.parcellate).
 
     Parameters
     ----------
@@ -834,7 +653,6 @@ def load_conn_matrix(kind, parcellation_name='schaefer400', dataset='hcp'):
         - functional
         - effective
     parcellation_name: (str)
-        - schaefer400 (currently only this is supported)
     dataset: (str) for the effective connectivity
         - hcp
         - mics
@@ -845,12 +663,15 @@ def load_conn_matrix(kind, parcellation_name='schaefer400', dataset='hcp'):
         reordered FC or SC matrices matching the original matrix
     """
     if kind == 'effective':
+        if (parcellation_name != 'schaefer400'):
+            raise NotImplementedError
         # load the rDCM results from Paquola 2021
         results = scipy.io.loadmat(
             os.path.join(SRC_DIR, f'{dataset}_rDCM_sch400.mat'), 
             mat_dtype=True, struct_as_record=False)['results'][0][0]
         conn_matrix = results.mean_Amatrix_allSubjects
         # get the absolute values and zero out the diagonal
+        # following Paquola 2021
         conn_matrix = np.abs(conn_matrix)
         conn_matrix[np.diag_indices_from(conn_matrix)] = 0
         conn_matrix_labels = [a[0] for a in results.AllRegions[0]]
@@ -876,6 +697,44 @@ def load_conn_matrix(kind, parcellation_name='schaefer400', dataset='hcp'):
     reordered_conn_matrix = conn_matrix.loc[parcellated_dummy.index, parcellated_dummy.index]
     return reordered_conn_matrix
 
+def load_macaque_hierarchy():
+    """
+    Hierarchy of macaque parcels based on Burt 2018 in M132
+    parcellation (https://www.nature.com/articles/s41593-018-0195-0)
+    """
+    # load and label the parcellated hierarchy map
+    cifti = nibabel.load(os.path.join(
+        SRC_DIR, 'macaque_hierarchy.pscalar.nii'
+    ))
+    hierarchy = pd.Series(
+        cifti.get_fdata()[0, :], 
+        index=cifti.header.get_axis(1).name
+        )
+    # rename some parcels to the names that are
+    # in the M132 parcellation file
+    rename_dict = {
+        '29/30': '29_30',
+        '9/46d': '9_46d',
+        '9/46v': '9_46v',
+        'CORE': 'Core',
+        'ENTORHINAL': 'Ento',
+        'INSULA': 'Ins',
+        'OPRO': 'Opro',
+        'PERIRHINAL': 'Peri',
+        'PIRIFORM': 'Pir',
+        'Parainsula': 'Pi',
+        'Pro.St': 'Pro. St.',
+        'SII': 'S2',
+        'SUBICULUM': 'Sub',
+        'TEMPORAL_POLE': 'TEMPORAL-POLE',
+        'TEa/ma': 'TEa_m-a',
+        'TEa/mp': 'TEa_m-p'
+        }
+    hierarchy = hierarchy.rename(index=rename_dict)
+    # assign them to the left hemisphere
+    hierarchy.index = 'L_' + hierarchy.index.to_series()
+    return hierarchy
+
 def fetch_ahba_data(parcellation_name, return_donors=False, 
                     discard_rh=True, **abagen_kwargs):
     """
@@ -891,13 +750,12 @@ def fetch_ahba_data(parcellation_name, return_donors=False,
     parcellation_name: (str)
     return_donors: (bool)
     discard_rh: (bool)
-    and other abagen.get_expression_data keyword arguments
+    **abagen_kwargs: see abagen.get_expression_data
 
     Returns
     -------
     ahba_data: (pd.DataFrame | dict) 
     """
-    # TODO: this doesn't work with aparc parcellation
     # specify the file path and load it if it exists
     file_path = os.path.join(
         SRC_DIR,
@@ -970,7 +828,7 @@ def fetch_ahba_data(parcellation_name, return_donors=False,
 
 def fetch_aggregate_gene_expression(gene_list, parcellation_name, discard_rh=True,
                                     merge_donors='genes', avg_method='mean', missing='centroids',
-                                    ibf_threshold = 0.25, **abagen_kwargs):
+                                    ibf_threshold=0.5, **abagen_kwargs):
     """
     Gets the aggregate expression of genes in `gene_list`
 
@@ -983,10 +841,9 @@ def fetch_aggregate_gene_expression(gene_list, parcellation_name, discard_rh=Tru
         version of gene expression data
     parcellation_name: (str)
     discard_rh: (bool)
-        limit the map to the left hemisphere
-            Note: For consistency with other functions the right
-            hemisphere vertices/parcels are not removed but are set
-            to NaN
+        limit the map to the left hemisphere. For consistency with other 
+        functions the right hemisphere vertices/parcels are not removed 
+        but are set to NaN
     merge_donors: (str | None)
         - genes: merge donors at the level of individual genes (done in abagen)
         - aggregates: merge donors after calculating aggregates separately in each donor
@@ -1000,6 +857,7 @@ def fetch_aggregate_gene_expression(gene_list, parcellation_name, discard_rh=Tru
             - centroids
             - interpolate
     ibf_threshold: (float)
+    **abagen_kwargs: see abagen.get_expression_data
     """
     # get the ahba data
     # do not return donor-specific data if 
@@ -1055,251 +913,3 @@ def fetch_aggregate_gene_expression(gene_list, parcellation_name, discard_rh=Tru
         )
     else:
         return aggregate_expressions
-
-def fetch_pet(parcellation_name, receptor):
-    """
-    Loads the parcellated PET map of receptor and Z-scores 
-    the maps and takes a weighted average in case multiple 
-    maps exist for a given receptor x tracer combination
-
-    Parameters
-    ----------
-    parcellation_name: (str)
-    receptor: (str)
-
-    Returns
-    ---------
-    parcellated_data: (pd.DataFrame) n_parcels x n_receptor_tracer_groups
-    """
-    # TODO: consider loading the data online from neuromaps
-    parcellated_data = pd.DataFrame()
-    # load PET images metadata
-    metadata = pd.read_csv(
-        os.path.join(SRC_DIR, 'PET_metadata.csv'), 
-        index_col='filename')
-    metadata = metadata.loc[metadata['receptor']==receptor]
-    # group the images with the same recetpro-tracer
-    for group, group_df in metadata.groupby(['receptor', 'tracer']):
-        group_name = '_'.join(group)
-        print(group_name)
-        # take a weighted average of PET value z-scores
-        # across images with the same receptor-tracer
-        # (weighted by N of subjects)
-        pet_parcellated_sum = {}
-        for filename, file_metadata in group_df.iterrows():
-            pet_img = os.path.join(SRC_DIR, 'PET', filename)
-            #> prepare the parcellation masker
-            # Warning: Background label is by default set to
-            # 0. Make sure this is the case for all the parcellation
-            # maps and zero corresponds to background / midline
-            masker = NiftiLabelsMasker(
-                os.path.join(
-                    SRC_DIR, 
-                    f'tpl-MNI152_desc-{parcellation_name}_parcellation.nii.gz'
-                    ), 
-                strategy='sum',
-                resampling_target='data',
-                background_label=0)
-            #> count the number of non-zero voxels per parcel so the average
-            # is calculated only among non-zero voxels (visualizing the PET map
-            # on volumetric parcellations, the parcels are usually much thicker
-            # than the PET map on the cortex, and there are a large number of 
-            # zero PET values in each parcel which can bias the parcelled values)
-            nonzero_mask = math_img('pet_img != 0', pet_img=pet_img)
-            nonzero_voxels_count_per_parcel = masker.fit_transform(nonzero_mask).flatten()
-            #> take the average of PET values across non-zero voxels
-            pet_value_sum_per_parcel = masker.fit_transform(pet_img).flatten()
-            pet_parcellated = pet_value_sum_per_parcel / nonzero_voxels_count_per_parcel
-            # TODO: should I make any transformations in the negative PET images?
-            #> get the PET intensity zscore weighted by N
-            pet_parcellated_sum[filename] = (
-                scipy.stats.zscore(pet_parcellated)
-                * file_metadata['N']
-            )
-        # divide the sum of weighted Z-scores by total N
-        # Note that in the case of one file per group we can avoid
-        # multiplying by N and dividing by sum of N, but I've
-        # used this approach to have a shorter code which can
-        # also support the option of merging by receptor
-        # and not only (receptor, tracer) combinations
-        parcellated_data.loc[:, group_name] = sum(pet_parcellated_sum.values()) / group_df['N'].sum()
-        # add labels of the parcels
-        parcellated_data.index = load_volumetric_parcel_labels(parcellation_name)
-    return parcellated_data
-
-
-def fetch_autoradiography(depth='all'):
-    """
-    Loads the parcellated map of receptors based on autoradiography
-
-    Parameters
-    ----------
-    depth: (str)
-        - 'all'
-        - 'supragranular'
-        - 'granular'
-        - 'infragranular'
-    
-    Returns
-    --------
-    autorad_data: (df) n_aparc_parcels x n_receptors
-
-    Credit
-    ------
-    Original data from Zilles 2017 (10.3389/fnana.2017.00078)
-    Saved in .npy format by Goulas 2021 (10.1073/pnas.2020574118)
-    Code and mapping for conversion from JuBrain/Brodmann to DK from
-    Hansen 2021 (https://www.biorxiv.org/content/10.1101/2021.11.30.469876v2;
-    https://github.com/netneurolab/hansen_gene-receptor/blob/main/code/main.py)
-    """
-    # load the receptor regions and create a mapping between
-    # them and DK parcels
-    receptor_regions = np.load(
-        os.path.join(SRC_DIR, 'autoradiography', 'RegionNames.npy')
-    )
-    receptor_regions_idx = np.arange(receptor_regions.size)
-    # some region indices are associated with more than one dk region
-    # the data for these regions should be duplicated
-    duplicate = [20, 21, 28, 29, 30, 32, 34, 39]
-    rep = np.ones((receptor_regions.shape[0], ), dtype=int) 
-    rep[duplicate] = 2
-    receptor_regions = np.repeat(receptor_regions, rep, 0)
-    receptor_regions_idx = np.repeat(receptor_regions_idx, rep, 0)
-    # mapping from 44 receptor regions + 7 duplicate regions to dk left hem
-    # manually done (by Hansen et al.), comparing anatomical regions to one another
-    mapping = np.array([57, 57, 57, 57, 63, 62, 65, 62, 64, 65, 64, 66, 66,
-                        66, 66, 66, 74, 74, 70, 71, 72, 73, 67, 68, 69, 52,
-                        52, 60, 60, 58, 58, 59, 53, 54, 53, 54, 55, 56, 61,
-                        51, 51, 50, 49, 49, 44, 44, 45, 42, 47, 46, 48, 43])
-    # get the labels of DK regions (== scale033 of Cammoun2012)
-    # based on IDs in `mapping` and create a dataframe for
-    # mapping between DK region labels and receptor regions
-    cammoun = netneurotools.datasets.fetch_cammoun2012()
-    info = pd.read_csv(cammoun['info'])
-    mapping_df = info[(info['scale']=='scale033')].set_index('id').loc[mapping, 'label'].to_frame()
-    ## make the lables consistent with the way load_parcellation_map renames DK parcels
-    mapping_df.loc[:, 'label'] = 'L_' + mapping_df.loc[:, 'label']
-    ## add receptor region label and indices corresponding to the DK parcels
-    ## as indicated in `mapping`
-    mapping_df.loc[:,'receptor_region'] = receptor_regions
-    mapping_df.loc[:,'receptor_region_idx'] = receptor_regions_idx
-    mapping_df = mapping_df.set_index('receptor_region_idx')
-    # load the original data
-    if depth == 'all':
-        # take average across cortical depth before any normalization
-        autorad_data_orig = []
-        for layer in ['S', 'G', 'I']: # supragranular, granular, infragranular
-            autorad_data_orig.append(
-                np.load(os.path.join(
-                    SRC_DIR, 'autoradiography', f'ReceptData_{layer}.npy' 
-                ))
-            )
-        autorad_data_orig = sum(autorad_data_orig) / 3
-    else:
-        layer = depth[0].upper()
-        autorad_data_orig = np.load(os.path.join(
-                    SRC_DIR, 'autoradiography', f'ReceptData_{layer}.npy' 
-            ))
-    receptor_names = np.load(
-        os.path.join(SRC_DIR, 'autoradiography', 'ReceptorNames.npy')
-        ).tolist()
-    # create a dataframe of autoradiography data for DK regions
-    # based on the mapping between receptor data regions and DK regions
-    autorad_data = (
-        pd.DataFrame(
-            ## duplicate receptor data in receptor regions covering
-            ## multiple DK regions
-            autorad_data_orig[mapping_df.index],
-            index=mapping_df['label'],
-            columns=receptor_names)
-        ## take the average data for DK regions covering multiple
-        ## receptor regions
-        .reset_index(drop=False).groupby('label').mean()
-        ## normalize across regions
-        .apply(scipy.stats.zscore, axis=0)
-    )
-    return autorad_data
-
-def fetch_parvalbumin(parcellation_name, subject='all'):
-    """
-    Fetches parvalbumin staining density of Ahead dataset
-    and parcellates it
-
-    Reference: Alkemade & Bazin 2022
-    https://www.science.org/doi/10.1126/sciadv.abj7892
-    """
-    if subject=='all':
-        subjects = ['122017', '152017']
-    else:
-        subjects = [subject]
-    parvalbumin_parcellated_sum = {}
-    for sub_id in subjects:
-        file_path = os.path.join(
-            SRC_DIR, f'Ahead_brain_{sub_id}_parvalbumin-mni2009b.nii.gz')
-        # prepare the parcellation masker
-        # Warning: Background label is by default set to
-        # 0. Make sure this is the case for all the parcellation
-        # maps and zero corresponds to background / midline
-        # Also note that the Ahead maps are not perfectly
-        # registered to MNI and are only approximately
-        # matched, which is fine as long as we are parcellating it
-        masker = NiftiLabelsMasker(
-            os.path.join(
-                SRC_DIR, 
-                f'tpl-MNI152_desc-{parcellation_name}_parcellation.nii.gz'
-                ), 
-            strategy='mean',
-            resampling_target='data',
-            background_label=0)
-        # TODO: limit the averaging to voxels in gray matter
-        parvalbumin_parcellated = masker.fit_transform(file_path).flatten()
-        # get the parvalbumin staining intensity zscore
-        parvalbumin_parcellated_sum[sub_id] = (
-            scipy.stats.zscore(parvalbumin_parcellated)
-        )
-    # average across the subjects
-    parcellated_data = sum(parvalbumin_parcellated_sum.values()) / len(subjects)
-    # add labels of the parcels
-    parcellated_data = pd.Series(
-        parcellated_data,
-        index = load_volumetric_parcel_labels(parcellation_name)
-    )
-    return parcellated_data
-
-def load_macaque_hierarchy():
-    """
-    Hierarchy of macaque parcels based on Burt 2018 in M132
-    parcellation
-    """
-    # load and label the parcellated hierarchy map
-    cifti = nibabel.load(os.path.join(
-        SRC_DIR, 'monkey_hierarchy.pscalar.nii'
-    ))
-    hierarchy = pd.Series(
-        cifti.get_fdata()[0, :], 
-        index=cifti.header.get_axis(1).name
-        )
-    # rename some parcels to the names that are
-    # in the M132 parcellation file
-    rename_dict = {
-        '29/30': '29_30',
-        '9/46d': '9_46d',
-        '9/46v': '9_46v',
-        'CORE': 'Core',
-        'ENTORHINAL': 'Ento',
-        'INSULA': 'Ins',
-        'OPRO': 'Opro',
-        'PERIRHINAL': 'Peri',
-        'PIRIFORM': 'Pir',
-        'Parainsula': 'Pi',
-        'Pro.St': 'Pro. St.',
-        'SII': 'S2',
-        'SUBICULUM': 'Sub',
-        'TEMPORAL_POLE': 'TEMPORAL-POLE',
-        'TEa/ma': 'TEa_m-a',
-        'TEa/mp': 'TEa_m-p'
-        }
-    hierarchy = hierarchy.rename(index=rename_dict)
-    # assign them to the left hemisphere
-    hierarchy.index = 'L_' + hierarchy.index.to_series()
-    return hierarchy

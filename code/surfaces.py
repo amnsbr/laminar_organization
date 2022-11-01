@@ -1,30 +1,25 @@
 import os
 import itertools
 import numpy as np
+from numpy.ma.core import nonzero
 import scipy.spatial.distance
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-import cmcrameri.cm # color maps
 import brainspace.gradient
 import scipy.stats
 import ptitprince
 import nibabel
 import nilearn.surface
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.cluster import KMeans
 from yellowbrick.cluster import KElbowVisualizer
-from dominance_analysis import Dominance
 import statsmodels.stats.multitest
 import subprocess
-import logging, sys
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+from sklearn.cross_decomposition import PLSRegression
+import abagen
 
-import helpers
-import datasets
-import matrices
+import helpers, datasets, matrices
 
 # specify directories
 abspath = os.path.abspath(__file__)
@@ -38,7 +33,8 @@ class CorticalSurface:
     """
     Generic class for common functions on cortical surfaces
     """
-    cmap = 'viridis' # default
+    # default attributes
+    cmap = 'viridis'
     space = 'bigbrain'
     # TODO: specify required fields and methods
     def __init__(self, surf_data, columns, label, dir_path=None, 
@@ -75,14 +71,15 @@ class CorticalSurface:
                 ).dropna()
             self.parcellated_data.columns = self.columns
 
-    def plot(self, columns=None, add_labels=None, cmap=None, **plotter_kwargs):
+    def plot(self, columns=None, label_loc=None, cmap=None, save=False,
+             plot_downsampled=False, inflate=False, **plotter_kwargs):
         """
         Plot the map on surface
 
         Parameters
         ---------
         columns: (list | None)
-        add_labels: (str | None)
+        label_loc: (str | None)
             - None
             - 'top'
             - 'bottom'
@@ -96,24 +93,45 @@ class CorticalSurface:
         """
         if columns is None:
             columns = self.columns
-        data = pd.DataFrame(self.surf_data, columns=self.columns)
+        surf_data = pd.DataFrame(self.surf_data, columns=self.columns)
         plots = []
         for column in columns:
-            if add_labels:
-                label_text = {add_labels:[column]}
+            # TODO: some of the following transformation never / hardly ever happen
+            if plot_downsampled:
+                if (self.parcellation_name is None):
+                    if (self.surf_data.shape[0]==datasets.N_VERTICES_HEM_BB*2):
+                        column_data = helpers.downsample(surf_data.loc[:, column])
+                    else:
+                        column_data = surf_data.loc[:, column]
+                else:
+                    column_data = helpers.deparcellate(self.parcellated_data.loc[:, column], 
+                        self.parcellation_name, space=self.space)
             else:
-                label_text = None
-            if cmap is None:
-                cmap = self.cmap
+                if (self.parcellation_name is None):
+                    if (self.surf_data.shape[0]==datasets.N_VERTICES_HEM_BB_ICO5*2):
+                        column_data = helpers.upsample(surf_data.loc[:, column])
+                    else:
+                        column_data = surf_data.loc[:, column]
+                else:
+                    column_data = helpers.deparcellate(self.parcellated_data.loc[:, column], 
+                        self.parcellation_name, space=self.space)
+            label_text = ({label_loc:[column]} if label_loc else None)
+            if cmap is None: cmap = self.cmap
             plot = helpers.plot_surface(
-                data.loc[:, column].values,
-                os.path.join(self.dir_path, f'surface_{column}'),
+                np.array(column_data),
+                (os.path.join(self.dir_path, f'surface_{column}') if save else None),
                 label_text = label_text,
                 cmap = cmap,
+                plot_downsampled = plot_downsampled,
+                inflate = inflate,
+                space = self.space,
                 **plotter_kwargs    
             )
             plots.append(plot)
-        return plots
+        if len(plots) == 1:
+            return plots[0] # so that in notebook it is directly displayed
+        else:
+            return plots
 
 class ContCorticalSurface(CorticalSurface):
     """
@@ -122,7 +140,7 @@ class ContCorticalSurface(CorticalSurface):
     def correlate(self, other, parcellated=True, n_perm=1000,
                  x_columns=None, y_columns=None, axis_off=False,
                  sort_barplot=False, parcellated_method='variogram',
-                 stats_on_regplot=True, fdr_axis=None):
+                 stats_on_regplot=True, fdr_axis=None, save_files=False):
         """
         Calculate the correlation of surface maps with permutation test
         (with surrogates created using spins or variograms) and plot 
@@ -155,16 +173,15 @@ class ContCorticalSurface(CorticalSurface):
             assert self.parcellation_name is not None
         else:
             assert self.surf_data.shape[0] == other.surf_data.shape[0]
-        out_dir = os.path.join(
-            self.dir_path, 
-            'correlation_'\
-            +('parcellated_' if parcellated else '')\
-            + other.label.lower().replace(" ", "_")\
-            + f'_nperm-{n_perm}'\
-            +(f'_fdr-{fdr_axis}' if (fdr_axis is not None) else ''))
-        # TODO: this naming approach sometimes can lead
-        # to error because of the file name being too long
-        os.makedirs(out_dir, exist_ok=True)
+        if save_files:
+            out_dir = os.path.join(
+                self.dir_path, 
+                'correlation_'\
+                +('parcellated_' if parcellated else '')\
+                + other.label.lower().replace(" ", "_")\
+                + f'_nperm-{n_perm}'\
+                +(f'_fdr-{fdr_axis}' if (fdr_axis is not None) else ''))
+            os.makedirs(out_dir, exist_ok=True)
         # select columns
         if not x_columns:
             x_columns = self.columns
@@ -218,11 +235,12 @@ class ContCorticalSurface(CorticalSurface):
             pvals = pd.DataFrame(pvals)
             coefs.columns = pvals.columns = x_columns
             coefs.index = pvals.index = y_columns
-        # save null distribution for future reference
-        np.savez_compressed(
-            os.path.join(out_dir, 'coefs_null_dist.npz'),
-            coefs_null_dist=coefs_null_dist
-        )
+        if save_files:
+            # save null distribution for future reference
+            np.savez_compressed(
+                os.path.join(out_dir, 'coefs_null_dist.npz'),
+                coefs_null_dist=coefs_null_dist
+            )
         # apply FDR if indicated
         if fdr_axis is not None:
             if fdr_axis == 'x':
@@ -231,9 +249,10 @@ class ContCorticalSurface(CorticalSurface):
                 _, pvals.loc[:, column] = statsmodels.stats.multitest.fdrcorrection(pvals.loc[:, column])
             if fdr_axis == 'x':
                 pvals = pvals.T
-        # clean and save the results
-        coefs.to_csv(os.path.join(out_dir, 'coefs.csv'))
-        pvals.to_csv(os.path.join(out_dir, 'pvals.csv'))
+        if save_files:
+            # clean and save the results
+            coefs.to_csv(os.path.join(out_dir, 'coefs.csv'))
+            pvals.to_csv(os.path.join(out_dir, 'pvals.csv'))
         # bar plots for association of each x_column with
         # all y_columns
         sns.set_style("ticks")
@@ -250,7 +269,7 @@ class ContCorticalSurface(CorticalSurface):
                 for i, y_column in enumerate(curr_pvals.index):
                     if curr_pvals[y_column] < 0.05:
                         colors[i] = tuple([curr_pvals[y_column]/0.05]*3 + [0])
-                fig, ax = plt.subplots(figsize=(3, 2))
+                fig, ax = plt.subplots(figsize=(3, 2), dpi=192)
                 sns.barplot(
                     data=curr_coefs.to_frame(), 
                     x=x_column, y=curr_coefs.index, 
@@ -260,17 +279,15 @@ class ContCorticalSurface(CorticalSurface):
                 ax.set_xlim((-1, 1))
                 ax.set_ylabel('')
                 ax.set_xlabel(f'Correlation with {x_column}')
-                fig.tight_layout()
-                fig.savefig(
-                    os.path.join(
-                        out_dir, 
-                        f'barplot_{x_column.lower().replace(" ", "_")}.png'),
-                    dpi=192
-                    )
+                if save_files:
+                    fig.tight_layout()
+                    fig.savefig(
+                        os.path.join(out_dir, f'barplot_{x_column.lower().replace(" ", "_")}.png'),
+                        dpi=192)
         # regression plots
         for x_column in x_columns:
             for y_column in y_columns:
-                fig, ax = plt.subplots(figsize=(4, 4))
+                fig, ax = plt.subplots(figsize=(4, 4), dpi=192)
                 sns.regplot(
                     x=x_data.loc[:,x_column], 
                     y=y_data.loc[:,y_column],
@@ -293,136 +310,40 @@ class ContCorticalSurface(CorticalSurface):
                             multialignment='left')
                 if axis_off:
                     ax.axis('off')
-                fig.tight_layout()
-                fig.savefig(
-                    os.path.join(
-                        out_dir, 
-                        f'{x_column.lower().replace(" ", "_")}-'\
-                        + f'{y_column.lower().replace(" ", "_")}.png'),
-                    dpi=192
-                    )
+                if save_files:
+                    fig.tight_layout()
+                    fig.savefig(
+                        os.path.join(
+                            out_dir, 
+                            f'{x_column.lower().replace(" ", "_")}-'\
+                            + f'{y_column.lower().replace(" ", "_")}.png'),
+                        dpi=192)
         return coefs, pvals
+
+    def ahba_pls(self, columns, n_genes=500, n_components=1, brain_specific=False):
+        """
+        Performs PLS between columns of surface and AHBA gene expression data
+        """
+        ahba_df = datasets.fetch_ahba_data(self.parcellation_name, ibf_threshold=0.5, missing='centroids')['all']
+        if brain_specific:
+            brain_specific_genes_in_ahba = ahba_df.columns.intersection(abagen.fetch_gene_group('brain'))
+            ahba_df = ahba_df.loc[:, brain_specific_genes_in_ahba]
+        shared_parcels = ahba_df.index.intersection(self.parcellated_data.index)
+        x = ahba_df.loc[shared_parcels]
+        y = self.parcellated_data.loc[shared_parcels, columns]
+        pls = PLSRegression(n_components=n_components)
+        pls.fit(x, y)
+        weights=pd.DataFrame(pls.x_weights_, index=ahba_df.columns)
+        top_genes = []
+        for i in range(n_components):
+            curr_top_genes = weights.iloc[:, i].abs().sort_values(ascending=False).iloc[:n_genes].index.tolist()
+            weights_top_genes = weights.iloc[:, i].loc[curr_top_genes]
+            top_pos = weights_top_genes.loc[weights_top_genes >= 0].index.tolist()
+            top_neg = weights_top_genes.loc[weights_top_genes < 0].index.tolist()
+            top_genes.append({'pos': top_pos, 'neg': top_neg})
+        return top_genes, pls
                     
-    def microstructure_dominance_analysis(self, col_idx=0, n_perm=1000, exc_regions='adysgranular'):
-        """
-        Performs dominance analysis to compare the contribution
-        of LTC G1, MPC G1 and C.Types in explaining the variance
-        of surf_data[:, col_idx], while testing the significance of contributions
-        using spin permutation if indicated
-        See https://github.com/dominance-analysis/dominance-analysis
-        and Hansen 2021 bioRxiv
-
-        Parameters
-        ----------
-        col_idx: (int) column index to use as the dependent variable
-        n_perm: (int) if zero spin permutation is not  performed
-        exc_regions: (str | None) which regions to exclude from structural maps
-        """
-        # TODO: add the option for doing this on parcellated data
-        # and using variogram permutation
-        # make sure it's only called with surfaces other than
-        # microstructure gradients
-        assert not isinstance(self, MicrostructuralCovarianceGradients)
-        # specify output path
-        out_path = os.path.join(
-            self.dir_path, 
-            'microstructure_dominance_analysis' \
-            + f'_col-{self.columns[col_idx]}' \
-            + (f'_exc-{exc_regions}' if exc_regions else '') \
-            + f'_nperm-{n_perm}'
-            )
-        os.makedirs(out_path, exist_ok=True)
-        # get and downsample the disease gradient
-        # Note: it is important not to exclude any regions from disease gradient,
-        # as it will get spun and disease g NaNs at the excluded regions move around
-        # but not the NaNs at the excluded regions in the microstructural data, and
-        # this can create up to two-fold points where either disease or microstructure
-        # is NaN
-        outcome = pd.Series(self.surf_data[:, 0], name='DV')
-        # get the structural gradients and downsample them
-        ltcg = MicrostructuralCovarianceGradients(
-            matrices.MicrostructuralCovarianceMatrix(
-                'thickness', 
-                parcellation_name=self.parcellation_name,
-                exc_regions=exc_regions
-                )
-            )
-        ltcg1_surf = ltcg.surf_data[:, :1]
-        mpcg = MicrostructuralCovarianceGradients(
-            matrices.MicrostructuralCovarianceMatrix(
-                'density', 
-                parcellation_name=self.parcellation_name,
-                exc_regions=exc_regions
-                )
-            )
-        mpcg1_surf = mpcg.surf_data[:, :1]
-        # get the downsampled ctypes as float
-        ctypes_surf = CorticalTypes(exc_regions=exc_regions, downsampled=True).surf_data
-        # create dataframes
-        predictors = pd.DataFrame(
-            np.hstack([ltcg1_surf, mpcg1_surf, ctypes_surf]),
-            columns = ['LTC G1', 'MPC G1', 'Cortical Types']
-        )
-        data = pd.concat([predictors, outcome], axis=1).dropna()
-        # dominance analysis on non-permutated data
-        test_dominance_analysis = Dominance(data,target='DV')
-        test_dominance_analysis.incremental_rsquare()
-        dominance_stats = test_dominance_analysis.dominance_stats()
-        if n_perm > 0:
-            # create downsampled bigbrain spin permutations
-            assert n_perm <= 1000
-            helpers.create_bigbrain_spin_permutations(n_perm=n_perm, is_downsampled=True)
-            # load the spin permutation indices
-            spin_indices = np.load(os.path.join(
-                SRC_DIR, f'tpl-bigbrain_desc-spin_indices_downsampled_n-{n_perm}.npz'
-                )) # n_perm * n_vert arrays for 'lh' and 'rh'
-            # split the disease G1 in two hemispheres
-            outcome_split = {
-                'L': outcome.values[:outcome.shape[0]//2],
-                'R': outcome.values[outcome.shape[0]//2:]
-            }
-            # create the lh and rh surrogates and concatenate them
-            perm_outcomes = np.concatenate([
-                outcome_split['L'][spin_indices['lh']], 
-                outcome_split['R'][spin_indices['rh']]
-                ], axis=1) # n_perm * n_vert * n_features
-            perm_dominance_stats = np.zeros((n_perm, *dominance_stats.shape))
-            for perm in range(n_perm):
-                logging.info(perm)
-                # do the dominance analysis in each spin
-                perm_outcome = pd.Series(perm_outcomes[perm, :], name='DV')
-                perm_data = pd.concat([predictors, perm_outcome], axis=1).dropna()
-                perm_dominance_analysis = Dominance(data=perm_data, target='DV')
-                perm_dominance_analysis.incremental_rsquare()
-                perm_dominance_stats[perm, :, :] = perm_dominance_analysis.dominance_stats().values
-            # save null distribution for future reference
-            np.savez_compressed(
-                os.path.join(out_path, 'null.npz'),
-                perm_dominance_stats
-            )
-            # calculate one-sided p-vals (all values are positive so no difference between one or two-sided)
-            dominance_pvals = (perm_dominance_stats > dominance_stats.values[np.newaxis, :, :]).mean(axis=0)
-            dominance_pvals = pd.DataFrame(
-                dominance_pvals,
-                columns=dominance_stats.columns,
-                index=dominance_stats.index
-                )
-            # calculate p-value for the total variance explained
-            # by the model (which is the sum of 'Total Dominance' 
-            # for all variables)
-            perm_total_var = perm_dominance_stats[:, :, 3].sum(axis=1)
-            dominance_stats.loc['Sum', 'Total Dominance'] \
-                = dominance_stats.loc[:, 'Total Dominance'].sum()
-            dominance_pvals.loc['Sum', 'Total Dominance'] \
-                = (perm_total_var > dominance_stats.loc['Sum', 'Total Dominance']).mean()
-            dominance_pvals.to_csv(os.path.join(out_path, 'dominance_pvals.csv'))
-        else:
-            dominance_stats.loc['Sum', 'Total Dominance'] \
-                = dominance_stats.loc[:, 'Total Dominance'].sum()
-        dominance_stats.to_csv(os.path.join(out_path, 'dominance_stats.csv'))
-
 class LaminarFeatures(ContCorticalSurface):
-    label = 'Laminar features'
     def __init__(self, parcellation_name=None, correct_curvature='smooth-10', exc_regions=None):
         """
         Structural features including total/laminar thickness, laminar densities and
@@ -442,6 +363,7 @@ class LaminarFeatures(ContCorticalSurface):
         self.parcellation_name = parcellation_name
         self.correct_curvature = correct_curvature
         self.exc_regions = exc_regions
+        self.label = 'Laminar features'
         self.dir_path = os.path.join(OUTPUT_DIR, 'laminar_features')
         os.makedirs(self.dir_path, exist_ok=True)
         self.file_path = os.path.join(
@@ -464,6 +386,14 @@ class LaminarFeatures(ContCorticalSurface):
                 self.parcellation_name
             )
             self.parcellated_data.columns = self.columns
+            self.parcellated_data = self.parcellated_data.dropna()
+            # get only the valid parcels outside of exc_regions or midline
+            # which also exist in self._parcellated_input_data
+            valid_parcels = helpers.get_valid_parcels(
+                self.parcellation_name, 
+                self.exc_regions, 
+                downsampled=True).intersection(self.parcellated_data.index)
+            self.parcellated_data = self.parcellated_data.loc[valid_parcels]
     
     def _create(self):
         self.columns = []
@@ -517,34 +447,19 @@ class LaminarFeatures(ContCorticalSurface):
         laminar_density = helpers.downsample(laminar_density)
         features.append(laminar_density)
         self.columns += [f'Layer {num} density' for num in range(1, 7)]
-        #> Microstructural profile moments
-        density_profiles = datasets.load_total_depth_density(exc_regions=self.exc_regions)
-        density_profiles = np.concatenate([density_profiles['L'], density_profiles['R']])
-        density_profiles = helpers.downsample(density_profiles)
-        features += [
-            np.mean(density_profiles, axis=1)[:, np.newaxis],
-            np.std(density_profiles, axis=1)[:, np.newaxis],
-            scipy.stats.skew(density_profiles, axis=1)[:, np.newaxis],
-            scipy.stats.kurtosis(density_profiles, axis=1)[:, np.newaxis]
-        ]
-        self.columns += ['Density mean', 'Density std', 'Density skewness', 'Density kurtosis']
         #> concatenate all the features into a single array
         self.surf_data = np.hstack(features)
 
 class Gradients(ContCorticalSurface):
-    """
-    Generic class for creating and plotting gradients
-    """
     def __init__(self, matrix_obj, n_components_create=10, n_components_report=2,
                  approach='dm', kernel='normalized_angle', sparsity=0.9, fair_sparsity=True,
-                 hemi=None, cmap='viridis', create_plots=False):
+                 hemi=None, cmap='viridis'):
         """
-        Initializes laminar similarity gradients based on LaminarSimilarityMatrix objects
-        and the gradients fitting parameters
+        Gradients of a Matrix object
 
         Parameters
         ---------
-        matrix: (MicrostructuralCovarianceMatrix)
+        matrix: (Matrix)
         n_components_create: (int) number of components to calculate
         n_components_report: (int) number of first n components to report / plot / associate
         approach: (str) dimensionality reduction approach
@@ -552,7 +467,6 @@ class Gradients(ContCorticalSurface):
         sparsity: (int) proportion of smallest elements to zero-out for each row.
         fair_sparsity: (bool) whether to make joined matrices sparse fairly
         hemi: (str | None) limit the gradient to selected hemisphere ('L' or 'R')
-        create_plots: (bool) Default: False
         """
         self.matrix_obj = matrix_obj
         self.parcellation_name = self.matrix_obj.parcellation_name
@@ -568,12 +482,6 @@ class Gradients(ContCorticalSurface):
         self._sparsity = sparsity
         self._fair_sparsity = fair_sparsity
         self.hemi = hemi
-        if (self.matrix_obj.split_hem) & (self.hemi is None):
-            # in case the matrix is split in two hemispheres
-            # and this is the parent gradient where hemispheres
-            # are concatenated do not plot anything as some
-            # of the fields (e.g. lambdas) are undefined
-            create_plots = False
         self.columns = [f'{self.matrix_obj.short_label} G{num}' \
                         for num in range(1, self._n_components_create+1)]
         self.label = f'{self.matrix_obj.label} gradients'
@@ -593,11 +501,6 @@ class Gradients(ContCorticalSurface):
         self.n_parcels = self.matrix_obj.matrix.shape[0]
         self._create()
         self._save()
-        if create_plots:
-            self.plot_surface()
-            self.plot_scatter()
-            self.plot_scree()
-            self.plot_reordered_matrix()
 
     def _create(self):
         """
@@ -706,7 +609,6 @@ class Gradients(ContCorticalSurface):
             sparsity=self._sparsity, 
             fair_sparsity=self._fair_sparsity,
             cmap=self.cmap, 
-            create_plots=False
         )
 
     def _get_dir_path(self):
@@ -797,7 +699,7 @@ class Gradients(ContCorticalSurface):
             plots.append(plot)
         return plots
 
-    def plot_scatter(self, remove_ticks=True, g3_cmap='magma_r'):
+    def plot_scatter(self, remove_ticks=True, g3_cmap='magma_r', save=False):
         """
         Plot scatter plot of gradient values for G1 (x-axis) and G2 (y-axis) with
         colors representing G3
@@ -807,9 +709,9 @@ class Gradients(ContCorticalSurface):
         remove_ticks: (bool) remove ticks so that colorbars can replace them (manually)
         """
         if self.parcellation_name is None:
-            logging.warn('Aborted plotting unparcellated scatter plot')
+            print('Aborted plotting unparcellated scatter plot')
             return
-        fig, ax = plt.subplots(figsize=(6,5))
+        fig, ax = plt.subplots(figsize=(6,5), dpi=192)
         ax = sns.scatterplot(
             data=self.parcellated_data, 
             x=self.columns[0], # G1
@@ -822,11 +724,12 @@ class Gradients(ContCorticalSurface):
             ax.set_yticks([])
         ax.spines['right'].set_visible(False)
         ax.spines['top'].set_visible(False)
-        fig.savefig(
-            os.path.join(self.dir_path,f'scatter.png'), 
-            dpi=192)
+        if save:
+            fig.savefig(
+                os.path.join(self.dir_path,f'scatter.png'), 
+                dpi=192)
 
-    def plot_scree(self, normalize=False, mark_selected=True, cumulative=False):
+    def plot_scree(self, normalize=False, mark_selected=True, cumulative=False, save=False):
         """
         Plot the lamdas
 
@@ -835,7 +738,7 @@ class Gradients(ContCorticalSurface):
         normalize: (bool) normalize the lambdas by sum
         """
         # plot the absolute/relative lambda values
-        fig, ax = plt.subplots(figsize=(6, 4))
+        fig, ax = plt.subplots(figsize=(6, 4), dpi=192)
         x = np.arange(1, self.lambdas.shape[0]+1).astype('str')
         if normalize:
             y = (self.lambdas / self.lambdas.sum())
@@ -856,13 +759,14 @@ class Gradients(ContCorticalSurface):
             x_selected = x[:self._n_components_report]
             y_selected = y[:self._n_components_report]
             ax.scatter(x_selected, y_selected, marker='s', s=200, facecolors='none', edgecolors='r')
-        fig.savefig(
-            os.path.join(self.dir_path,f'scree{"_normalized" if normalize else ""}.png'),
-            dpi=192
-            )
+        if save:
+            fig.savefig(
+                os.path.join(self.dir_path,f'scree{"_normalized" if normalize else ""}.png'),
+                dpi=192
+                )
         if cumulative:
             # plot the cumulative variance explained
-            fig, ax = plt.subplots(figsize=(6,4))
+            fig, ax = plt.subplots(figsize=(6,4), dpi=192)
             y = (self.lambdas.cumsum() / self.lambdas.sum()) * 100
             print("Cumulative explained variance among the top gradients", y)
             ax.plot(
@@ -873,17 +777,18 @@ class Gradients(ContCorticalSurface):
                 color = 'grey',
                 )
             ax.set_ylim([0, 105])
-            fig.savefig(
-                os.path.join(self.dir_path,'scree_cum.png'),
-                dpi=192
-                )
+            if save:
+                fig.savefig(
+                    os.path.join(self.dir_path,'scree_cum.png'),
+                    dpi=192
+                    )
 
-    def plot_reordered_matrix(self):
+    def plot_reordered_matrix(self, save=False):
         """
         Plot the input matrix reordered by gradient values
         """
         if self.parcellation_name is None:
-            logging.warn('Aborted plotting unparcellated reordered matrix')
+            print('Aborted plotting unparcellated reordered matrix')
             return
         if self.n_matrices == 1:
             # in unimodal case add ordered matrices by the first 3 gradients
@@ -892,11 +797,11 @@ class Gradients(ContCorticalSurface):
                 sorted_parcels = self.parcellated_data.sort_values(by=self.columns[g_idx]).index
                 # reorder matrix by sorted parcels
                 reordered_matrix = self.matrix_obj.matrix.loc[sorted_parcels, sorted_parcels].values
-                helpers.plot_matrix(
-                    reordered_matrix,
-                    os.path.join(self.dir_path, f'matrix_order-G{g_idx+1}'),
-                    cmap=self.matrix_obj.cmap,
-                    )
+                if save:
+                    file_path = os.path.join(self.dir_path, f'matrix_order-G{g_idx+1}')
+                else:
+                    file_path = None
+                helpers.plot_matrix(reordered_matrix, file_path, cmap=self.matrix_obj.cmap)
         else:
             for g_idx in range(self._n_components_report):
                 # sort parcels by gradient values
@@ -909,20 +814,16 @@ class Gradients(ContCorticalSurface):
                     reordered_matrix = split_matrix.loc[sorted_parcels, sorted_parcels].values
                     reordered_split_matrices.append(reordered_matrix)
                 reordered_split_matrices = np.hstack(reordered_split_matrices)
-                helpers.plot_matrix(
-                    reordered_split_matrices,
-                    os.path.join(self.dir_path, f'matrix_order-G{g_idx+1}'),
-                    cmap=self.matrix_obj.cmap,
-                    )
+                if save:
+                    file_path = os.path.join(self.dir_path, f'matrix_order-G{g_idx+1}')
+                else:
+                    file_path = None
+                helpers.plot_matrix(reordered_split_matrices, file_path, cmap=self.matrix_obj.cmap)
 
 class MicrostructuralCovarianceGradients(Gradients):
-    """
-    Creates and plots gradients of microstructural covariance
-    """
     def __init__(self, *args, **kwargs):
         """
-        Initializes laminar similarity gradients based on LaminarSimilarityMatrix objects
-        and the gradients fitting parameters
+        Gradients of microstructural covariance matrices (LTC, MPC and fused)
         """
         super().__init__(*args, **kwargs)
         if 'thickness' in self.matrix_obj.input_type:
@@ -930,7 +831,7 @@ class MicrostructuralCovarianceGradients(Gradients):
         else:
             self.cmap = 'Spectral_r'
         # flip the gradients to match the default
-        default_matrix = matrices.MicrostructuralCovarianceMatrix(self.matrix_obj.input_type, 'sjh')
+        default_matrix = matrices.MicrostructuralCovarianceMatrix(self.matrix_obj.input_type)
         if self.matrix_obj.dir_path != default_matrix.dir_path:
             default_gradients = MicrostructuralCovarianceGradients(default_matrix)
             for g_idx in range(self.surf_data.shape[1]):
@@ -949,7 +850,7 @@ class MicrostructuralCovarianceGradients(Gradients):
         #     self.parcellated_data.iloc[:, 0] = - self.parcellated_data.iloc[:, 0]
         #     self.surf_data[:, 0] = - self.surf_data[:, 0]
 
-    def plot_binned_profile(self, n_bins=10, palette='bigbrain', use_laminar_density=True, zscore=False):
+    def plot_binned_profile(self, n_bins=10, palette='bigbrain', use_laminar_density=True, zscore=False, save=False):
         """
         Plots the relative laminar thickness and density of `n_bins` 
         bins of the top gradients
@@ -1037,7 +938,7 @@ class MicrostructuralCovarianceGradients(Gradients):
                 bins_laminar_density = binned_parcels_laminar_density.groupby('bin').mean().reset_index(drop=True)
                 bins_laminar_density.columns = [f'Layer {idx+1}' for idx in range(6)]
             # create the plots
-            fig, ax = plt.subplots(figsize=(10, 7))
+            fig, ax = plt.subplots(figsize=(10, 7), dpi=192)
             if self.matrix_obj.input_type == 'density':
                 sns.heatmap(bins_density.T, ax=ax, cmap='Blues', cbar=False)
             elif self.matrix_obj.input_type == 'thickness-density':
@@ -1097,42 +998,23 @@ class MicrostructuralCovarianceGradients(Gradients):
             ax.set_xlabel('')
             ax.set_ylabel('')
             ax.axis('off')
-            fig.tight_layout()
-            fig.savefig(os.path.join(self.dir_path, f'binned_profile_G{gradient_num}.png'), dpi=192)
+            if save:
+                fig.tight_layout()
+                fig.savefig(os.path.join(self.dir_path, f'binned_profile_G{gradient_num}.png'), dpi=192)
             clfig = helpers.make_colorbar(
                 self.parcellated_data.iloc[:,gradient_num-1].min(), 
                 self.parcellated_data.iloc[:,gradient_num-1].max(),
                 bins=10, 
                 cmap = self.cmap,
                 orientation='horizontal', figsize=(6,4))
-            clfig.savefig(os.path.join(self.dir_path, f'binned_profile_G{gradient_num}_clbar.png'), dpi=192)
-
-class MriMpcGradients(ContCorticalSurface):
-    """
-    Gradients of in-vivo T1w/T2w MPC based on Valk 2022
-    """
-    def __init__(self):
-        self.label = 'MRI microstructural profile covariance gradients'
-        self.dir_path = os.path.join(OUTPUT_DIR, 'mri_mpc', 'gradients')
-        os.makedirs(self.dir_path, exist_ok=True)
-        self.cmap = 'pink'
-        self.parcellation_name = 'schaefer400'
-        mpc_gradients = scipy.io.loadmat(
-            os.path.join(SRC_DIR, 'MPC_MRI_Valk2022.mat'), 
-            simplify_cells=True)['for_amin']['gradients']
-        self.parcellated_data = pd.DataFrame(
-            mpc_gradients, 
-            index=datasets.load_volumetric_parcel_labels('schaefer400'))
-        self.surf_data = helpers.deparcellate(self.parcellated_data, 'schaefer400', downsampled=True)
-        self.columns = [f'MPCmri G{i}' for i in range(1, 11)]
-        self.parcellated_data.columns = self.columns
-
+            if save:
+                clfig.savefig(os.path.join(self.dir_path, f'binned_profile_G{gradient_num}_clbar.png'), dpi=192)
 
 class CurvatureMap(ContCorticalSurface):
-    """
-    Map of bigbrain surface curvature
-    """
     def __init__(self, downsampled=True):
+        """
+        Map of bigbrain surface curvature
+        """
         self.downsampled = downsampled
         self.surf_data = datasets.load_curvature_maps(
             downsampled=downsampled, 
@@ -1190,7 +1072,7 @@ class CurvatureMap(ContCorticalSurface):
         if colors is None:
             colors = plt.cm.get_cmap(palette, 6).colors
         # plot the relative thickness of layers 6 to 1
-        fig, ax = plt.subplots(figsize=(12, 4))
+        fig, ax = plt.subplots(figsize=(12, 4), dpi=192)
         ax.bar(
             x = laminar_data.index,
             height = laminar_data['Layer 6'],
@@ -1215,16 +1097,19 @@ class CurvatureMap(ContCorticalSurface):
         return ax
 
 class GeodesicDistance(ContCorticalSurface):
-    """
-    Map of minimum geodesic distance from given seeds
-
-    Depends on wb_command
-    """
     def __init__(self, seed_parcellation='brodmann', 
                  seed_parcels=['BA17','BA1_3','BA41_42_52']):
         """
-        Initializes geodesic distance surface from the center of `parcel`
-        in `parcellation_name`
+        Map of minimum geodesic distance from given seeds
+        
+        Parameters
+        ----------
+        seed_parcellation: (str)
+            default is Brodmann
+        seed_parcels: (list of str)
+            default are primary sensory areas
+        
+        Note: It depends on wb_command
         """
         self.seed_parcellation = seed_parcellation
         self.seed_parcels = seed_parcels
@@ -1281,11 +1166,13 @@ class GeodesicDistance(ContCorticalSurface):
         return surf_data
 
 class Coordinates(ContCorticalSurface):
-    label = 'Coordinates'
-    short_label = 'xyz'
     def __init__(self, parcellation_name, space='bigbrain'):
+        """
+        Map of x, y and z coordinates of vertices
+        """
         self.parcellation_name = parcellation_name
         self.space = space
+        self.label = 'Coordinates'
         meshes = datasets.load_mesh_paths('orig', space=space, downsampled=True)
         self.surf_data = np.concatenate([
             nilearn.surface.load_surf_mesh(meshes['L']).coordinates,
@@ -1297,62 +1184,76 @@ class Coordinates(ContCorticalSurface):
 
 
 class MacaqueHierarchy(ContCorticalSurface):
-    label = 'Laminar-based hierarchy'
-    short_label = 'LBH'
-    cmap = 'PiYG'
-    space = 'yerkes'
     def __init__(self):
+        """
+        Macaque laminar-based hierarchy based on Burt 2018
+        (https://doi.org/10.1038/s41593-018-0195-0)
+        """
         self.parcellation_name = 'M132'
+        self.label = 'Laminar-based hierarchy'
+        self.cmap = 'PiYG'
+        self.space = 'yerkes'
         self.columns = [self.label]
+        self.dir_path = os.path.join(OUTPUT_DIR, 'macaque_hierarchy')
+        os.makedirs(self.dir_path, exist_ok=True)
         self.parcellated_data = datasets.load_macaque_hierarchy().to_frame()
         self.parcellated_data.columns = self.columns
         self.surf_data = helpers.deparcellate(self.parcellated_data, self.parcellation_name,space='yerkes')
 
-class MacaqueGradient(ContCorticalSurface):
-    """
-    Transformed human gradient to macaque cortex
-    """
-    space = 'yerkes'
-    def __init__(self, human_gradient_obj, columns=None, parcellation_name='M132'):
-        self.human_gradient_obj = human_gradient_obj
-        self.cmap = self.human_gradient_obj.cmap
-        self.label = self.human_gradient_obj.label + ' macaque'
+class MacaqueSurface(ContCorticalSurface):
+    def __init__(self, human_surf_obj, columns=None, parcellation_name='M132'):
+        """
+        Human gradient to transformed to macaque cortex
+
+        Parameters
+        ---------
+        human_surf_obj: (Gradient)
+        columns: (list)
+        parcellation_name: (str)
+            macaque parcellation name
+        """
+        self.human_surf_obj = human_surf_obj
+        self.cmap = self.human_surf_obj.cmap
+        self.label = self.human_surf_obj.label + ' macaque'
         self.parcellation_name = parcellation_name
         self.columns = columns
+        self.space = 'yerkes'
         if self.columns is None:
-            self.columns = self.human_gradient_obj.columns
-        human_gradients_ico7 = pd.DataFrame(
-            helpers.upsample(human_gradient_obj.surf_data),
-            columns = self.human_gradient_obj.columns
+            self.columns = self.human_surf_obj.columns
+        self.space = 'yerkes'
+        human_surfs_ico7 = pd.DataFrame(
+            helpers.upsample(human_surf_obj.surf_data),
+            columns = self.human_surf_obj.columns
         )
-        self.dir_path = os.path.join(human_gradient_obj.dir_path, 'macaque')
+        self.dir_path = os.path.join(self.human_surf_obj.dir_path, 'macaque')
         os.makedirs(self.dir_path, exist_ok=True)
         self.surf_data = pd.DataFrame()
         for column in self.columns:
+            column_str = column.replace(" ", "_")
             macaque_paths = {
-                'L' : os.path.join(self.dir_path, f'tpl-yerkes_hemi-L_den-32k_desc-{column.replace(" ", "_")}.shape.gii'),
-                'R' : os.path.join(self.dir_path, f'tpl-yerkes_hemi-R_den-32k_desc-{column.replace(" ", "_")}.shape.gii')
+                'L' : os.path.join(self.dir_path, f'tpl-yerkes_hemi-L_den-32k_desc-{column_str}.shape.gii'),
+                'R' : os.path.join(self.dir_path, f'tpl-yerkes_hemi-R_den-32k_desc-{column_str}.shape.gii')
             }
             if not os.path.exists(macaque_paths['L']):
-                lh_bb_path = os.path.join(human_gradient_obj.dir_path, f'tpl-bigbrain_hemi-L_desc-{column.replace(" ", "_")}.shape.gii')
-                rh_bb_path = os.path.join(human_gradient_obj.dir_path, f'tpl-bigbrain_hemi-R_desc-{column.replace(" ", "_")}.shape.gii')
+                lh_bb_path = os.path.join(self.human_surf_obj.dir_path, f'tpl-bigbrain_hemi-L_desc-{column_str}.shape.gii')
+                rh_bb_path = os.path.join(self.human_surf_obj.dir_path, f'tpl-bigbrain_hemi-R_desc-{column_str}.shape.gii')
                 helpers.write_gifti(lh_bb_path, 
-                                    data=human_gradients_ico7.loc[:,column].iloc[:datasets.N_VERTICES_HEM_BB])
+                                    data=human_surfs_ico7.loc[:,column].iloc[:datasets.N_VERTICES_HEM_BB])
                 helpers.write_gifti(rh_bb_path, 
-                                    data=human_gradients_ico7.loc[:,column].iloc[datasets.N_VERTICES_HEM_BB:])
+                                    data=human_surfs_ico7.loc[:,column].iloc[datasets.N_VERTICES_HEM_BB:])
                 helpers.surface_to_surface_transform(
-                    in_dir = human_gradient_obj.dir_path,
+                    in_dir = self.human_surf_obj.dir_path,
                     out_dir = self.dir_path,
-                    in_lh = 'tpl-bigbrain_hemi-L_desc-LTC_G1.shape.gii',
-                    in_rh = 'tpl-bigbrain_hemi-R_desc-LTC_G1.shape.gii',
+                    in_lh = f'tpl-bigbrain_hemi-L_desc-{column_str}.shape.gii',
+                    in_rh = f'tpl-bigbrain_hemi-L_desc-{column_str}.shape.gii',
                     in_space = 'bigbrain',
                     out_space = 'fs_LR',
                     desc = column.replace(' ', '_')
                 )
                 macaque_paths = helpers.human_to_macaque(
                     {
-                        'L': os.path.join(self.dir_path, 'tpl-fs_LR_hemi-L_den-32k_desc-LTC_G1.shape.gii'),
-                        'R': os.path.join(self.dir_path, 'tpl-fs_LR_hemi-R_den-32k_desc-LTC_G1.shape.gii'),
+                        'L': os.path.join(self.dir_path, f'tpl-fs_LR_hemi-L_den-32k_desc-{column_str}.shape.gii'),
+                        'R': os.path.join(self.dir_path, f'tpl-fs_LR_hemi-R_den-32k_desc-{column_str}.shape.gii'),
                     }, 
                     desc = column.replace(' ', '_'))
             self.surf_data.loc[:, column] = np.concatenate([
@@ -1366,60 +1267,11 @@ class MacaqueGradient(ContCorticalSurface):
             na_ratio_cutoff=0.5)
         self.parcellated_data.columns = self.columns
                 
-
-class DiseaseMaps(ContCorticalSurface):
-    """
-    Maps of cortical thickness differences in disorders from ENIGMA 
-    mega-/meta-analyses. When different options are provided, adult
-    population, mega-analyses, and combined disorder subtypes are
-    loaded.
-    """
-    def __init__(self):
-        """
-        Loads disorder maps from ENIGMA toolbox and projects
-        them back to surface
-        """
-        # load disorder maps from ENIGMA toolbox
-        # (in DK parcellation)
-        self.dir_path = os.path.join(OUTPUT_DIR, 'disease')
-        os.makedirs(self.dir_path, exist_ok=True)
-        self.label = 'Cortical thickness difference in diseases'
-        self.parcellation_name = 'aparc'
-        self.parcellated_data = datasets.load_disease_maps(psych_only=False, rename=True)
-        # project it back to surface
-        self.surf_data = helpers.deparcellate(self.parcellated_data, 'aparc', downsampled=True)
-        self.columns = self.parcellated_data.columns
-
-class DiseaseSusceptibilityMap(ContCorticalSurface):
-    """
-    Map of disease susceptibility
-    """
-    label = 'Disease susceptibiltiy'
-    cmap = 'Reds'
-    def __init__(self):
-        disease_maps = DiseaseMaps()
-        self.parcellated_data = (
-            disease_maps.parcellated_data
-            .abs()
-            .apply(lambda s: s.rank(ascending=True))
-            .sum(axis=1)
-            .rename(self.label)
-            .to_frame()
-        )
-        self.columns = [self.label]
-        self.dir_path = os.path.join(OUTPUT_DIR, 'disease', f'susceptibility')
-        os.makedirs(self.dir_path, exist_ok=True)
-        self.parcellation_name = 'aparc'
-        self.surf_data = helpers.deparcellate(self.parcellated_data, self.parcellation_name, downsampled=True)
-
 class MyelinMap(ContCorticalSurface):
-    """
-    HCP S1200 group-averaged myelin (T1/T2) map transformed
-    to bigbrain
-    """
     def __init__(self, parcellation_name=None, exc_regions=None, downsampled=True):
         """
-        Initializes the myelin map
+        HCP S1200 group-averaged myelin (T1/T2) map transformed
+        to bigbrain
         """
         self.parcellation_name = parcellation_name
         self.exc_regions = exc_regions
@@ -1433,26 +1285,27 @@ class MyelinMap(ContCorticalSurface):
             self.parcellated_data = helpers.parcellate(self.surf_data, self.parcellation_name)
             self.parcellated_data.columns = self.columns
 
-
 class EffectiveConnectivityMaps(ContCorticalSurface):
-    """
-    Maps of total afferent and efferent connectivity
-    strength as well as their difference (hierarchy strength)
-    """
-    label = 'Effective connectivity maps'
-    cmap = 'YlGnBu_r'
     def __init__(self, dataset='mics'):
         """
-        Loads the EC matrix and calculates the three
-        measures of EC strength for each node and
-        projects it to surface
+        Maps of total afferent and efferent connectivity
+        strength as well as their difference (hierarchy strength)
+
+        Parameters
+        --------
+        dataset: (str)
+            - 'mics' [default]
+            - 'hcp'
         """
         self.ec = matrices.ConnectivityMatrix(
             'effective', 
             dataset=dataset, 
-            exc_regions=None
+            exc_regions=None,
+            exc_contra=False
             )
         self.parcellation_name = 'schaefer400'
+        self.label = 'Effective connectivity maps'
+        self.cmap = 'YlGnBu_r'
         self.dir_path = os.path.join(self.ec.dir_path, 'maps')
         os.makedirs(self.dir_path, exist_ok=True)
         self._create()
@@ -1479,154 +1332,80 @@ class EffectiveConnectivityMaps(ContCorticalSurface):
         )
         self.columns = self.parcellated_data.columns
 
-class ReceptorMap(ContCorticalSurface):
-    """
-    Map of neurotransmitter receptors based on PET or autoradiography
-    data. 
-    Source: Hansen 2021
-    """
-    def __init__(self, receptor, source, parcellation_name):
-        """
-        Initializes receptor map
 
-        Parameters
-        ----------
-        receptor: (str) name of the receptor
-            - NMDA
-            - GABAa
-        source: (str)
-            - PET
-            - autoradiography
-        parcellation_name: (str)
-            for autoradiography only aparc is available
+class NeuronalSubtypesMaps(ContCorticalSurface):
+    def __init__(self, neuron_type, parcellation_name, exc_regions=None, 
+                 discard_rh=True):
         """
-        # TODO: consider having separate options for GABAa and GABAa/BZ
-        self.receptor = receptor
-        self.source = source
-        if self.source == 'autoradiography':
-            assert parcellation_name == 'aparc', \
-                'Autoradiography data only available in aparc'
-        self.parcellation_name = parcellation_name
-        self.dir_path = os.path.join(
-            OUTPUT_DIR, 'ei', self.source,
-            f'{receptor}_parc-{parcellation_name}'
-        )
-        self.file_path = os.path.join(
-            self.dir_path, f'parcellated_density_zscore.csv'
-        )
-        self.label = f'{receptor} density ({source})'
-        if os.path.exists(self.file_path):
-            self.parcellated_data = pd.read_csv(self.file_path, index_col='parcel')
-        else:
-            os.makedirs(self.dir_path, exist_ok=True)
-            if self.source == 'PET':
-                self.parcellated_data = datasets.fetch_pet(self.parcellation_name, self.receptor)
-            else:
-                self.parcellated_data = datasets.fetch_autoradiography().loc[:, receptor].to_frame()
-            self.parcellated_data.to_csv(self.file_path, index_label='parcel')
-        # Pseudo-projection of volumetric data to surface via 
-        # parcellation for plotting etc.
-        self.surf_data = helpers.deparcellate(
-            self.parcellated_data, 
-            self.parcellation_name,
-            downsampled = True
-            )
-        self.columns = self.parcellated_data.columns.tolist()
-        CMAPS = {
-            'NMDA': 'YlOrRd',
-            'GABAa': 'YlGnBu'
-        }
-        self.cmap = CMAPS[self.receptor]
-    
-class NeuronTypeMaps(ContCorticalSurface):
-    """
-    Maps of aggregated expression of genes associated
-    with excitatory and inhibitory neuron
-
-    Reference: Seidlitz 2020 (https://www.nature.com/articles/s41467-020-17051-5)
-    """
-    def __init__(self, neuron_type, parcellation_name, discard_rh=True, paper='any'):
-        """
-        Creates/loads the neuron type gene expression map
+        Aggregate gene expression pattern of excitatory and inhibitory 
+        neuronal subtypes across brain regions using AHBA data and based on gene lists
+        from Lake 2016 (https://doi.org/10.1126/science.aaf1204), similar to the
+        approach used by Burt 2018 (https://doi.org/10.1038/s41593-018-0195-0)
 
         Parameters
         ---------
         neuron_type: (str)
-            - Neuro-Ex
-            - Neuro-In
+            - exc
+            - inh
         parcellation_name: (str)
+        exc_regions: (str | None)
         discard_rh: (bool)
             limit the map to the left hemisphere
             Note: For consistency with other functions the right
             hemisphere vertices/parcels are not removed but are set
             to NaN
-        paper: (str)
-            the paper to use as the source for list of genes
-                - 'any': default
-                - 'Lake'
-                - 'Habib'
-                - 'Li'
         """
         self.neuron_type = neuron_type
         self.parcellation_name = parcellation_name
+        self.exc_regions = exc_regions
         self.discard_rh = discard_rh
-        self.paper = paper
-        self.dir_path = os.path.join(
-            OUTPUT_DIR, 'ei', 'gene_expression',
-            f'{neuron_type.lower()}_parc-{parcellation_name}'\
-            f'_paper-{self.paper}'\
-            + ('_rh_discarded' if discard_rh else '')
-        )
-        self.file_path = os.path.join(
-            self.dir_path, f'parcellated_mean_expression.csv'
-        )
         LABELS = {
-            'Neuro-Ex': 'Excitatory neurons gene expression',
-            'Neuro-In': 'Inhibitory neurons gene expression'
+            'exc': 'Excitatory neuron subtypes gene expression maps',
+            'inh': 'Inhibitory neuron subtypes gene expression maps',
         }
         self.label = LABELS.get(self.neuron_type)
-        self.columns = [self.label]
         CMAPS = {
-            'Neuro-Ex': 'YlOrRd',
-            'Neuro-In': 'YlGnBu'
+            'exc': 'YlOrRd',
+            'inh': 'YlGnBu'
         }
         self.cmap = CMAPS[self.neuron_type]
-        if os.path.exists(self.file_path):
-            self.parcellated_data = pd.read_csv(self.file_path, index_col='parcel')
-        else:
-            os.makedirs(self.dir_path, exist_ok=True)
-            self.parcellated_data = self._create()
-            self.parcellated_data.to_csv(self.file_path, index_label='parcel')
-        self.parcellated_data.columns = self.columns
-        self.surf_data = helpers.deparcellate(
-            self.parcellated_data, 
-            self.parcellation_name,
-            downsampled = True
-            )
+        self.dir_path = os.path.join(
+            OUTPUT_DIR, 'ei',
+            (f'{neuron_type}'
+            + f'_parc-{self.parcellation_name}'
+            + ('_rh_discarded' if discard_rh else '')
+            ))
+        os.makedirs(self.dir_path, exist_ok=True)
+        self._create()
 
     def _create(self):
         """
-        Creates the neuron type gene expression maps by
-        taking the average expression over all genes
-        associated with the cell type
+        Loads the gene lists, aggregates their regional expression,
+        and projects to surface
         """
-        # load cell type gene list from Seidlitz2020
-        seidlitz_lists = pd.read_csv(os.path.join(SRC_DIR, 'cell_types_genes_Seidlitz2020.csv'),delimiter=";")
-        mask = (seidlitz_lists['Class'] == self.neuron_type)
-        if self.paper != 'any':
-            mask = mask & (seidlitz_lists['Paper'] == self.paper)
-        gene_list = (
-            seidlitz_lists[mask]
-            .loc[:, 'Genes':].to_numpy().flatten()
-        )
-        self.gene_list = np.unique(gene_list[~pd.isnull(gene_list)]).tolist()
-        cell_type_expression = datasets.fetch_aggregate_gene_expression(
-            self.gene_list,
-            self.parcellation_name,
-            discard_rh = self.discard_rh,
-            merge_donors = 'genes',
-        )
-        return cell_type_expression
+        subtypes_genes = pd.read_csv(
+            os.path.join(
+                SRC_DIR, f'{self.neuron_type}_subtypes_genes_Lake2016.csv'
+            ), delimiter=";", decimal=",").dropna()
+        self.parcellated_data = pd.DataFrame()
+        for subtype, subtype_df in subtypes_genes.groupby('cluster'):
+            print(subtype)
+            subtype_genes = subtype_df.set_index('Gene').loc[:, subtype]
+            self.parcellated_data.loc[:, subtype] = datasets.fetch_aggregate_gene_expression(
+                subtype_genes,
+                parcellation_name = self.parcellation_name, 
+                discard_rh = self.discard_rh,
+                merge_donors = 'genes',
+                ibf_threshold=0.25,
+                )
+        self.parcellated_data = self.parcellated_data.dropna()
+        self.surf_data = helpers.deparcellate(
+            self.parcellated_data, self.parcellation_name, downsampled=True
+            )
+        self.columns = self.parcellated_data.columns
+
+
+
 
 ########################
 # Categorical surfaces #
@@ -1659,7 +1438,7 @@ class CatCorticalSurface(CorticalSurface):
         parcellated_data.columns = columns
         # add the category of parcels to the parcellated data
         is_downsampled = (surf_data.shape[0] == datasets.N_VERTICES_HEM_BB_ICO5*2)
-        parcellated_data.loc[:, self.label] = self.load_parcels_categories(parcellation_name, downsampled=is_downsampled)
+        parcellated_data.loc[:, self.label] = self._load_parcels_categories(parcellation_name, downsampled=is_downsampled)
         # exclude unwanted categories
         parcellated_data = parcellated_data[~parcellated_data[self.label].isin(self.excluded_categories)]
         parcellated_data[self.label] = parcellated_data[self.label].cat.remove_unused_categories()
@@ -1667,12 +1446,12 @@ class CatCorticalSurface(CorticalSurface):
         parcellated_data = parcellated_data.dropna()
         return parcellated_data
 
-    def _plot_raincloud(self, parcellated_data, column, out_dir):
+    def _plot_raincloud(self, parcellated_data, column, out_dir=None):
         """
         Plots the raincloud of the `column` from `parcellated_data`
         across `self.included_categories` and saves it in `out_dir`
         """
-        fig, ax = plt.subplots(figsize=(6, 4))
+        fig, ax = plt.subplots(figsize=(6, 4), dpi=192)
         ax = ptitprince.RainCloud(
             data=parcellated_data, 
             y=column,
@@ -1682,14 +1461,15 @@ class CatCorticalSurface(CorticalSurface):
             orient = 'h', move = 0.2, alpha = 0.4,
             ax=ax)
         sns.despine(ax=ax, offset=10, trim=True)
-        fig.tight_layout()
-        fig.savefig(os.path.join(out_dir, f'{column}_raincloud'), dpi=192)
         # colorbar with the correct vmin and vmax
         clbar_fig = helpers.make_colorbar(
             ax.get_xticks()[0], ax.get_xticks()[-1], 
             figsize=(4, 4), orientation='horizontal')
         clbar_fig.tight_layout()
-        clbar_fig.savefig(os.path.join(out_dir, f'{column}_raincloud_clbar'), dpi=192)
+        if out_dir:
+            fig.tight_layout()
+            fig.savefig(os.path.join(out_dir, f'{column}_raincloud'), dpi=192)
+            clbar_fig.savefig(os.path.join(out_dir, f'{column}_raincloud_clbar'), dpi=192)
 
     def _plot_binned_stacked_bar(self, parcellated_data, column, out_dir, nbins):
         """
@@ -1705,7 +1485,7 @@ class CatCorticalSurface(CorticalSurface):
                             .size().unstack(fill_value=0))
         bins_categories_freq = bins_categories_counts.divide(bins_categories_counts.sum(axis=1), axis=0)
         #> plot stacked bars at each bin showing freq of the cortical categories
-        fig, ax = plt.subplots(figsize=(6, 4))
+        fig, ax = plt.subplots(figsize=(6, 4), dpi=192)
         ax.bar(
             x = bins_categories_freq.index,
             height = bins_categories_freq.iloc[:, 0],
@@ -1729,12 +1509,13 @@ class CatCorticalSurface(CorticalSurface):
         for _, spine in ax.spines.items():
             spine.set_visible(False)
         ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
-        fig.tight_layout()
-        fig.savefig(os.path.join(out_dir, f'{column}_stacked_bar'), dpi=192)
         clfig = helpers.make_colorbar(
             parcellated_data[column].min(), parcellated_data[column].max(),
             bins=nbins, orientation='horizontal', figsize=(6,4))
-        clfig.savefig(os.path.join(out_dir, f'{column}_stacked_bar_clbar'), dpi=192)
+        if out_dir:
+            fig.tight_layout()
+            fig.savefig(os.path.join(out_dir, f'{column}_stacked_bar'), dpi=192)
+            clfig.savefig(os.path.join(out_dir, f'{column}_stacked_bar_clbar'), dpi=192)
 
     def _anova(self, parcellated_data, column, output='text', force_posthocs=False):
         """
@@ -1787,7 +1568,7 @@ class CatCorticalSurface(CorticalSurface):
         else:
             return anova_res
 
-    def compare(self, other, other_columns=None, nbins=10):
+    def compare(self, other, other_columns=None, nbins=10, plot_type='both', save=False):
         """
         Compares the difference of `other.surf_data` across `self.included_categories` and 
         plots it as raincloud or stacked bar plots
@@ -1798,6 +1579,11 @@ class CatCorticalSurface(CorticalSurface):
         other_columns: (list of str | None)
         nbins: (int)
             number of bins in the binned stacked bar plot
+        plot_type: (str)
+            - 'both'
+            - 'raincloud'
+            - 'stacked_bar'
+        save: (bool)
         """
         assert self.parcellation_name is not None
         assert self.parcellation_name == other.parcellation_name
@@ -1807,100 +1593,48 @@ class CatCorticalSurface(CorticalSurface):
             other.parcellated_data.loc[:, other_columns], # continous surface
             self.parcellated_data # categories
             ], axis=1).dropna()
-        # specify output dir
-        out_dir = os.path.join(other.dir_path, f'association_{self.label.lower().replace(" ", "_")}')
-        os.makedirs(out_dir, exist_ok=True)
+        if save:
+            # specify output dir
+            out_dir = os.path.join(other.dir_path, f'association_{self.label.lower().replace(" ", "_")}')
+            os.makedirs(out_dir, exist_ok=True)
+        else:
+            out_dir = None
         # investigate the association of gradient values and cortical categories (visually and statistically)
         anova_res_str = "ANOVA Results\n--------\n"
         for column in other_columns:
             # 1) Raincloud plot
-            self._plot_raincloud(parcellated_data, column, out_dir)
+            if plot_type in ['both', 'raincloud']:
+                self._plot_raincloud(parcellated_data, column, out_dir)
             # 2) Binned stacked bar plot
-            self._plot_binned_stacked_bar(parcellated_data, column, out_dir, nbins)
+            if plot_type in ['both', 'stacked_bar']:
+                self._plot_binned_stacked_bar(parcellated_data, column, out_dir, nbins)
             # ANOVA
             anova_res_str += self._anova(parcellated_data, column, output='text')
         print(anova_res_str)
-        with open(os.path.join(out_dir, 'anova.txt'), 'w') as anova_res_file:
-            anova_res_file.write(anova_res_str)
+        if out_dir:
+            with open(os.path.join(out_dir, 'anova.txt'), 'w') as anova_res_file:
+                anova_res_file.write(anova_res_str)
     
-    def spin_compare(self, other, other_columns=None, n_perm=1000):
-        """
-        Compares the difference of `other.surf_data` across `self.included_categories` 
-        while correcting for spatial autocorrelation
-
-        Note: This is very computationally intensive and slow.
-
-        Parameters
-        ----------
-        other: (ContCorticalSurface)
-        parcellation_name: (str)
-        n_perm: (int)
-
-        Returns
-        ---------
-        spin_pvals: (pd.DataFrame) n_stats (e.g. F, EU3-EU2, ...) x n_columns
-        """
-        # create downsampled bigbrain spin permutations
-        assert n_perm <= 1000
-        helpers.create_bigbrain_spin_permutations(n_perm=n_perm, is_downsampled=True)
-        logging.info(f"Comparing surface data across {self.label} with spin test ({n_perm} permutations)")
-        if other_columns is None:
-            other_columns = other.columns
-            surf_data = other.surf_data
-        else:
-            surf_data = pd.DataFrame(other.surf_data, columns=other.columns).loc[:, other_columns].values
-        # split the other surface in two hemispheres
-        split_surf_data = {
-            'L': surf_data[:surf_data.shape[0]//2],
-            'R': surf_data[surf_data.shape[0]//2:]
-        }
-        # load the spin permutation indices
-        spin_indices = np.load(os.path.join(
-            SRC_DIR, f'tpl-bigbrain_desc-spin_indices_downsampled_n-{n_perm}.npz'
-            )) # n_perm * n_vert arrays for 'lh' and 'rh'
-        # create the lh and rh surrogates and concatenate them
-        surrogates = np.concatenate([
-            split_surf_data['L'][spin_indices['lh']], 
-            split_surf_data['R'][spin_indices['rh']]
-            ], axis=1) # n_perm * n_vert * n_features
-        # add the original surf_data at the beginning
-        downsampled_surf_data_and_surrogates = np.concatenate([
-            surf_data[np.newaxis, :, :],
-            surrogates
-            ], axis = 0)
-        all_anova_results = {column:[] for column in other_columns}
-        for perm in range(n_perm+1):
-            logging.info(perm)
-            # get the F stat and T stats for each permutation
-            curr_data = downsampled_surf_data_and_surrogates[perm, :, :]
-            curr_parcelated_data = self._parcellate_and_categorize(curr_data, other_columns, other.parcellation_name)
-            for column in other_columns:
-                all_anova_results[column].append(
-                    self._anova(curr_parcelated_data, column, output='stats', force_posthocs=True)
-                )
-        spin_pvals = pd.DataFrame()
-        for column in other_columns:
-            # calculate the two-sided non-parametric p-values as the
-            #  ratio of permutated F stat and T stats more extreme
-            #  to the non-permutated values (in index -1)
-            curr_column_res = pd.concat(all_anova_results[column], axis=1).T # n_perm x n_stats
-            spin_pvals.loc[:, column] = (np.abs(curr_column_res.iloc[:-1, :]) >= np.abs(curr_column_res.iloc[-1, :])).mean(axis=0)
-        return spin_pvals
-
 class CorticalTypes(CatCorticalSurface):
-    """
-    Map of cortical types
-    """
-    label = 'Cortical Type'
-    short_label = 'ctypes'
-    dir_path = os.path.join(OUTPUT_DIR, 'ctypes')
     def __init__(self, exc_regions='adysgranular', downsampled=True, parcellation_name=None):
         """
-        Loads the map of cortical types
+        Map of cortical types
+
+        Parameters
+        ---------
+        exc_regions: (None | str)
+            - 'adysgranular' [default]
+            - 'allocortex'
+            - None
+        downsampled: (bool)
+        parcellation_name: (str)
         """
         self.exc_regions = exc_regions
         self.parcellation_name = parcellation_name
-        self.colors = sns.color_palette("RdYlGn_r", 6)
+        self.label = 'Cortical Type'
+        self.short_label = 'ctypes'
+        self.cmap = 'RdYlGn_r' # for surface map
+        self.colors = sns.color_palette("RdYlGn_r", 6) # for raincloud / barplot
         if self.exc_regions == 'adysgranular':
             self.included_categories = ['EU1', 'EU2', 'EU3', 'KO']
             self.excluded_categories = [np.NaN, 'ALO', 'AG', 'DG']
@@ -1913,6 +1647,8 @@ class CorticalTypes(CatCorticalSurface):
             self.excluded_categories = [np.NaN]
             self.colors = sns.color_palette("RdYlGn_r", 7)
         self.n_categories = len(self.included_categories)
+        self.dir_path = os.path.join(OUTPUT_DIR, 'ctypes')
+        os.makedirs(self.dir_path, exist_ok=True)
         # load unparcellated surface data
         cortical_types_map = datasets.load_cortical_types(downsampled=downsampled)
         self.surf_data = cortical_types_map.cat.codes.values.reshape(-1, 1).astype('float')
@@ -1925,15 +1661,13 @@ class CorticalTypes(CatCorticalSurface):
                 ].cat.remove_unused_categories().to_frame()
             self.parcellated_data.columns = self.columns
 
-    def load_parcels_categories(self, parcellation_name, downsampled):
+    def _load_parcels_categories(self, parcellation_name, downsampled):
         return datasets.load_cortical_types(parcellation_name, downsampled=downsampled)
     
 class YeoNetworks(CatCorticalSurface):
     """
     Map of Yeo networks
     """
-    label = 'Resting state network'
-    short_label = 'yeo'
     def __init__(self, parcellation_name=None, downsampled=True):
         """
         Loads the map of Yeo networks
@@ -1945,6 +1679,8 @@ class YeoNetworks(CatCorticalSurface):
             'Ventral attention', 'Limbic', 'Frontoparietal', 'Default'
             ]
         self.parcellation_name = parcellation_name
+        self.label = 'Resting state network'
+        self.short_label = 'rsn'
         self.n_categories = len(self.included_categories)
         if self.parcellation_name is not None:
             self.parcellated_data = datasets.load_yeo_map(self.parcellation_name, downsampled=downsampled).rename(self.label)
@@ -1961,13 +1697,7 @@ class YeoNetworks(CatCorticalSurface):
             self.surf_data[yeo_map.isin(self.excluded_categories), 0] = np.NaN
         self.columns = [self.label]
 
-    def load_parcels_categories(self, parcellation_name, downsampled):
-        """
-        Load categories of parcels with names
-        (different from self.parcellated_data where the names of
-        categories have been removed)
-        """
-        #TODO: is this really necessary?
+    def _load_parcels_categories(self, parcellation_name, downsampled):
         return datasets.load_yeo_map(parcellation_name, downsampled=downsampled)
 
     def _load_colormap(self):
@@ -2023,7 +1753,10 @@ class MicrostructuralClusters(CatCorticalSurface):
             .astype('category')
         )
 
-    def plot_laminar_profiles(self):
+    def plot_laminar_profiles(self, save=False):
+        """
+        Plot the thickness profiles for the clusters
+        """
         assert self.matrix_obj.input_type == 'thickness'
         laminar_data = self.matrix_obj._parcellated_input_data.copy()
         laminar_data.columns = [f'Layer {idx+1}' for idx in range(6)]
@@ -2031,7 +1764,7 @@ class MicrostructuralClusters(CatCorticalSurface):
         laminar_data['km_cluster'] = self.parcellated_data.astype('int')
         laminar_data = laminar_data.sort_values('km_cluster').reset_index(drop=True)
         colors = datasets.LAYERS_COLORS['bigbrain']
-        fig, ax = plt.subplots(figsize=(12, 4))
+        fig, ax = plt.subplots(figsize=(12, 4), dpi=192)
         # plot cluster identifiers at the bottom
         cluster_identifier_height = 0.05
         for cluster_id in range(1, self.n_categories+1):
@@ -2062,7 +1795,7 @@ class MicrostructuralClusters(CatCorticalSurface):
             ymax=1+cluster_identifier_height,
             color='grey')
         ax.axis('off')
-        fig.tight_layout()
-        fig.savefig(os.path.join(self.dir_path, 'laminar_profile.png'), dpi=192)
-
-
+        if save:
+            fig.tight_layout()
+            fig.savefig(os.path.join(self.dir_path, 'laminar_profile.png'), dpi=192)
+        return ax
