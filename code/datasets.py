@@ -913,3 +913,79 @@ def fetch_aggregate_gene_expression(gene_list, parcellation_name, discard_rh=Tru
         )
     else:
         return aggregate_expressions
+
+def fetch_laminar_cellular_features(parcellation_name=None):
+    """
+    Fetches the layer-specific cellular-level data from selected
+    samples of the BigBrain, including cellular density, size
+    and count.
+    Data is available in 
+    https://search.kg.ebrains.eu/instances/f06a2fd1-a9ca-42a3-b754-adaa025adb10
+
+    Parameters
+    ---------
+    parcellation_name: (str | None)
+        if provided all the samples within a parcel are merged
+
+    Returns
+    ------
+    cellular_features: (dict of pd.DataFrame)
+        including 'samples', 'density', 'size', 'count'
+    """
+    # load the csv files if they've been created before
+    cellular_features_paths = {}
+    for name in ['samples', 'density', 'size', 'count']:
+        cellular_features_paths[name] = os.path.join(SRC_DIR, f'tpl-bigbrain_parc-{parcellation_name}_desc-cellular_{name}.csv')
+    cellular_features = {}
+    if all([os.path.exists(path) for path in cellular_features_paths.values()]):
+        for name, path in cellular_features_paths.items():
+            cellular_features[name] = pd.read_csv(path, index_col=0)
+        return cellular_features.values()
+    # importing siibra within the function as it's a big package
+    import siibra
+    # download the cellular features data
+    atlas = siibra.atlases['human']
+    julich_brain = atlas.get_parcellation('julich 2.9')
+    all_features = siibra.get_features(julich_brain, siibra.modalities.CorticalCellDistribution)
+    for name in cellular_features_paths.keys():
+        cellular_features[name] = pd.DataFrame()
+    # extract the data needed from each sample
+    for i, feature in enumerate(all_features):
+        cellular_features['samples'].loc[i, ['x', 'y', 'z']] = feature.location.coordinate
+        cellular_features['samples'].loc[i, 'brain_area'] = feature.info['brain_area']
+        cellular_features['samples'].loc[i, 'section_id'] = feature.info['section_id']
+        for layer in range(1, 7):
+            cellular_features['density'].loc[i, layer] = feature.layer_density(layer)
+        cellular_features['size'].loc[i, range(1, 7)] = feature.cells.groupby('layer')['area'].mean().loc[1:7]
+        cellular_features['count'].loc[i, range(1, 7)] = feature.cells.groupby('layer').count().loc[1:7, 'instance label']
+    # assign each sample to its closest vertex on bigbrain surface
+    for idx, row in cellular_features['samples'].iterrows():
+        if row.iloc[0] >= 0:
+            hemi = 'R'
+        else:
+            hemi = 'L'
+        cellular_features['samples'].loc[idx, 'bb_vertex'] = np.linalg.norm(
+            row.iloc[:3].values[np.newaxis, :].astype('float16')
+            - nilearn.surface.load_surf_mesh(load_mesh_paths()[hemi]).coordinates, 
+            keepdims=True, axis=1
+        ).argmin()
+        if hemi == 'R':
+            cellular_features['samples'].loc[idx, 'bb_vertex'] += N_VERTICES_HEM_BB_ICO5
+    cellular_features['samples']['bb_vertex'] = cellular_features['samples']['bb_vertex'].astype('int')
+    # assign each vertex to a parcel if parcellation_name is provided
+    if parcellation_name:
+        cellular_features['samples']['parc'] = load_parcellation_map(parcellation_name, True, downsampled=True)[cellular_features['samples']['bb_vertex']]
+        grouper = 'parc'
+    else:
+        grouper = 'bb_vertex'
+    # merge multiple samples per vertex (31 of 111 samples)
+    unmerged_samples = cellular_features['samples'].copy()
+    cellular_features['samples'] = cellular_features['samples'].groupby(grouper).mean()
+    for name in ['density', 'size', 'count']:
+        cellular_features[name] = pd.concat(
+            [cellular_features[name], unmerged_samples[grouper]]
+            , axis=1).groupby(grouper).mean()
+    # save
+    for name, df in cellular_features.items():
+        df.to_csv(cellular_features_paths[name])
+    return cellular_features.values()

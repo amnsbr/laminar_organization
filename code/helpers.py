@@ -919,6 +919,33 @@ def plot_csea_res_table(csea_res, pSI_thresh=0.05, color='red', cmap=None):
     ax.set_ylim([0, 60])
     ax.set_xticklabels(stages_order, rotation=90);
 
+def plot_stacked_bar(df, colors):
+    """
+    Plots stacked bar plot.
+
+    Parameters
+    ---------
+    df: (pd.DataFrame)
+        columns indicate height and are ordered from bottom to top
+        index indicates location of each stacked bar along x axis
+    """
+    fig, ax = plt.subplots(figsize=(6, 4), dpi=192)
+    ax.bar(
+        x = df.index,
+        height = df.iloc[:, 0],
+        width = 1,
+        color=colors[0],
+        )
+    for idx in range(1, df.shape[1]):
+        ax.bar(
+            x = df.index,
+            height = df.iloc[:, idx],
+            bottom = df.cumsum(axis=1).iloc[:, idx-1],
+            width = 1,
+            color=colors[idx],
+            )
+    return ax
+
 #### Spin permutation functions ####
 def create_bigbrain_spin_permutations(is_downsampled=True, n_perm=1000, batch_size=20):
     """

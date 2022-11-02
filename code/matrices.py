@@ -206,11 +206,11 @@ class Matrix:
                 text_x = ax.get_xlim()[0]+(ax.get_xlim()[1]-ax.get_xlim()[0])*0.05
                 text_y = ax.get_ylim()[0]+(ax.get_ylim()[1]-ax.get_ylim()[0])*0.90
                 if test == 'pearson':
-                    text = f'r = {coef:.2f}'
+                    text = f'r = {coef:.2f}; p = {p_val:.2f}'
                 else:
-                    text = f'rho = {coef:.2f}'
+                    text = f'rho = {coef:.2f}; p = {p_val:.2f}'
                 ax.text(text_x, text_y, text,
-                        color='black', size=16,
+                        color='black', size=12,
                         multialignment='left')
             ax.set_xlabel(self.label)
             ax.set_ylabel(other.label)
@@ -331,7 +331,7 @@ class Matrix:
             )
             
     def associate_categorical_surface(self, categorical_surface, stats=True, 
-            null_method='shuffle', n_perm=1000, save=False):
+            null_method='spin', n_perm=1000, save=False):
         """
         Calculates within and between categorical surface of the matrix 
         values and plots a collapsed matrix by its categories. 

@@ -323,6 +323,24 @@ class ContCorticalSurface(CorticalSurface):
     def ahba_pls(self, columns, n_genes=500, n_components=1, brain_specific=False):
         """
         Performs PLS between columns of surface and AHBA gene expression data
+
+        Parameters
+        ---------
+        columns: (list of str)
+        n_genes: (int)
+            number of genes with the highest absolute weight to select
+        n_components: (int)
+            number of PLS components
+        brain_specific: (bool)
+            limit the genes to brain-specific ones
+
+        Returns
+        -------
+        top_genes: (list of dict)
+            each element corresponds to a PLS component and includes
+            list of top genes with 'pos' and 'neg' weights
+        pls: (sklearn.cross_decomposition.PLSRegression)
+            fitted pls model
         """
         ahba_df = datasets.fetch_ahba_data(self.parcellation_name, ibf_threshold=0.5, missing='centroids')['all']
         if brain_specific:
