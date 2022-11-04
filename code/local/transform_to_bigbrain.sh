@@ -1,4 +1,6 @@
 #!/bin/bash
+# Transformations to bigbrain space
+# TODO: With helpers.surfacte_to_surface_transform this can be removed
 
 # Specify directories
 cd "$(dirname "$0")/../../src"
