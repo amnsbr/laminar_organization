@@ -159,7 +159,7 @@ def parcellate(surface_data, parcellation_name, averaging_method='median',
         )
         # operate on groupby object if needed
         if averaging_method is None:
-            parcellated_data = parcellated_vertices
+            parcellated_data = parcellated_vertices_groupby
         else:
             if averaging_method == 'median':
                 parcellated_data = parcellated_vertices_groupby.median()
@@ -795,7 +795,6 @@ def _plot_brainspace(surface_data, mesh_paths, filename, layout_style, cmap, vra
         surface_data,
         layout_style = layout_style,
         cmap = cmap, color_range=vrange,
-        # TODO: change size and zoom based on layout 
         size=size, zoom=zoom,
         interactive=False, embed_nb=embed_nb,
         screenshot=screenshot, filename=filename, 

@@ -91,30 +91,30 @@ class CorticalSurface:
         -------
         plots: (list of figure objects or the path to them)
         """
+        surf_data = pd.DataFrame(self.surf_data, columns=self.columns)
         if columns is None:
             columns = self.columns
-        surf_data = pd.DataFrame(self.surf_data, columns=self.columns)
         plots = []
         for column in columns:
             # TODO: some of the following transformation never / hardly ever happen
             if plot_downsampled:
                 if (self.parcellation_name is None):
                     if (self.surf_data.shape[0]==datasets.N_VERTICES_HEM_BB*2):
-                        column_data = helpers.downsample(surf_data.loc[:, column])
+                        column_data = helpers.downsample(surf_data.loc[:, column].values)
                     else:
-                        column_data = surf_data.loc[:, column]
+                        column_data = surf_data.loc[:, column].values
                 else:
                     column_data = helpers.deparcellate(self.parcellated_data.loc[:, column], 
-                        self.parcellation_name, space=self.space)
+                        self.parcellation_name, space=self.space, downsampled=True)
             else:
                 if (self.parcellation_name is None):
                     if (self.surf_data.shape[0]==datasets.N_VERTICES_HEM_BB_ICO5*2):
-                        column_data = helpers.upsample(surf_data.loc[:, column])
+                        column_data = helpers.upsample(surf_data.loc[:, column].values)
                     else:
-                        column_data = surf_data.loc[:, column]
+                        column_data = surf_data.loc[:, column].values
                 else:
                     column_data = helpers.deparcellate(self.parcellated_data.loc[:, column], 
-                        self.parcellation_name, space=self.space)
+                        self.parcellation_name, space=self.space, downsampled=False)
             label_text = ({label_loc:[column]} if label_loc else None)
             if cmap is None: cmap = self.cmap
             plot = helpers.plot_surface(
@@ -138,9 +138,9 @@ class ContCorticalSurface(CorticalSurface):
     General class for continous cortical surfaces
     """
     def correlate(self, other, parcellated=True, n_perm=1000,
-                 x_columns=None, y_columns=None, axis_off=False,
-                 sort_barplot=False, parcellated_method='variogram',
-                 stats_on_regplot=True, fdr_axis=None, save_files=False):
+                 x_columns=None, y_columns=None, parcellated_method='variogram',
+                 fdr_axis=None, barplot=True, regplot=True, axis_off=False,
+                 sort_barplot=False, stats_on_regplot=True,  save_files=False):
         """
         Calculate the correlation of surface maps with permutation test
         (with surrogates created using spins or variograms) and plot 
@@ -253,71 +253,73 @@ class ContCorticalSurface(CorticalSurface):
             # clean and save the results
             coefs.to_csv(os.path.join(out_dir, 'coefs.csv'))
             pvals.to_csv(os.path.join(out_dir, 'pvals.csv'))
-        # bar plots for association of each x_column with
-        # all y_columns
-        sns.set_style("ticks")
-        if len(y_columns) > 1: # only makes sense if there are > 1 y_columns
+        if barplot:
+            # bar plots for association of each x_column with
+            # all y_columns
+            sns.set_style("ticks")
+            if len(y_columns) > 1: # only makes sense if there are > 1 y_columns
+                for x_column in x_columns:
+                    curr_coefs = coefs.loc[:, x_column]
+                    curr_pvals = pvals.loc[:, x_column]
+                    if sort_barplot:
+                        curr_coefs = curr_coefs.sort_values()
+                        curr_pvals = curr_pvals.loc[curr_coefs.index]
+                    # set the bar color based on p-value
+                    # white = non-sig; darker = lower p-val
+                    colors=[(1, 1, 1, 0)]*len(y_columns)
+                    for i, y_column in enumerate(curr_pvals.index):
+                        if curr_pvals[y_column] < 0.05:
+                            colors[i] = tuple([curr_pvals[y_column]/0.05]*3 + [0])
+                    fig, ax = plt.subplots(figsize=(3, 2), dpi=192)
+                    sns.barplot(
+                        data=curr_coefs.to_frame(), 
+                        x=x_column, y=curr_coefs.index, 
+                        palette=colors, edgecolor=".2", ax=ax)
+                    ax.axvline(0, color='black')
+                    sns.despine(offset=1, left=True, trim=False, ax=ax)
+                    ax.set_xlim((-1, 1))
+                    ax.set_ylabel('')
+                    ax.set_xlabel(f'Correlation with {x_column}')
+                    if save_files:
+                        fig.tight_layout()
+                        fig.savefig(
+                            os.path.join(out_dir, f'barplot_{x_column.lower().replace(" ", "_")}.png'),
+                            dpi=192)
+        if regplot:
+            # regression plots
             for x_column in x_columns:
-                curr_coefs = coefs.loc[:, x_column]
-                curr_pvals = pvals.loc[:, x_column]
-                if sort_barplot:
-                    curr_coefs = curr_coefs.sort_values()
-                    curr_pvals = curr_pvals.loc[curr_coefs.index]
-                # set the bar color based on p-value
-                # white = non-sig; darker = lower p-val
-                colors=[(1, 1, 1, 0)]*len(y_columns)
-                for i, y_column in enumerate(curr_pvals.index):
-                    if curr_pvals[y_column] < 0.05:
-                        colors[i] = tuple([curr_pvals[y_column]/0.05]*3 + [0])
-                fig, ax = plt.subplots(figsize=(3, 2), dpi=192)
-                sns.barplot(
-                    data=curr_coefs.to_frame(), 
-                    x=x_column, y=curr_coefs.index, 
-                    palette=colors, edgecolor=".2", ax=ax)
-                ax.axvline(0, color='black')
-                sns.despine(offset=1, left=True, trim=False, ax=ax)
-                ax.set_xlim((-1, 1))
-                ax.set_ylabel('')
-                ax.set_xlabel(f'Correlation with {x_column}')
-                if save_files:
-                    fig.tight_layout()
-                    fig.savefig(
-                        os.path.join(out_dir, f'barplot_{x_column.lower().replace(" ", "_")}.png'),
-                        dpi=192)
-        # regression plots
-        for x_column in x_columns:
-            for y_column in y_columns:
-                fig, ax = plt.subplots(figsize=(4, 4), dpi=192)
-                sns.regplot(
-                    x=x_data.loc[:,x_column], 
-                    y=y_data.loc[:,y_column],
-                    scatter_kws=dict(
-                        alpha=(0.8 if parcellated else 0.2), 
-                        s=5, color='grey'),
-                    line_kws=dict(color='red'),
-                    ax=ax)
-                sns.despine(offset=10, trim=True, ax=ax)
-                ax.set_xlabel(x_column)
-                ax.set_ylabel(y_column)
-                if stats_on_regplot:
-                    # add correlation coefficients and p vals on the figure
-                    text_x = ax.get_xlim()[0]+(ax.get_xlim()[1]-ax.get_xlim()[0])*0.05
-                    text_y = ax.get_ylim()[0]+(ax.get_ylim()[1]-ax.get_ylim()[0])*0.05
-                    ax.text(text_x, text_y, 
-                            f'r = {coefs.loc[y_column, x_column]:.2f}; $\mathregular{{p_{{spin}}}}$ = {pvals.loc[y_column, x_column]:.2f}',
-                            color='black',
-                            size=14,
-                            multialignment='left')
-                if axis_off:
-                    ax.axis('off')
-                if save_files:
-                    fig.tight_layout()
-                    fig.savefig(
-                        os.path.join(
-                            out_dir, 
-                            f'{x_column.lower().replace(" ", "_")}-'\
-                            + f'{y_column.lower().replace(" ", "_")}.png'),
-                        dpi=192)
+                for y_column in y_columns:
+                    fig, ax = plt.subplots(figsize=(4, 4), dpi=192)
+                    sns.regplot(
+                        x=x_data.loc[:,x_column], 
+                        y=y_data.loc[:,y_column],
+                        scatter_kws=dict(
+                            alpha=(0.8 if parcellated else 0.2), 
+                            s=5, color='grey'),
+                        line_kws=dict(color='red'),
+                        ax=ax)
+                    sns.despine(offset=10, trim=True, ax=ax)
+                    ax.set_xlabel(x_column)
+                    ax.set_ylabel(y_column)
+                    if stats_on_regplot:
+                        # add correlation coefficients and p vals on the figure
+                        text_x = ax.get_xlim()[0]+(ax.get_xlim()[1]-ax.get_xlim()[0])*0.05
+                        text_y = ax.get_ylim()[0]+(ax.get_ylim()[1]-ax.get_ylim()[0])*0.05
+                        ax.text(text_x, text_y, 
+                                f'r = {coefs.loc[y_column, x_column]:.2f}; $\mathregular{{p_{{spin}}}}$ = {pvals.loc[y_column, x_column]:.2f}',
+                                color='black',
+                                size=14,
+                                multialignment='left')
+                    if axis_off:
+                        ax.axis('off')
+                    if save_files:
+                        fig.tight_layout()
+                        fig.savefig(
+                            os.path.join(
+                                out_dir, 
+                                f'{x_column.lower().replace(" ", "_")}-'\
+                                + f'{y_column.lower().replace(" ", "_")}.png'),
+                            dpi=192)
         return coefs, pvals
 
     def ahba_pls(self, columns, n_genes=500, n_components=1, brain_specific=False):
@@ -453,10 +455,10 @@ class LaminarFeatures(ContCorticalSurface):
             )
         features.append(rel_laminar_thickness)
         self.columns += [f'Layer {num} relative thickness' for num in range(1, 7)]
-        #> Deep thickness ratio
-        deep_thickness_ratio = rel_laminar_thickness[:, 3:].sum(axis=1)[:, np.newaxis]
-        features.append(deep_thickness_ratio)
-        self.columns += ['Deep laminar thickness ratio']
+        #> Superficial thickness ratio
+        superficial_thickness_ratio = rel_laminar_thickness[:, :3].sum(axis=1)[:, np.newaxis]
+        features.append(superficial_thickness_ratio)
+        self.columns += ['Superficial laminar thickness ratio']
         #> Laminar densities
         laminar_density = datasets.load_laminar_density(exc_regions=self.exc_regions)
         laminar_density = np.concatenate(
@@ -1197,7 +1199,9 @@ class Coordinates(ContCorticalSurface):
             nilearn.surface.load_surf_mesh(meshes['R']).coordinates,
         ], axis=0)
         self.parcellated_data = helpers.parcellate(self.surf_data, self.parcellation_name, space=self.space)
-        self.columns = ['X', 'Y', 'Z']
+        # convert left-right to medial-lateral
+        self.parcellated_data.iloc[:, 0] = self.parcellated_data.iloc[:, 0].abs()
+        self.columns = ['Medial-Lateral', 'Posterior-Anterior', 'Inferior-Superior']
         self.parcellated_data.columns = self.columns
 
 
@@ -1352,7 +1356,7 @@ class EffectiveConnectivityMaps(ContCorticalSurface):
 
 
 class NeuronalSubtypesMaps(ContCorticalSurface):
-    def __init__(self, neuron_type, parcellation_name, exc_regions=None, 
+    def __init__(self, neuron_type, parcellation_name, 
                  discard_rh=True):
         """
         Aggregate gene expression pattern of excitatory and inhibitory 
@@ -1366,7 +1370,6 @@ class NeuronalSubtypesMaps(ContCorticalSurface):
             - exc
             - inh
         parcellation_name: (str)
-        exc_regions: (str | None)
         discard_rh: (bool)
             limit the map to the left hemisphere
             Note: For consistency with other functions the right
@@ -1375,7 +1378,6 @@ class NeuronalSubtypesMaps(ContCorticalSurface):
         """
         self.neuron_type = neuron_type
         self.parcellation_name = parcellation_name
-        self.exc_regions = exc_regions
         self.discard_rh = discard_rh
         LABELS = {
             'exc': 'Excitatory neuron subtypes gene expression maps',

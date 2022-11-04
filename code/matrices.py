@@ -533,7 +533,6 @@ class CurvatureSimilarityMatrix(Matrix):
         # note this is not saved
         if self.exc_regions:
             self.matrix = self._remove_parcels(self.exc_regions)
-        self.plot()
         
     def _create(self):
         """
@@ -573,6 +572,7 @@ class CurvatureSimilarityMatrix(Matrix):
             columns=pdfs.index,
             index=pdfs.index
         )
+        print("Calculating curvature similarity. This may take a while!")
         for parc_i, pdf_i in pdfs.iterrows():
             for parc_j, pdf_j in pdfs.iterrows():
                 if parc_i == parc_j:
@@ -1076,7 +1076,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
     def __init__(self, input_type, parcellation_name='sjh', 
         exc_regions='adysgranular', correct_curvature='smooth-10', 
         regress_out_geodesic_distance = False, relative = True,
-        similarity_metric='parcor',
+        similarity_metric='parcor', merge_layers=None,
         zero_out_negative=False, laminar_density=False):
         """
         Initializes laminar similarity matrix object
@@ -1105,6 +1105,9 @@ class MicrostructuralCovarianceMatrix(Matrix):
             - 'parcor': partial correlation with mean thickness pattern as covariate
             - 'euclidean': euclidean distance inverted and normalize to 0-1
             - 'pearson': Pearson's correlation coefficient
+        merge_layers: (None | list of list)
+            if provided it should be a nested list of the layer indices (0-5) 
+            that should be merged
         zero_out_negative: (bool)
             zero out negative values from the matrix
         laminar_density: (bool)
@@ -1122,6 +1125,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
         self.zero_out_negative = zero_out_negative
         self.relative = relative
         self.laminar_density = laminar_density
+        self.merge_layers = merge_layers
         # set the label based on input type
         SHORT_LABELS = {
             'thickness': 'LTC',
@@ -1282,6 +1286,11 @@ class MicrostructuralCovarianceMatrix(Matrix):
                 ~(self._parcellated_input_data.isna().any(axis=1))
             ].index
         self._parcellated_input_data = self._parcellated_input_data.loc[self.valid_parcels]
+        if self.merge_layers is not None:
+            layer_group_dfs = []
+            for layer_group in self.merge_layers:
+                layer_group_dfs.append(self._parcellated_input_data.iloc[:, layer_group].sum(axis=1))
+            self._parcellated_input_data = pd.concat(layer_group_dfs, axis=1)
 
     def _calculate_similarity(self, parcellated_input_data, transform=True):
         """
@@ -1308,7 +1317,6 @@ class MicrostructuralCovarianceMatrix(Matrix):
         # Calculate parcel-wise similarity matrix
         if self.similarity_metric in ['parcor', 'pearson']:
             if self.similarity_metric == 'parcor':
-                # calculate partial correlation
                 r_ij = np.corrcoef(parcellated_input_data)
                 mean_input_data = parcellated_input_data.mean()
                 r_ic = np.corrcoef(
@@ -1425,6 +1433,8 @@ class MicrostructuralCovarianceMatrix(Matrix):
             sub_dir += '_reg_out_gd'
         if self.exc_regions:
             sub_dir += f'_exc-{self.exc_regions}'
+        if self.merge_layers:
+            sub_dir += f'_merge-{"-".join(["".join(map(str, group)) for group in self.merge_layers])}'
         if self.zero_out_negative:
             sub_dir += f'_zero_negs'
         sub_dir += f'_metric-{self.similarity_metric}'

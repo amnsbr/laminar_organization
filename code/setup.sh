@@ -14,7 +14,7 @@ conda env create -f ${PROJECT_DIR}/code/environment.yml -p ${PROJECT_DIR}/lamina
 eval "$(conda shell.bash hook)" && \
 conda activate ${PROJECT_DIR}/laminar_gradients_conda && \
 conda install mesalib -y --channel conda-forge --override-channels --freeze-installed && \
-conda install vtk -y --channel conda-forge --override-channels --freeze-installed && \
+conda install vtk==9.1.0 -y --channel conda-forge --override-channels --freeze-installed && \
 ${PROJECT_DIR}/laminar_gradients_conda/bin/pip install brainspace==0.1.3
 
 
