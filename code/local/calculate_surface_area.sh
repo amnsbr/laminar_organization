@@ -13,5 +13,5 @@ if ! [ -f "${TOOLS_PATH}/civet-2.1.1.simg" ]; then
     cd $SRC_PATH
 
 eval "$(conda shell.bash hook)" && \
-conda activate ${PROJECT_DIR}/laminar_gradients_conda && \
-${PROJECT_DIR}/laminar_gradients_conda/bin/python ${HOME}/laminar_gradients/code/local/calculate_surface_area.py
+conda activate ${PROJECT_DIR}/env && \
+${PROJECT_DIR}/env/bin/python ${HOME}/laminar_gradients/code/local/calculate_surface_area.py

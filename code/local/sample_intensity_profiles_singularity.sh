@@ -79,7 +79,7 @@ if [[ ! -d "$TOOLS_PATH"/surface_tools/ ]] ; then
 fi
 cd "$TOOLS_PATH"/surface_tools/equivolumetric_surfaces/
 
-"${TOOLS_PATH}/../laminar_gradients_env/bin/python" generate_equivolumetric_surfaces.py "$upper_surf" "$lower_surf" "$num_surf" "$wd"/ --civet_singularity "$CIVET_PATH"
+"${TOOLS_PATH}/../env/bin/python" generate_equivolumetric_surfaces.py "$upper_surf" "$lower_surf" "$num_surf" "$wd"/ --civet_singularity "$CIVET_PATH"
 x=$(ls -t "$wd"/*.obj) # orders my time created
 for n in $(seq 1 1 "$num_surf") ; do
 	echo "$n"
@@ -90,4 +90,4 @@ for n in $(seq 1 1 "$num_surf") ; do
 done
 
 cd "$LOCAL_CODE_PATH"
-"${TOOLS_PATH}/../laminar_gradients_env/bin/python" compile_profiles.py "$wd" "$num_surf"
+"${TOOLS_PATH}/../env/bin/python" compile_profiles.py "$wd" "$num_surf"
