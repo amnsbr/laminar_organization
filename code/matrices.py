@@ -14,11 +14,8 @@ import statsmodels.stats.multitest
 import statsmodels.stats.anova
 import statsmodels.api as sm
 import cmcrameri.cm # color maps
-import bct
 import PIL
 import abagen
-import logging, sys
-logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 
 import helpers, datasets, surfaces
 
@@ -730,7 +727,8 @@ class DistanceMatrix(Matrix):
         ED_matrix = pd.DataFrame(ED_matrix, columns=parcels, index=parcels)
         return ED_matrix
 
-    def regress_out(self, other, save_plot=False, stats_on_plot=True):
+    def regress_out(self, other, plot=True, save_plot=False, stats_on_plot=True, 
+            spin_test=False, return_r2=False):
         """
         Regresses out GD matrix from another matrix (e.g. LTC)
         using a exponential fit
@@ -761,45 +759,62 @@ class DistanceMatrix(Matrix):
         # calculate R2
         r2 = 1 - (y_resid.var() / y.var())
         print("R2:", r2)
-        # plot the polynomial fit
-        sns.set_style('ticks')
-        fig, ax = plt.subplots(figsize=(6, 4), dpi=192)
-        ax = sns.scatterplot(gd, y, s=1, alpha=0.2, color='grey')
-        line_x = np.linspace(0, gd.max(), 500)
-        line_y = helpers.exponential_eval(line_x, *coefs)
-        ax.plot(line_x, line_y, color='red')
-        ax.set_xlabel('Geodesic distance')
-        ax.set_ylabel(other.label)
-        if stats_on_plot:
-            ax.text(
-                ax.get_xlim()[0]+(ax.get_xlim()[1]-ax.get_xlim()[0])*0.75,
-                ax.get_ylim()[0]+(ax.get_ylim()[1]-ax.get_ylim()[0])*0.90,
-                f'R2 = {r2:.2f}',
-                color='black', size=12,
-                multialignment='left')
-        if save_plot:
-            fig.tight_layout()
-            fig.savefig(other.file_path+'_gd_regression')
-        # convert it back to the matrix
-        lhalf_matrix = np.zeros_like(tril_index[0]).astype('float64')
-        lhalf_matrix[mask_idx] = y_resid
-        Y_RES = np.zeros_like(Y)
-        Y_RES[tril_index] = lhalf_matrix
-        Y_RES = Y_RES.T
-        Y_RES[tril_index] = lhalf_matrix
-        Y_RES[np.diag_indices_from(Y_RES)] = np.diag(Y)
-        # label the matrix
-        Y_RES = pd.DataFrame(
-            Y_RES, index=shared_parcels, columns=shared_parcels
-        )
-        # set interhemispheric edges to NaN
-        hem_parcels = helpers.get_hem_parcels(
-            self.parcellation_name, 
-            limit_to_parcels=shared_parcels.tolist()
+        if spin_test:
+            surrogate_matrices = other.get_surrogates(method='spin', n_perm=1000)
+            null_dist = np.zeros(1000)
+            for i, surrogate in enumerate(surrogate_matrices):
+                null_dist[i] = self.regress_out(surrogate, plot=False, spin_test=False, return_r2=True)
+            p_val = (np.abs(null_dist) >= np.abs(r2)).mean()
+        if plot:
+            # plot the polynomial fit
+            sns.set_style('ticks')
+            fig, ax = plt.subplots(figsize=(6, 4), dpi=192)
+            ax = sns.scatterplot(gd, y, s=1, alpha=0.2, color='grey')
+            line_x = np.linspace(0, gd.max(), 500)
+            line_y = helpers.exponential_eval(line_x, *coefs)
+            ax.plot(line_x, line_y, color='red')
+            ax.set_xlabel('Geodesic distance')
+            ax.set_ylabel(other.label)
+            if stats_on_plot:
+                if spin_test:
+                    text = f'R2 = {r2:.2f}; p = {p_val:.2f}'
+                else:
+                    text = f'R2 = {r2:.2f}'
+                ax.text(
+                    ax.get_xlim()[0]+(ax.get_xlim()[1]-ax.get_xlim()[0])*0.05,
+                    ax.get_ylim()[0]+(ax.get_ylim()[1]-ax.get_ylim()[0])*0.90,
+                    text,
+                    color='black', size=12,
+                    multialignment='left')
+            if save_plot:
+                fig.tight_layout()
+                fig.savefig(other.file_path+'_gd_regression')
+        if return_r2:
+            if spin_test:
+                return r2, p_val
+            else:
+                return r2
+        else:
+            # convert it back to the matrix
+            lhalf_matrix = np.zeros_like(tril_index[0]).astype('float64')
+            lhalf_matrix[mask_idx] = y_resid
+            Y_RES = np.zeros_like(Y)
+            Y_RES[tril_index] = lhalf_matrix
+            Y_RES = Y_RES.T
+            Y_RES[tril_index] = lhalf_matrix
+            Y_RES[np.diag_indices_from(Y_RES)] = np.diag(Y)
+            # label the matrix
+            Y_RES = pd.DataFrame(
+                Y_RES, index=shared_parcels, columns=shared_parcels
             )
-        Y_RES.loc[hem_parcels['R'], hem_parcels['L']] = np.NaN
-        Y_RES.loc[hem_parcels['L'], hem_parcels['R']] = np.NaN
-        return Y_RES
+            # set interhemispheric edges to NaN
+            hem_parcels = helpers.get_hem_parcels(
+                self.parcellation_name, 
+                limit_to_parcels=shared_parcels.tolist()
+                )
+            Y_RES.loc[hem_parcels['R'], hem_parcels['L']] = np.NaN
+            Y_RES.loc[hem_parcels['L'], hem_parcels['R']] = np.NaN
+            return Y_RES
 
 class ConnectivityMatrix(Matrix):
     def __init__(self, kind, exc_regions=None, exc_contra=True, 
@@ -1581,10 +1596,6 @@ class StructuralCovarianceMatrix(Matrix):
         """
         Structural covariance matrix obtained from Valk 2020
         (https://doi.org/10.1126/sciadv.abb3417)
-
-        Parameter
-        --------
-        create_plots: (bool)
         """
         self.parcellation_name = 'schaefer400'
         self.label = 'Structural covariance'
@@ -1596,3 +1607,59 @@ class StructuralCovarianceMatrix(Matrix):
         matrix = scipy.io.loadmat(os.path.join(SRC_DIR, 'scov_Valk2020.mat'), simplify_cells=True)['SCOV']['strcov']
         schaefer400_labels = datasets.load_volumetric_parcel_labels('schaefer400')
         self.matrix = pd.DataFrame(matrix, index=schaefer400_labels, columns=schaefer400_labels)
+
+class GeneticCorrelationMatrix(Matrix):
+    def __init__(self):
+        """
+        Genetic correlation matrix obtained from Valk 2020
+        (https://doi.org/10.1126/sciadv.abb3417)
+        """
+        self.parcellation_name = 'schaefer400'
+        self.label = 'Genetic correlation'
+        self.short_label = 'GenCorr'
+        self.cmap = 'RdBu_r'
+        self.dir_path = os.path.join(OUTPUT_DIR, 'gencorr')
+        self.file_path = os.path.join(self.dir_path, 'matrix')
+        os.makedirs(self.dir_path, exist_ok=True)
+        matrix = scipy.io.loadmat(os.path.join(SRC_DIR, 'scov_Valk2020.mat'), simplify_cells=True)['SCOV']['gencorr']
+        schaefer400_labels = datasets.load_volumetric_parcel_labels('schaefer400')
+        self.matrix = pd.DataFrame(matrix, index=schaefer400_labels, columns=schaefer400_labels)
+
+class EnvironmentalCorrelationMatrix(Matrix):
+    def __init__(self):
+        """
+        Environmental correlation matrix obtained from Valk 2020
+        (https://doi.org/10.1126/sciadv.abb3417)
+        """
+        self.parcellation_name = 'schaefer400'
+        self.label = 'Environmental correlation'
+        self.short_label = 'EnvCorr'
+        self.cmap = 'RdBu_r'
+        self.dir_path = os.path.join(OUTPUT_DIR, 'envcorr')
+        self.file_path = os.path.join(self.dir_path, 'matrix')
+        os.makedirs(self.dir_path, exist_ok=True)
+        matrix = scipy.io.loadmat(os.path.join(SRC_DIR, 'scov_Valk2020.mat'), simplify_cells=True)['SCOV']['envcorr']
+        schaefer400_labels = datasets.load_volumetric_parcel_labels('schaefer400')
+        self.matrix = pd.DataFrame(matrix, index=schaefer400_labels, columns=schaefer400_labels)
+
+
+class MaturationalCouplingMatrix(Matrix):
+    def __init__(self):
+        """
+        Group-averaged matruational coupling matrix obtained from 
+        Khundrakpam 2019 (https://doi.org/10.1093/cercor/bhx317)
+        """
+        self.parcellation_name = 'aal'
+        self.label = 'Maturational coupling'
+        self.short_label = 'MCM'
+        self.cmap = 'YlGnBu_r'
+        self.dir_path = os.path.join(OUTPUT_DIR, 'mcm')
+        self.file_path = os.path.join(self.dir_path, 'matrix')
+        os.makedirs(self.dir_path, exist_ok=True)
+        mcm_labels = (
+            pd.read_csv(os.path.join(SRC_DIR, 'MCM_averaged_aal_labels.tsv'), sep='\t', index_col=0)
+            .iloc[:,0]
+            .str.replace("'", "")
+        )
+        matrix = scipy.io.loadmat(os.path.join(SRC_DIR, 'MCM_averaged_aal.mat'), simplify_cells=True)['MCM_average']
+        self.matrix = pd.DataFrame(matrix, index=mcm_labels, columns=mcm_labels)

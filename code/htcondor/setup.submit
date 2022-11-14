@@ -5,11 +5,11 @@ request_cpus          = 1
 request_memory        = 1G
 
 # Execution
-initialdir            = $ENV(HOME)/laminar_gradients
+initialdir            = $ENV(HOME)/laminar_organization
 executable            = /usr/bin/bash
 
 # Job
-arguments   = $ENV(HOME)/laminar_gradients/code/setup.sh
+arguments   = $ENV(HOME)/laminar_organization/code/setup.sh
 log         = logs/setup_$(Cluster).$(Process).log
 output      = logs/setup_$(Cluster).$(Process).out
 error       = logs/setup_$(Cluster).$(Process).err

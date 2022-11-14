@@ -38,7 +38,7 @@ class CorticalSurface:
     space = 'bigbrain'
     # TODO: specify required fields and methods
     def __init__(self, surf_data, columns, label, dir_path=None, 
-                 cmap='viridis', parcellation_name=None):
+                 cmap='viridis', parcellation_name=None, space='bigbrain'):
         """
         Initialize object using any custom n-d surf_data. This will be overwritten
         by the sub-classes
@@ -49,6 +49,8 @@ class CorticalSurface:
         columns: (list of str)
         label: (str)
         dir_path: (str)
+        parcellation_name: (str)
+        space: (str)
         """
         self.surf_data = surf_data
         # downsample it
@@ -70,6 +72,7 @@ class CorticalSurface:
                 self.surf_data, self.parcellation_name
                 ).dropna()
             self.parcellated_data.columns = self.columns
+        self.space = space
 
     def plot(self, columns=None, label_loc=None, cmap=None, save=False,
              plot_downsampled=False, inflate=False, **plotter_kwargs):
@@ -302,11 +305,15 @@ class ContCorticalSurface(CorticalSurface):
                     ax.set_xlabel(x_column)
                     ax.set_ylabel(y_column)
                     if stats_on_regplot:
+                        if parcellated & (parcellated_method=='variogram'):
+                            text = f'r = {coefs.loc[y_column, x_column]:.2f}; $\mathregular{{p_{{variogram}}}}$ = {pvals.loc[y_column, x_column]:.2f}'
+                        else:
+                            text = f'r = {coefs.loc[y_column, x_column]:.2f}; $\mathregular{{p_{{spin}}}}$ = {pvals.loc[y_column, x_column]:.2f}'
                         # add correlation coefficients and p vals on the figure
                         text_x = ax.get_xlim()[0]+(ax.get_xlim()[1]-ax.get_xlim()[0])*0.05
                         text_y = ax.get_ylim()[0]+(ax.get_ylim()[1]-ax.get_ylim()[0])*0.05
                         ax.text(text_x, text_y, 
-                                f'r = {coefs.loc[y_column, x_column]:.2f}; $\mathregular{{p_{{spin}}}}$ = {pvals.loc[y_column, x_column]:.2f}',
+                                text,
                                 color='black',
                                 size=14,
                                 multialignment='left')
@@ -1588,7 +1595,7 @@ class CatCorticalSurface(CorticalSurface):
         else:
             return anova_res
 
-    def compare(self, other, other_columns=None, nbins=10, plot_type='both', save=False):
+    def compare(self, other, other_columns=None, nbins=10, plot_type='both', save=False, test_approach='spin', n_perm=1000):
         """
         Compares the difference of `other.surf_data` across `self.included_categories` and 
         plots it as raincloud or stacked bar plots
@@ -1604,6 +1611,10 @@ class CatCorticalSurface(CorticalSurface):
             - 'raincloud'
             - 'stacked_bar'
         save: (bool)
+        test_approach: (str)
+            - 'spin'
+            - 'param'
+
         """
         assert self.parcellation_name is not None
         assert self.parcellation_name == other.parcellation_name
@@ -1629,14 +1640,44 @@ class CatCorticalSurface(CorticalSurface):
             if plot_type in ['both', 'stacked_bar']:
                 self._plot_binned_stacked_bar(parcellated_data, column, out_dir, nbins)
             # ANOVA
-            anova_res_str += self._anova(parcellated_data, column, output='text')
+            if test_approach != 'param':
+                if test_approach == 'variogram':
+                    raise NotImplementedError
+                else:
+                    # get the test statistics
+                    test_stats = self._anova(parcellated_data, column, output='stats', force_posthocs=True)
+                    # create spin surrogates
+                    all_parcels = helpers.parcellate(
+                        helpers.deparcellate(other.parcellated_data, other.parcellation_name, downsampled=True), 
+                        other.parcellation_name
+                    ).drop(index=helpers.MIDLINE_PARCELS.get(self.parcellation_name, [])).index
+                    excluded_parcels = all_parcels.difference(other.parcellated_data.index).tolist()
+                    surrogate_parcel_orders = helpers.get_rotated_parcels(other.parcellation_name, n_perm, 
+                        excluded_parcels=excluded_parcels, return_indices=False)
+                    # create null distribution
+                    null_dist = np.zeros((test_stats.shape[0], n_perm))
+                    for i in range(n_perm):
+                        surrogate_other_column = other.parcellated_data.loc[surrogate_parcel_orders[:, i], column]
+                        surrogate_other_column.index = other.parcellated_data.index
+                        surrogate_parcellated_data = pd.concat([
+                            surrogate_other_column, # continous surface
+                            self.parcellated_data # categories
+                            ], axis=1).dropna()
+                        null_dist[:, i] = self._anova(surrogate_parcellated_data, column, output='stats', force_posthocs=True).values
+                    print(null_dist)
+                    # p-value
+                    p_vals = (np.abs(null_dist) > np.abs(test_stats[:, np.newaxis])).mean(axis=1)
+                    p_vals = pd.Series(p_vals, index=test_stats.index)
+                    return test_stats, p_vals
+            else:
+                anova_res_str += self._anova(parcellated_data, column, output='text')
         print(anova_res_str)
         if out_dir:
             with open(os.path.join(out_dir, 'anova.txt'), 'w') as anova_res_file:
                 anova_res_file.write(anova_res_str)
     
 class CorticalTypes(CatCorticalSurface):
-    def __init__(self, exc_regions='adysgranular', downsampled=True, parcellation_name=None):
+    def __init__(self, exc_regions='adysgranular', downsampled=True, parcellation_name=None, space='bigbrain'):
         """
         Map of cortical types
 
@@ -1648,9 +1689,11 @@ class CorticalTypes(CatCorticalSurface):
             - None
         downsampled: (bool)
         parcellation_name: (str)
+        space: (str)
         """
         self.exc_regions = exc_regions
         self.parcellation_name = parcellation_name
+        self.space = space
         self.label = 'Cortical Type'
         self.short_label = 'ctypes'
         self.cmap = 'RdYlGn_r' # for surface map
@@ -1670,19 +1713,19 @@ class CorticalTypes(CatCorticalSurface):
         self.dir_path = os.path.join(OUTPUT_DIR, 'ctypes')
         os.makedirs(self.dir_path, exist_ok=True)
         # load unparcellated surface data
-        cortical_types_map = datasets.load_cortical_types(downsampled=downsampled)
+        cortical_types_map = datasets.load_cortical_types(downsampled=downsampled, space=self.space)
         self.surf_data = cortical_types_map.cat.codes.values.reshape(-1, 1).astype('float')
         self.surf_data[cortical_types_map.isin(self.excluded_categories), 0] = np.NaN
         self.columns = ['Cortical Type']
         if self.parcellation_name:
-            parcellated_cortical_types = datasets.load_cortical_types(self.parcellation_name)
+            parcellated_cortical_types = datasets.load_cortical_types(self.parcellation_name, space=self.space)
             self.parcellated_data = parcellated_cortical_types[
                 parcellated_cortical_types.isin(self.included_categories)
                 ].cat.remove_unused_categories().to_frame()
             self.parcellated_data.columns = self.columns
 
     def _load_parcels_categories(self, parcellation_name, downsampled):
-        return datasets.load_cortical_types(parcellation_name, downsampled=downsampled)
+        return datasets.load_cortical_types(parcellation_name, downsampled=downsampled, space=self.space)
     
 class YeoNetworks(CatCorticalSurface):
     """

@@ -11,6 +11,9 @@ from cortex.polyutils import Surface
 import scipy.spatial.distance
 import scipy.io
 import abagen
+import neuromaps
+import re
+
 
 # specify the directories and constants
 abspath = os.path.abspath(__file__)
@@ -165,13 +168,14 @@ def load_curvature_maps(downsampled=False, concatenate=False):
     else:
         return curvature_maps
 
-def load_cortical_types(parcellation_name=None, downsampled=False):
+def load_cortical_types(parcellation_name=None, space='bigbrain', downsampled=False):
     """
     Loads the map of cortical types
 
     Parameters
     ---------
     parcellation_name: (str or None)
+    sapce: (str)
     downsampled: (bool)
 
     Returns
@@ -179,7 +183,7 @@ def load_cortical_types(parcellation_name=None, downsampled=False):
     cortical_types_map (pd.DataFrame): with the length n_vertices|n_parcels
     """
     # load the economo map
-    economo_map = load_parcellation_map('economo', True, downsampled=downsampled)
+    economo_map = load_parcellation_map('economo', True, downsampled=downsampled, space=space)
     # load the cortical types for each economo parcel
     economo_cortical_types = pd.read_csv(
         os.path.join(
@@ -198,7 +202,7 @@ def load_cortical_types(parcellation_name=None, downsampled=False):
         # load parcellation map
         # TODO: may return different types for some parcels depending on wether the surface should
         # be downsampled (e.g. parcel 315 of sjh)
-        parcellation_map = load_parcellation_map(parcellation_name, concatenate=True, downsampled=downsampled)
+        parcellation_map = load_parcellation_map(parcellation_name, concatenate=True, space=space, downsampled=downsampled)
         parcellated_cortical_types_map = (
             #> create a dataframe of surface map including both cortical type and parcel index
             pd.DataFrame({'Cortical Type': cortical_types_map, 'Parcel': pd.Series(parcellation_map)})
@@ -211,7 +215,7 @@ def load_cortical_types(parcellation_name=None, downsampled=False):
             .cat.reorder_categories(['ALO', 'AG', 'DG', 'EU1', 'EU2', 'EU3', 'KO'])
         )
         # assign cortical types of midline parcels to NaN
-        parcellated_cortical_types_map.loc[helpers.MIDLINE_PARCELS[parcellation_name]] = np.NaN
+        parcellated_cortical_types_map.loc[helpers.MIDLINE_PARCELS.get(parcellation_name,[])] = np.NaN
         return parcellated_cortical_types_map
     else:
         return cortical_types_map      
@@ -316,7 +320,7 @@ def load_exc_masks(exc_regions, concatenate=False, downsampled=False):
         }
 
 def load_laminar_thickness(exc_regions=None, normalize_by_total_thickness=True, 
-        regress_out_curvature=False, smooth_disc_radius=None):
+        regress_out_curvature=False, smooth_disc_radius=None, smooth_disc_approach='euclidean'):
     """
     Loads BigBrain laminar thickness data, excludes `exc_regions`, performs 
     smoothing or regression of curvature to correct for it, and normalizes by
@@ -329,6 +333,9 @@ def load_laminar_thickness(exc_regions=None, normalize_by_total_thickness=True,
     regress_out_curvature: (bool) 
     smooth_disc_radius: (int | None) 
         Smooth the absolute thickness of each layer using a disc with the given radius.
+    smooth_disc_approach: (str)
+        - euclidean
+        - geodesic
 
     Returns
     --------
@@ -354,7 +361,7 @@ def load_laminar_thickness(exc_regions=None, normalize_by_total_thickness=True,
         # if it is created already
         smoothed_laminar_thickness_path = os.path.join(
             SRC_DIR, 
-            f'tpl-bigbrain_desc-laminar_thickness_exc-{exc_regions}_smooth-{smooth_disc_radius}.npz'
+            f'tpl-bigbrain_desc-laminar_thickness_exc-{exc_regions}_smooth-{smooth_disc_radius}_approach-{smooth_disc_approach}.npz'
         )
         if os.path.exists(smoothed_laminar_thickness_path):
             laminar_thickness = np.load(smoothed_laminar_thickness_path)
@@ -367,7 +374,7 @@ def load_laminar_thickness(exc_regions=None, normalize_by_total_thickness=True,
             # downsample it for better performance
             laminar_thickness = helpers.downsample(laminar_thickness)
             # smooth the laminar thickness using the disc approach
-            laminar_thickness, _ = helpers.disc_smooth(laminar_thickness, smooth_disc_radius)
+            laminar_thickness, _ = helpers.disc_smooth(laminar_thickness, smooth_disc_radius, smooth_disc_approach)
             # save it
             np.savez_compressed(
                 smoothed_laminar_thickness_path,
@@ -542,11 +549,14 @@ def load_parcellation_map(parcellation_name, concatenate, downsampled=False,
         for hem in ['L', 'R']:
             # load parcellation map
             if space == 'bigbrain':
-                parcellation_map[hem] = nilearn.surface.load_surf_data(
-                    os.path.join(
-                        SRC_DIR, 
-                        f'tpl-bigbrain_hemi-{hem}_desc-{parcellation_name}_parcellation.label.gii')
-                    )
+                if parcellation_map == 'aal':
+                    parcellation_map[hem] = nilearn.surface.load_surf_data(fetch_aal()[hem])
+                else:
+                    parcellation_map[hem] = nilearn.surface.load_surf_data(
+                        os.path.join(
+                            SRC_DIR, 
+                            f'tpl-bigbrain_hemi-{hem}_desc-{parcellation_name}_parcellation.label.gii')
+                        )
             elif space == 'fsaverage':
                 parcellation_map[hem], _, _ = nibabel.freesurfer.io.read_annot(
                         os.path.join(
@@ -564,6 +574,13 @@ def load_parcellation_map(parcellation_name, concatenate, downsampled=False,
                         )
                     )
                     transdict = orig_gifti.labeltable.get_labels_as_dict()
+                elif parcellation_name == 'aal':
+                    with open(os.path.join(SRC_DIR,'aal_labels.txt'), 'r') as f:
+                        aal_labels_str = f.read().replace('\t', '  ')
+                    transdict = {}
+                    for line in aal_labels_str.split('\n')[1:]:
+                        parc, label, _ = re.match("^([0-9]+)\W+(\w+.\w)\W+([^']*)", line).groups()
+                        transdict[int(parc)] = label
                 else:
                     # for others its an annot file
                     _, _, sorted_labels = nibabel.freesurfer.io.read_annot(
@@ -929,8 +946,10 @@ def fetch_laminar_cellular_features(parcellation_name=None):
 
     Returns
     ------
-    cellular_features: (dict of pd.DataFrame)
-        including 'samples', 'density', 'size', 'count'
+    samples: (pd.DataFrame)
+    density: (pd.DataFrame)
+    size: (pd.DataFrame)
+    count: (pd.DataFrame)
     """
     # load the csv files if they've been created before
     cellular_features_paths = {}
@@ -989,3 +1008,34 @@ def fetch_laminar_cellular_features(parcellation_name=None):
     for name, df in cellular_features.items():
         df.to_csv(cellular_features_paths[name])
     return cellular_features.values()
+
+def fetch_aal():
+    out_giis = {
+        'L': os.path.join(SRC_DIR, 'tpl-bigbrain_hemi-L_desc-aal_parcellation.label.gii'),
+        'R': os.path.join(SRC_DIR, 'tpl-bigbrain_hemi-R_desc-aal_parcellation.label.gii')
+    }
+    if os.path.exists(out_giis['L']) & os.path.exists(out_giis['R']):
+        return out_giis
+    aal_civet = {
+        'L': np.loadtxt('https://github.com/aces/CIVET/raw/master/models/icbm/AAL/icbm_avg_mid_mc_AAL_left.txt'),
+        'R': np.loadtxt('https://github.com/aces/CIVET/raw/master/models/icbm/AAL/icbm_avg_mid_mc_AAL_right.txt')
+    }
+    aal_civet_gii ={
+        'L': neuromaps.images.construct_shape_gii(aal_civet['L']),
+        'R': neuromaps.images.construct_shape_gii(aal_civet['R']),
+    }
+    aal_fsa_gii_paths = {
+        'L': os.path.join(SRC_DIR, 'lh_aal.label.gii'),
+        'R': os.path.join(SRC_DIR, 'rh_aal.label.gii')
+    }
+    for hemi in ['L', 'R']:
+        aal_fsa_gii = neuromaps.transforms.civet_to_fsaverage(
+            aal_civet_gii[hemi], target_density='164k', hemi=hemi, method='nearest'
+            )[0]
+        aal_fsa_gii.to_filename(aal_fsa_gii_paths[hemi])
+    helpers.surface_to_surface_transform(
+        SRC_DIR, SRC_DIR,
+        'lh_aal.label.gii', 'rh_aal.label.gii',
+        'fsaverage', 'bigbrain',
+        'aal_parcellation')
+    return out_giis

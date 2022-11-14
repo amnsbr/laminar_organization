@@ -44,6 +44,7 @@ MIDLINE_PARCELS = {
     'mmp1': ['???'],
     'brodmann': ['???'],
     'economo': ['L_unknown', 'R_unknown'],
+    'aal': ['None'],
     'M132': ['???', 'MedialWall']
 }
 ###### Loading data ######
@@ -150,7 +151,7 @@ def parcellate(surface_data, parcellation_name, averaging_method='median',
             pd.DataFrame(surface_data, index=labeled_parcellation_map)
         )
         if na_midline:
-            for midline_parcel in MIDLINE_PARCELS[parcellation_name]:
+            for midline_parcel in MIDLINE_PARCELS.get(parcellation_name, []):
                 if midline_parcel in parcellated_vertices.index:
                     parcellated_vertices.loc[midline_parcel] = np.NaN
         parcellated_vertices_groupby = (parcellated_vertices
@@ -394,7 +395,37 @@ def regress_out_surf_covariates(input_surface_data, cov_surface_data, sig_only=F
         cleaned_surface_data /= cleaned_surface_data.sum(axis=1, keepdims=True)    
     return cleaned_surface_data
 
-def disc_smooth(surface_data, smooth_disc_radius):
+def get_gd_disc(mesh, vertex_number, radius):
+    """
+    Get a disc of vertices that are `radius` mm apart from the seed
+    `vertex_number` on the `mesh`
+
+    Parameters
+    ----------
+    mesh: (str)
+        Path to the cortical mesh
+    vertex_number: (int)
+    radius: (int)
+        in mm
+
+    Returns
+    ------
+    gd_mask: (np.ndarray:bool)
+    """
+    tmp_fname = f'/tmp/gd_{vertex_number}_{np.random.random(1)[0] * 1e8:.0f}.shape.gii'
+    subprocess.run(f"""
+    wb_command -surface-geodesic-distance \
+        '{mesh}' \
+        {vertex_number} \
+        '{tmp_fname}' \
+        -limit {radius}
+    """, shell=True)
+    # read the output gifti file into a numpy array
+    gd = nibabel.load(tmp_fname).agg_data()
+    gd_mask = gd >= 0
+    return gd_mask
+
+def disc_smooth(surface_data, smooth_disc_radius, approach='geodesic'):
     """
     Smoothes the surface data (in ico5) using discs created on the
     inflated surface with `smooth_disc_radius` around each vertex.
@@ -404,6 +435,9 @@ def disc_smooth(surface_data, smooth_disc_radius):
     ----------
     surface_data: (dict of np.ndarray) n_vert_ico5 x n_features
     smooth_disc_radius: (int)
+    approach: (str)
+        - euclidean
+        - geodesic: is very computationally costly
 
     Returns
     -------
@@ -417,10 +451,11 @@ def disc_smooth(surface_data, smooth_disc_radius):
     for hem in ['L', 'R']:
         # load inflated mesh
         inflated_mesh = nilearn.surface.load_surf_mesh(inflated_mesh_paths[hem])
-        # calculate Euclidean distance of all pairs of vertices
-        ed_matrix = scipy.spatial.distance_matrix(inflated_mesh.coordinates, inflated_mesh.coordinates)
-        # create a matrix of discs for each row/column seed vertex
-        discs[hem] = ed_matrix < smooth_disc_radius
+        if approach == 'euclidean':
+            # calculate Euclidean distance of all pairs of vertices
+            ed_matrix = scipy.spatial.distance_matrix(inflated_mesh.coordinates, inflated_mesh.coordinates)
+            # create a matrix of discs for each row/column seed vertex
+            discs[hem] = ed_matrix < smooth_disc_radius
         # loop through vertices and calculate the smoothed value by
         # taking the average of the disc surrounding it
         smoothed_surface_data[hem] = np.zeros_like(surface_data[hem])
@@ -429,7 +464,10 @@ def disc_smooth(surface_data, smooth_disc_radius):
                 # only do smoothing if the seed is not NaN
                 smoothed_surface_data[hem][vertex, :] = np.NaN
             else:
-                disc = discs[hem][vertex, :].astype('bool')
+                if approach == 'euclidean':
+                    disc = discs[hem][vertex, :].astype('bool')
+                else:
+                    disc = get_gd_disc(inflated_mesh_paths[hem], vertex, smooth_disc_radius)
                 smoothed_surface_data[hem][vertex, :] = np.nanmean(surface_data[hem][disc, :], axis=0)
     return smoothed_surface_data, discs
 
@@ -639,7 +677,7 @@ def make_colorbar(vmin, vmax, cmap=None, bins=None, orientation='vertical', figs
     cax.xaxis.tick_bottom()
     return fig
 
-def plot_matrix(matrix, outpath=None, cmap="rocket", vrange=(0.025, 0.975), **kwargs):
+def plot_matrix(matrix, outpath=None, cmap="rocket", vrange=(0.025, 0.975), vrange_value=None, **kwargs):
     """
     Plot the matrix as heatmap
 
@@ -651,17 +689,23 @@ def plot_matrix(matrix, outpath=None, cmap="rocket", vrange=(0.025, 0.975), **kw
     vrange: 
         - (tuple): vmin and vmax as percentiles (for whole range put (0, 1))
         - 'sym'
+    vrange_value: (None | tuple)
+        vrange as actual values instead of percentiles
     """
     n_square_matrices = matrix.shape[1] // matrix.shape[0]
-    if vrange == 'sym':
-        vmin = min(np.nanmin(matrix.flatten()), -np.nanmax(matrix.flatten()))
-        if vmin < 0:
-            vmax = -vmin
-        else:
-            vmax = np.nanmax(matrix.flatten())
+    if vrange_value is not None:
+        vmin = vrange_value[0]
+        vmax = vrange_value[1]
     else:
-        vmin = np.nanquantile(matrix.flatten(),vrange[0])
-        vmax = np.nanquantile(matrix.flatten(),vrange[1])
+        if vrange == 'sym':
+            vmin = min(np.nanmin(matrix.flatten()), -np.nanmax(matrix.flatten()))
+            if vmin < 0:
+                vmax = -vmin
+            else:
+                vmax = np.nanmax(matrix.flatten())
+        else:
+            vmin = np.nanquantile(matrix.flatten(),vrange[0])
+            vmax = np.nanquantile(matrix.flatten(),vrange[1])
     fig, ax = plt.subplots(figsize=(4 * n_square_matrices,4), dpi=192)
     sns.heatmap(
         matrix,
@@ -962,7 +1006,7 @@ def create_bigbrain_spin_permutations(is_downsampled=True, n_perm=1000, batch_si
             return
         print(f"Creating {n_perm} spin permutations")
         # read the bigbrain surface sphere files as a mesh that can be used by _generate_spins function
-        downsampled_sphere_paths = datasets.load_downsampled_surface_paths('sphere')
+        downsampled_sphere_paths = datasets.load_mesh_paths('sphere', 'bigbrain', downsampled=True)
         lh_sphere = brainspace.mesh.mesh_io.read_surface(downsampled_sphere_paths['L'])
         rh_sphere = brainspace.mesh.mesh_io.read_surface(downsampled_sphere_paths['R'])
         spin_idx = brainspace.null_models.spin._generate_spins(

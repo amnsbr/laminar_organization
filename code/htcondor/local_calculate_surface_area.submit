@@ -5,12 +5,12 @@ request_cpus          = 1
 request_memory        = 6G
 
 # Execution
-initialdir            = $ENV(HOME)/laminar_gradients/code/local/
+initialdir            = $ENV(HOME)/laminar_organization
 executable            = /usr/bin/bash
 
 # Job
-arguments   = calculate_surface_area.sh
-log         = $ENV(HOME)/laminar_gradients/logs/calculate_surface_area_$(Cluster).$(Process).log
-output      = $ENV(HOME)/laminar_gradients/logs/calculate_surface_area_$(Cluster).$(Process).out
-error       = $ENV(HOME)/laminar_gradients/logs/calculate_surface_area_$(Cluster).$(Process).err
+arguments   = $ENV(HOME)/laminar_organization/code/local/calculate_surface_area.sh
+log         = logs/calculate_surface_area_$(Cluster).$(Process).log
+output      = logs/calculate_surface_area_$(Cluster).$(Process).out
+error       = logs/calculate_surface_area_$(Cluster).$(Process).err
 Queue

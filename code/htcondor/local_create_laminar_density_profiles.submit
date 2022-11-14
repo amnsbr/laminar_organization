@@ -5,12 +5,12 @@ request_cpus          = 1
 request_memory        = 6G
 
 # Execution
-initialdir            = $ENV(HOME)/laminar_gradients/code/local/
+initialdir            = $ENV(HOME)/laminar_organization
 executable            = /usr/bin/bash
 
 # Job
-arguments   = create_laminar_density_profiles.sh
-log         = $ENV(HOME)/laminar_gradients/logs/create_laminar_density_profiles_$(Cluster).$(Process).log
-output      = $ENV(HOME)/laminar_gradients/logs/create_laminar_density_profiles_$(Cluster).$(Process).out
-error       = $ENV(HOME)/laminar_gradients/logs/create_laminar_density_profiles_$(Cluster).$(Process).err
+arguments   = $ENV(HOME)/laminar_organization/code/local/create_laminar_density_profiles.sh
+log         = logs/create_laminar_density_profiles_$(Cluster).$(Process).log
+output      = logs/create_laminar_density_profiles_$(Cluster).$(Process).out
+error       = logs/create_laminar_density_profiles_$(Cluster).$(Process).err
 Queue
