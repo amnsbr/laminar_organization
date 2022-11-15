@@ -425,7 +425,7 @@ def get_gd_disc(mesh, vertex_number, radius):
     gd_mask = gd >= 0
     return gd_mask
 
-def disc_smooth(surface_data, smooth_disc_radius, approach='geodesic'):
+def disc_smooth(surface_data, smooth_disc_radius, approach='euclidean'):
     """
     Smoothes the surface data (in ico5) using discs created on the
     inflated surface with `smooth_disc_radius` around each vertex.

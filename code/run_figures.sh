@@ -2,10 +2,10 @@
 
 cd "$(dirname "$0")/.."
 PROJECT_DIR="$(realpath .)"
-
-for nb_file in 'Fig_S_development' # 'Fig_ltcg' 'Fig_hierarchy' 'Fig_connectivity' 'Fig_development' 'Fig_S_ltcg.ipynb' 'Fig_S_hierarchy' 'Fig_S_connectivity'
+nb_files="$(ls ${PROJECT_DIR}/code/figures/*.ipynb)" 
+for nb_file in $nb_files
 do
     eval "$(conda shell.bash hook)" && \
     conda activate ${PROJECT_DIR}/env && \
-    ${PROJECT_DIR}/env/bin/jupyter nbconvert --to notebook --inplace --execute --allow-errors ${PROJECT_DIR}/code/${nb_file}.ipynb
+    ${PROJECT_DIR}/env/bin/jupyter nbconvert --to notebook --inplace --execute --allow-errors $nb_file
 done

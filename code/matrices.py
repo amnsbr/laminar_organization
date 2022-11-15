@@ -728,7 +728,7 @@ class DistanceMatrix(Matrix):
         return ED_matrix
 
     def regress_out(self, other, plot=True, save_plot=False, stats_on_plot=True, 
-            spin_test=False, return_r2=False):
+            spin_test=False, return_r2=False, n_perm=1000):
         """
         Regresses out GD matrix from another matrix (e.g. LTC)
         using a exponential fit
@@ -758,10 +758,9 @@ class DistanceMatrix(Matrix):
         y_resid = y - y_hat
         # calculate R2
         r2 = 1 - (y_resid.var() / y.var())
-        print("R2:", r2)
         if spin_test:
-            surrogate_matrices = other.get_surrogates(method='spin', n_perm=1000)
-            null_dist = np.zeros(1000)
+            surrogate_matrices = other.get_surrogates(method='spin', n_perm=n_perm)
+            null_dist = np.zeros(n_perm)
             for i, surrogate in enumerate(surrogate_matrices):
                 null_dist[i] = self.regress_out(surrogate, plot=False, spin_test=False, return_r2=True)
             p_val = (np.abs(null_dist) >= np.abs(r2)).mean()
@@ -781,7 +780,7 @@ class DistanceMatrix(Matrix):
                 else:
                     text = f'R2 = {r2:.2f}'
                 ax.text(
-                    ax.get_xlim()[0]+(ax.get_xlim()[1]-ax.get_xlim()[0])*0.05,
+                    ax.get_xlim()[0]+(ax.get_xlim()[1]-ax.get_xlim()[0])*0.60,
                     ax.get_ylim()[0]+(ax.get_ylim()[1]-ax.get_ylim()[0])*0.90,
                     text,
                     color='black', size=12,

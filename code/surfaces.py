@@ -478,8 +478,8 @@ class LaminarFeatures(ContCorticalSurface):
         self.surf_data = np.hstack(features)
 
 class Gradients(ContCorticalSurface):
-    def __init__(self, matrix_obj, n_components_create=10, n_components_report=2,
-                 approach='dm', kernel='normalized_angle', sparsity=0.9, fair_sparsity=True,
+    def __init__(self, matrix_obj, n_components_create=10, n_components_report=1,
+                 approach='pca', kernel='normalized_angle', sparsity=0.9, fair_sparsity=True,
                  hemi=None, cmap='viridis'):
         """
         Gradients of a Matrix object
@@ -520,7 +520,12 @@ class Gradients(ContCorticalSurface):
         if os.path.exists(os.path.join(self.dir_path, 'gradients_surface.npz')):
             self._load()
             return
-        # otherwise create it
+        # otherwise create the gradients
+        ## for some matrices (such as non-parcellated LTC) the
+        ## matrix is not loaded by default, and _load function
+        ## needs to be called
+        if not hasattr(self.matrix_obj, 'matrix'):
+            self.matrix_obj._load()
         ## setting n_parcels down here because in the case of unparcellated
         ## matrix if the gradeint and matrix are already created I do not
         ## load the actual huge matrix because I don't need it, and therefore
@@ -1599,7 +1604,7 @@ class CatCorticalSurface(CorticalSurface):
         """
         Compares the difference of `other.surf_data` across `self.included_categories` and 
         plots it as raincloud or stacked bar plots
-
+        
         Parameters
         ----------
         other: (ContCorticalSurface)
@@ -1616,7 +1621,6 @@ class CatCorticalSurface(CorticalSurface):
             - 'param'
 
         """
-        assert self.parcellation_name is not None
         assert self.parcellation_name == other.parcellation_name
         if other_columns is None:
             other_columns = other.columns
@@ -1664,7 +1668,6 @@ class CatCorticalSurface(CorticalSurface):
                             self.parcellated_data # categories
                             ], axis=1).dropna()
                         null_dist[:, i] = self._anova(surrogate_parcellated_data, column, output='stats', force_posthocs=True).values
-                    print(null_dist)
                     # p-value
                     p_vals = (np.abs(null_dist) > np.abs(test_stats[:, np.newaxis])).mean(axis=1)
                     p_vals = pd.Series(p_vals, index=test_stats.index)
