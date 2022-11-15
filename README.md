@@ -5,7 +5,7 @@ This repository includes data and code associated with the paper "Organization o
 ## Repository structure
 - Source files are located in `src/`. The README in this folder lists a short description and the origin of each source file.
 - The analyses are done via files in `code/`
-    - `setup.sh` creates the virtual environment and installs dependencies based on `enviornment.yml`
+    - `setup.sh` creates the virtual environment and installs Python dependencies
     - `run_figures.sh` executes the Jupyter notebook files included in `code/figures` which will output the figures reported in the main text as well as the supplements. Note that many of these execute computationally-intensive code, and it is recommended to run them on high-performance computing clusters.
     - The notebooks mainly act as interfaces and use functions/classes defined in the Python files, which include:
         - `datasets.py`: Functions needed to load and preprocess the source data from `src` or external packages.
