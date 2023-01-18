@@ -644,6 +644,39 @@ def get_parcel_center_indices(parcellation_name, space='bigbrain', kind='orig', 
         centers[hem].to_csv(out_path, index_label='parcel')
     return centers
 
+
+def get_parcel_boundaries(parcellation_name, space='bigbrain'):
+    """
+    Finds the boundaries of parcels on the surface mesh
+
+    Parameters
+    ---------
+    parcellation_name: (str)
+    space: (str)
+        see datasets.load_mesh_paths
+    
+    Returns
+    -------
+    boundaries: (np.ndarray)
+        (n_vertices, ) binary array with 1 indicating boundary vertices and 0 otherwise
+    """
+    boundaries = {}
+    mesh_paths = datasets.load_mesh_paths('inflated', space=space, downsampled=False)
+    for hemi in ['L', 'R']:
+        mesh = nilearn.surface.load_surf_mesh(mesh_paths[hemi])
+        parcellation_map = datasets.load_parcellation_map(parcellation_name, concatenate=False, load_indices=True)[hemi]
+        boundaries[hemi] = np.zeros_like(parcellation_map)
+        for parc in np.unique(parcellation_map):
+            parc_mask = (parcellation_map==parc)
+            boundary_faces = (parc_mask[mesh.faces].sum(axis=1) == 1)
+            parc_mask_boundary_verts = list(
+                set(mesh.faces[boundary_faces].flatten()) & \
+                set(np.where(parc_mask)[0])
+            )
+            boundaries[hemi][parc_mask_boundary_verts] = 1
+    return np.concatenate([boundaries['L'], boundaries['R']])
+
+
 ###### Plotting ######
 def make_colorbar(vmin, vmax, cmap=None, bins=None, orientation='vertical', figsize=None):
     """

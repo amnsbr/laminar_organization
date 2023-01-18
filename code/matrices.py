@@ -1087,7 +1087,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
     Matrix showing microstructural similarity of parcels in their relative laminar
     thickness, relative laminar volume, density profiles (MPC), or their combination
     """
-    def __init__(self, input_type, parcellation_name='sjh', 
+    def __init__(self, input_type, parcellation_name='schaefer1000', 
         exc_regions='adysgranular', correct_curvature='smooth-10', 
         regress_out_geodesic_distance = False, relative = True,
         similarity_metric='parcor', merge_layers=None,
@@ -1210,7 +1210,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
                     kind = 'geodesic',
                     exc_regions = self.exc_regions
                     )
-                self.matrix = GD.regress_out(self)
+                self.matrix = GD.regress_out(self, plot=False)
 
     def _load_input_data(self):
         """
@@ -1556,7 +1556,7 @@ class CorticalTypeDiffMatrix(Matrix):
         )
 
 class CorrelatedGeneExpressionMatrix(Matrix):
-    def __init__(self, parcellation_name='sjh', brain_specific=True):
+    def __init__(self, parcellation_name='schaefer400', brain_specific=True):
         """
         Correlated gene expression (CGE) matrix showing how similar is the
         pattern of gene expression between regions

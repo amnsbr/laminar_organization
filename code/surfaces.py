@@ -141,9 +141,10 @@ class ContCorticalSurface(CorticalSurface):
     General class for continous cortical surfaces
     """
     def correlate(self, other, parcellated=True, n_perm=1000,
-                 x_columns=None, y_columns=None, parcellated_method='variogram',
-                 fdr_axis=None, barplot=True, regplot=True, axis_off=False,
-                 sort_barplot=False, stats_on_regplot=True,  save_files=False):
+            x_columns=None, y_columns=None, parcellated_method='variogram',
+            fdr_axis=None, barplot=True, regplot=True, axis_off=False,
+            xlim=None, ylim=None, sort_barplot=False, stats_on_regplot=True,  
+            save_files=False):
         """
         Calculate the correlation of surface maps with permutation test
         (with surrogates created using spins or variograms) and plot 
@@ -293,15 +294,34 @@ class ContCorticalSurface(CorticalSurface):
             for x_column in x_columns:
                 for y_column in y_columns:
                     fig, ax = plt.subplots(figsize=(4, 4), dpi=192)
-                    sns.regplot(
-                        x=x_data.loc[:,x_column], 
-                        y=y_data.loc[:,y_column],
-                        scatter_kws=dict(
-                            alpha=(0.8 if parcellated else 0.2), 
-                            s=5, color='grey'),
-                        line_kws=dict(color='red'),
-                        ax=ax)
-                    sns.despine(offset=10, trim=True, ax=ax)
+                    if parcellated:
+                        # scatter plot
+                        sns.regplot(
+                            x=x_data.loc[:,x_column], 
+                            y=y_data.loc[:,y_column],
+                            scatter_kws=dict(
+                                alpha=(0.8 if parcellated else 0.2), 
+                                s=5, color='grey'),
+                            line_kws=dict(color='red'),
+                            ax=ax)
+                        sns.despine(offset=10, trim=True, ax=ax)
+                    else:
+                        # hexbin plot
+                        ax.hexbin(
+                            x_data.loc[:,x_column], 
+                            y_data.loc[:,y_column], 
+                            cmap='gist_heat_r',
+                            )
+                        sns.regplot(
+                            x = x_data.loc[:,x_column], 
+                            y = y_data.loc[:,y_column], 
+                            ax=ax, ci=None, scatter=False, 
+                            color='black', line_kws=dict(alpha=0.6)
+                            )
+                    if xlim:
+                        ax.set_xlim(xlim)
+                    if ylim:
+                        ax.set_ylim(ylim)
                     ax.set_xlabel(x_column)
                     ax.set_ylabel(y_column)
                     if stats_on_regplot:
@@ -1043,7 +1063,7 @@ class MicrostructuralCovarianceGradients(Gradients):
                 clfig.savefig(os.path.join(self.dir_path, f'binned_profile_G{gradient_num}_clbar.png'), dpi=192)
 
 class CurvatureMap(ContCorticalSurface):
-    def __init__(self, downsampled=True):
+    def __init__(self, downsampled=True, exc_regions='allocortex', drop_outliers=True):
         """
         Map of bigbrain surface curvature
         """
@@ -1051,13 +1071,21 @@ class CurvatureMap(ContCorticalSurface):
         self.surf_data = datasets.load_curvature_maps(
             downsampled=downsampled, 
             concatenate=True
-            )[:, np.newaxis]
+            )
+        ctypes = CorticalTypes(downsampled=downsampled, exc_regions=exc_regions).surf_data.squeeze()
+        self.surf_data[np.isnan(ctypes)] = np.nan
+        if drop_outliers:
+            lb, ub = np.nanquantile(self.surf_data, [0.001, 0.999])
+            self.surf_data[self.surf_data < lb] = np.nan
+            self.surf_data[self.surf_data > ub] = np.nan
+        self.surf_data = self.surf_data[:, np.newaxis]
         self.columns = ['Curvature']
         self.label = 'Curvature'
+        self.parcellation_name = None
         self.dir_path = os.path.join(OUTPUT_DIR, 'curvature')
     
     def effect_on_laminar_thickness(self, correct_curvature, nbins=20,
-                             exc_regions='adysgranular', palette='bigbrain'):
+            exc_regions='adysgranular', palette='bigbrain', n_perm=1000):
         """
         Plot the laminar profile ordered by binned curvature
         to show how it differs for corrected and uncorrected 
@@ -1087,7 +1115,8 @@ class CurvatureMap(ContCorticalSurface):
             columns = ['Superficial laminar thickness ratio'],
             label = f'Superficial laminar thickness ratio {correct_curvature}'
         )
-        self.correlate(superficial_ratio_obj, parcellated=False)
+        self.correlate(superficial_ratio_obj, parcellated=False, n_perm=n_perm,
+            ylim=(0.3, 0.7)) # hard-coded ylim to make the plots comparable
         # 2. Plotting laminar profile per bin
         # convert to dataframe and rename columns
         laminar_data = pd.DataFrame(laminar_data,
@@ -1104,18 +1133,18 @@ class CurvatureMap(ContCorticalSurface):
         if colors is None:
             colors = plt.cm.get_cmap(palette, 6).colors
         # plot the relative thickness of layers 6 to 1
-        fig, ax = plt.subplots(figsize=(12, 4), dpi=192)
+        fig, ax = plt.subplots(figsize=(10, 7), dpi=192)
         ax.bar(
             x = laminar_data.index,
             height = laminar_data['Layer 6'],
-            width = 1,
+            width = 0.95,
             color=colors[-1],
             )
         for layer_num in range(5, 0, -1):
             ax.bar(
                 x = laminar_data.index,
                 height = laminar_data[f'Layer {layer_num}'],
-                width = 1,
+                width = 0.95,
                 bottom = laminar_data.cumsum(axis=1)[f'Layer {layer_num+1}'],
                 color=colors[layer_num-1],
                 )
@@ -1794,7 +1823,7 @@ class MicrostructuralClusters(CatCorticalSurface):
         self._create()
         self.included_categories = np.unique(self.parcellated_data).tolist()
         self.excluded_categories = []
-        self.surf_data = helpers.deparcellate(self.parcellated_data, 'sjh')
+        self.surf_data = helpers.deparcellate(self.parcellated_data, self.matrix_obj.parcellation_name)
         self.cmap = 'Blues'
         self.colors = sns.color_palette(self.cmap, self.n_categories)
         self.columns = [self.label]
@@ -1830,7 +1859,7 @@ class MicrostructuralClusters(CatCorticalSurface):
         laminar_data['km_cluster'] = self.parcellated_data.astype('int')
         laminar_data = laminar_data.sort_values('km_cluster').reset_index(drop=True)
         colors = datasets.LAYERS_COLORS['bigbrain']
-        fig, ax = plt.subplots(figsize=(12, 4), dpi=192)
+        fig, ax = plt.subplots(figsize=(100, 20), dpi=192)
         # plot cluster identifiers at the bottom
         cluster_identifier_height = 0.05
         for cluster_id in range(1, self.n_categories+1):
