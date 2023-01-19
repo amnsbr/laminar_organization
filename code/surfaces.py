@@ -1324,10 +1324,13 @@ class MacaqueSurface(ContCorticalSurface):
                 nilearn.surface.load_surf_data(macaque_paths['R'])
             ])
         self.surf_data = self.surf_data.values
+        # parcellate using M132
         self.parcellated_data = helpers.parcellate(
             self.surf_data, 
             'M132', space='yerkes', 
             na_ratio_cutoff=0.5)
+        # project back to surface for parcellated and surface data to match
+        self.surf_data = helpers.deparcellate(self.parcellated_data, self.parcellation_name,space='yerkes')
         self.parcellated_data.columns = self.columns
                 
 class MyelinMap(ContCorticalSurface):
