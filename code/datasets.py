@@ -706,6 +706,9 @@ def fetch_conn_matrix(kind, parcellation_name='schaefer400', dataset='hcp'):
             conn_matrix, conn_matrix_labels, _, _ = enigmatoolbox.datasets.load_sc(enigma_parcellation_name)
         else:
             conn_matrix, conn_matrix_labels, _, _ = enigmatoolbox.datasets.load_fc(enigma_parcellation_name)
+            # in enigma toolbox negative values are zeroed out => setting them to nan
+            # to ignore them in the analyses
+            conn_matrix[conn_matrix==0] = np.nan
     conn_matrix = pd.DataFrame(conn_matrix, columns=conn_matrix_labels, index=conn_matrix_labels)
     # parcellate dummy data to get the order of parcels in other matrices created locally
     dummy_surf_data = np.zeros(N_VERTICES_HEM_BB * 2)

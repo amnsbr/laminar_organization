@@ -124,7 +124,7 @@ class Matrix:
 
     def correlate_edge_wise(self, other, test='pearson', test_approach='spin', 
             n_perm=1000, plot_regplot=True, plot_half_matrices=False, 
-            regress_out_gd=False, figsize=(6, 4), axis_off=False,
+            regress_out_gd=False, figsize=(6, 4), axis_off=False, labels_off = False,
             stats_on_plot=True, half_matrix_vrange=(0.025, 0.975),
             save_files=False, verbose=True):
         """
@@ -209,8 +209,12 @@ class Matrix:
                 ax.text(text_x, text_y, text,
                         color='black', size=12,
                         multialignment='left')
-            ax.set_xlabel(self.label)
-            ax.set_ylabel(other.label)
+            if labels_off:
+                ax.set_xlabel('')
+                ax.set_ylabel('')
+            else:
+                ax.set_xlabel(self.label)
+                ax.set_ylabel(other.label)
             if axis_off:
                 ax.axis('off')
             if save_files:
@@ -728,7 +732,7 @@ class DistanceMatrix(Matrix):
         return ED_matrix
 
     def regress_out(self, other, plot=True, save_plot=False, stats_on_plot=True, 
-            spin_test=False, return_r2=False, n_perm=1000):
+            labels_off=False, spin_test=False, return_r2=False, n_perm=1000):
         """
         Regresses out GD matrix from another matrix (e.g. LTC)
         using a exponential fit
@@ -772,8 +776,12 @@ class DistanceMatrix(Matrix):
             line_x = np.linspace(0, gd.max(), 500)
             line_y = helpers.exponential_eval(line_x, *coefs)
             ax.plot(line_x, line_y, color='red')
-            ax.set_xlabel('Geodesic distance')
-            ax.set_ylabel(other.label)
+            if labels_off:
+                ax.set_xlabel('')
+                ax.set_ylabel('')
+            else:
+                ax.set_xlabel('Geodesic distance')
+                ax.set_ylabel(other.label)
             if stats_on_plot:
                 if spin_test:
                     text = f'R2 = {r2:.2f}; p = {p_val:.2f}'
@@ -837,6 +845,8 @@ class ConnectivityMatrix(Matrix):
             - mics (only for EC)
         threshold: (bool)
             keep only the values of connected edges
+        long_range: (bool)
+            keep only the long-range connections
         create_plot: (bool)
         """
         # TODO: create separate classes for SC/FC and EC
@@ -847,12 +857,12 @@ class ConnectivityMatrix(Matrix):
         self.long_range = long_range
         if self.kind == 'structural':
             self.cmap = 'bone'
-        if self.exc_contra:
-            self.split_hem = True
         elif self.kind == 'functional':
             self.cmap = cmcrameri.cm.davos
         else:
             self.cmap = 'rocket'
+        if self.exc_contra:
+            self.split_hem = True
         self.parcellation_name = parcellation_name
         self.label = f'{self.kind.title()} connectivity'
         self.dataset = dataset
@@ -921,7 +931,7 @@ class ConnectivityMatrix(Matrix):
 
     def binarized_association(self, others, fc_pthreshold=0.2, 
             spin_test=False, n_perm=1000, verbose=True, 
-            plot=True, stats_on_plot=True):
+            plot=True, stats_on_plot=True, labels_off=False):
         """
         Binarize the SC or FC matrix and performs logistic regression
         with FC/SC as DV and `others` as IV. If `other` is categorical
@@ -1051,6 +1061,7 @@ class ConnectivityMatrix(Matrix):
                     # ax.bar(absent_conn[x_name], bottom=existing_conn['percentage'], height=absent_conn['percentage'], facecolor='white', edgecolor='black', width = 0.5)
                     ax.set_xticks(percentages[x_name].unique())
                     ax.set_ylabel('Connected %')
+                ax.set_ylim([0, 1]) # as it is a probability
                 if (len(others) == 1) & stats_on_plot:
                     if lgrs[0].params[x_name] >= 0:
                         text_x = ax.get_xlim()[0]+(ax.get_xlim()[1]-ax.get_xlim()[0])*0.05
@@ -1062,6 +1073,9 @@ class ConnectivityMatrix(Matrix):
                             color='black', size=16,
                             multialignment='left')
                 ax.set_xlabel(f'{x_name.replace("_"," ").title()}')
+                if labels_off:
+                    ax.set_xlabel('')
+                    ax.set_ylabel('')
         if spin_test:
             others_surrogates = []
             for other in others:
@@ -1081,6 +1095,13 @@ class ConnectivityMatrix(Matrix):
                 pvals.append((null_dist_r2[lgr_i] >= lgrs[lgr_i].prsquared).mean())
             return lgrs, pvals, null_lgrs
         return lgrs
+
+    def plot_binarized(self, fc_pthreshold=0.2):
+        """
+        Plots the binarized connectivity matrix
+        """
+        bin_mat = self.binarize(fc_pthreshold=fc_pthreshold).astype('float')
+        return helpers.plot_matrix(bin_mat.values, cmap='bone_r')
 
 class MicrostructuralCovarianceMatrix(Matrix):
     """
