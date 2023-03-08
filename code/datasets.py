@@ -356,13 +356,23 @@ def load_laminar_thickness(exc_regions=None, normalize_by_total_thickness=True,
         # remove the exc_mask
         if exc_regions is not None:
             laminar_thickness[hem][exc_masks[hem], :] = np.NaN
+        # regress out curvature
+        if regress_out_curvature:
+            cov_surf_data = load_curvature_maps()[hem]
+            laminar_thickness[hem] = helpers.regress_out_surf_covariates(
+                laminar_thickness[hem], cov_surf_data,
+                sig_only=False, normalize=False
+                )
     if smooth_disc_radius:
         # smoothing is memory intensive, load it from disc
         # if it is created already
         smoothed_laminar_thickness_path = os.path.join(
             SRC_DIR, 
-            f'tpl-bigbrain_desc-laminar_thickness_exc-{exc_regions}_smooth-{smooth_disc_radius}_approach-{smooth_disc_approach}.npz'
+            f'tpl-bigbrain_desc-laminar_thickness_exc-{exc_regions}_smooth-{smooth_disc_radius}_approach-{smooth_disc_approach}'
         )
+        if regress_out_curvature:
+            smoothed_laminar_thickness_path += '_regress_curvature'
+        smoothed_laminar_thickness_path += '.npz'
         if os.path.exists(smoothed_laminar_thickness_path):
             laminar_thickness = np.load(smoothed_laminar_thickness_path)
             # convert npz object to dict (even though they have the same indexing)
@@ -385,16 +395,6 @@ def load_laminar_thickness(exc_regions=None, normalize_by_total_thickness=True,
         # normalize by total thickness
         if normalize_by_total_thickness:
             laminar_thickness[hem] /= laminar_thickness[hem].sum(axis=1, keepdims=True)
-        # regress out curvature
-        if regress_out_curvature:
-            if smooth_disc_radius:
-                print("Skipping regressing out of the curvature as laminar thickness is smoothed")
-            else:
-                cov_surf_data = load_curvature_maps()[hem]
-                laminar_thickness[hem] = helpers.regress_out_surf_covariates(
-                    laminar_thickness[hem], cov_surf_data,
-                    sig_only=False, renormalize=True
-                    )
     return laminar_thickness
 
 def load_total_depth_density(exc_regions=None):

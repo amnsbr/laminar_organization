@@ -355,7 +355,7 @@ def upsample(surface_data, space='bigbrain'):
     else:
         return upsampled_surface_data
 
-def regress_out_surf_covariates(input_surface_data, cov_surface_data, sig_only=False, renormalize=False):
+def regress_out_surf_covariates(input_surface_data, cov_surface_data, sig_only=False, normalize=False):
     """
     Fits `cov_surface_data` to `input_surface_data` and return the residual.
 
@@ -391,7 +391,7 @@ def regress_out_surf_covariates(input_surface_data, cov_surface_data, sig_only=F
             cleaned_surface_data[mask, col_idx] = lr.resid + y_mean
         else:
             cleaned_surface_data[mask, col_idx] = y[:, 0]
-    if renormalize:
+    if normalize:
         cleaned_surface_data /= cleaned_surface_data.sum(axis=1, keepdims=True)    
     return cleaned_surface_data
 
