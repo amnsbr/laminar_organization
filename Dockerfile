@@ -7,28 +7,20 @@ RUN apt-get update && \
     apt clean && \
     apt-get -y install git \
                    build-essential \
-                   libtool \
                    squashfs-tools \
-                   autotools-dev \
-                   libarchive-dev \
-                   automake \
-                   autoconf \
-                   debootstrap \
                    uuid-dev \
                    libssl-dev \
+                   libgpgme11-dev \
+                   libseccomp-dev \
+                   pkg-config \
                    python3-dev \
                    python3-pip \
                    connectome-workbench
 
-# Install Singularity from Github
-WORKDIR /tmp
-RUN pip3 install sregistry[all]
-RUN git clone -b vault/release-2.6 https://github.com/sylabs/singularity.git && \
-    cd /tmp/singularity && \
-    ./autogen.sh && \
-    ./configure --prefix=/usr/local && \
-    make && make install
-
+# Install Singularity
+RUN wget https://github.com/apptainer/singularity/releases/download/v3.8.7/singularity-container_3.8.7_amd64.deb && \
+    dpkg -i singularity-container_3.8.7_amd64.deb && \
+    rm singularity-container_3.8.7_amd64.deb
 
 # Copy everything
 COPY . /laminar_organization
@@ -76,5 +68,5 @@ RUN eval "$(conda shell.bash hook)" && \
 # # # Open jupyter notebook
 ENTRYPOINT ["bash", "-c", "/laminar_organization/env/bin/jupyter notebook --allow-root"]
 
-# # docker build --platform linux/amd64 -t laminar_organization .  
-# # docker run -it --platform linux/amd64 -p 8888:8888 laminar_organization
+# # # docker build --platform linux/amd64 -t laminar_organization .  
+# # # docker run -it --platform linux/amd64 -p 8888:8888 laminar_organization
