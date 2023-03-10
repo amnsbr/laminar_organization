@@ -26,8 +26,6 @@ abspath = os.path.abspath(__file__)
 cwd = os.path.dirname(abspath)
 OUTPUT_DIR = os.path.join(cwd, '..', 'output')
 SRC_DIR = os.path.join(cwd, '..', 'src')
-WB_PATH = os.path.join(cwd, '..', 'tools', 'workbench', 'bin_linux64', 'wb_command')
-
 
 class CorticalSurface:
     """
@@ -1206,7 +1204,7 @@ class GeodesicDistance(ContCorticalSurface):
                 center_vertex = parcel_centers[hem][seed_parcel]
                 # using wb_command get the GD map from the vertex and save it temporarily
                 tmp_file_path = os.path.join(self.dir_path, f'{hem}.func.gii')
-                cmdStr = f"{WB_PATH} -surface-geodesic-distance {meshes[hem]} {center_vertex} {tmp_file_path}"
+                cmdStr = f"wb_command -surface-geodesic-distance {meshes[hem]} {center_vertex} {tmp_file_path}"
                 subprocess.run(cmdStr.split())
                 curr_seed_surf[hem] = nilearn.surface.load_surf_data(tmp_file_path)
                 # remove the tmp file
