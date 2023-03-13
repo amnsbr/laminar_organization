@@ -1509,9 +1509,10 @@ def surface_to_surface_transform(
     if not os.path.exists(bbwarp_singularity_path):
         print("Singularity image not found")
         return
-    subprocess.call(f"""
-        singularity exec --cleanenv {bbwarp_singularity_path} \
-        /bin/bash -c \
+    in_dir = os.path.abspath(in_dir)
+    out_dir = os.path.abspath(out_dir)
+    subprocess.run(f"""
+        singularity exec --cleanenv --bind "{in_dir},{out_dir}" {bbwarp_singularity_path} /bin/bash -c \
         "source /BigBrainWarp/scripts/init.sh && \
         cd {in_dir} && \
         /BigBrainWarp/bigbrainwarp \
@@ -1546,7 +1547,7 @@ def macaque_to_human(in_paths, desc):
     out_paths = {}
     for hem in ['L', 'R']:
         out_paths[hem] = os.path.join(dir_path, f'tpl-fs_LR_hemi-{hem}_den-32k_desc-{desc}.shape.gii')
-        subprocess.call(f"""
+        subprocess.run(f"""
             wb_command -metric-resample \
             {in_paths['L']} \
             {os.path.join(SRC_DIR, f'{hem}.macaque-to-human.sphere.reg.32k_fs_LR.surf.gii')} \
@@ -1578,7 +1579,7 @@ def human_to_macaque(in_paths, desc):
     out_paths = {}
     for hem in ['L', 'R']:
         out_paths[hem] = os.path.join(dir_path, f'tpl-yerkes_hemi-{hem}_den-32k_desc-{desc}.shape.gii')
-        subprocess.call(f"""
+        subprocess.run(f"""
             wb_command -metric-resample \
             {in_paths['L']} \
             {os.path.join(SRC_DIR, f'{hem}.human-to-macaque.sphere.reg.32k_fs_LR.surf.gii')} \

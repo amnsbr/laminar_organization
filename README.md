@@ -24,5 +24,18 @@ The Python dependencies are installed by `setup.sh`, but in addition to those th
 
 In addition, each of the scripts in `code/local` have their own specific dependencies, including CIVET 2.1.1 as singularity image (for creating density profiles), Freesurfer 7.1 (for inflating bigbrain surface) and MATLAB R2021b (for downsampling BigBrain and projecting fsaverage annot files to MNI space).
 
+## Docker
+[<img src="https://img.shields.io/badge/docker-amnsbr/laminar_organization-blue.svg?logo=docker">](https://hub.docker.com/r/amnsbr/laminar_organization)
+
+All the code, data and dependencies of this project (except dependencies of `code/local`) are available as a Docker image.
+
+To run the Docker image, follow these steps:
+
+1. Install Docker on your computer (if not already installed).
+2. Pull the `amnsbr/laminar_organization` Docker image from Docker Hub by running the following command: ```docker pull amnsbr/laminar_organization```
+3. Run the Docker container by running the following command: ```docker run -it -p 8888:8888 --privileged amnsbr/laminar_organization```. This will start the Docker container, which opens a Jupyter Notebook instance that allows you to run the analyses.
+
+Note: The `--privileged` flag is needed for functions that require BigBrainWarp. Please be aware that these functions do not work properly on M1 Macs.
+
 ## Support
 Feel free to contact me (amnsbr\[at\]gmail.com, a.saberi\[at\]fz-juelich.de) if you have any questions or there are any problems with the code.

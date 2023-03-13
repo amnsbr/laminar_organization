@@ -2,7 +2,7 @@ FROM --platform=linux/amd64 jupyter/base-notebook:ubuntu-20.04
 
 USER root
 
-# install singularity
+# install Python, Connectome Workbench and Singularity dependencies
 RUN apt-get update && \
     apt clean && \
     apt-get -y install git \
@@ -36,9 +36,6 @@ RUN ln -s /usr/bin/python3 /usr/bin/python && \
     singularity build \
         /data/group/cng/Tools/bigbrainwarp.simg \
         docker://caseypaquola/bigbrainwarp@sha256:cb62b57b95a7ea3e64a4e2b123cd496dba568e7aa7d33cb36019d7ded71d0404
-# May need to run these:
-# sudo chown root:root /usr/local/libexec/singularity/bin/action-suid
-# sudo chmod 4755 /usr/local/libexec/singularity/bin/action-suid
 
 # install most Python dependencies using pip (faster than conda)
 RUN conda create -y -p /laminar_organization/env python=3.9 && \
@@ -67,6 +64,3 @@ RUN eval "$(conda shell.bash hook)" && \
 
 # # # Open jupyter notebook
 ENTRYPOINT ["bash", "-c", "/laminar_organization/env/bin/jupyter notebook --allow-root"]
-
-# # # docker build --platform linux/amd64 -t laminar_organization .  
-# # # docker run -it --platform linux/amd64 -p 8888:8888 laminar_organization
