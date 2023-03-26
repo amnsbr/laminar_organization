@@ -1,6 +1,6 @@
-# Organization of laminar thickness covariance in the human cortex
+# The spatial arrangement of laminar thickness profiles in the human cortex scaffolds processing hierarchy
 
-This repository includes the data and code associated with the paper "Organization of laminar thickness covariance in the human cortex", Saberi et al.
+This repository includes the data and code associated with the paper ["The spatial arrangement of laminar thickness profiles in the human cortex scaffolds processing hierarchy", Saberi et al](https://www.biorxiv.org/content/10.1101/2023.03.25.532115v1).
 
 ## Repository structure
 - Source data is located in `src/`. The README in this folder lists a short description and the origin of each source file.
