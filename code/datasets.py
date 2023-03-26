@@ -114,7 +114,9 @@ def load_mesh_paths(kind='orig', space='bigbrain', downsampled=True):
             if kind=='orig':
                 paths[hem] = nilearn.datasets.fetch_surf_fsaverage(fsa_version)[f'pial_{hem_fullname[hem]}']
             elif kind=='inflated':
-                paths[hem] = nilearn.datasets.fetch_surf_fsaverage(fsa_version)[f'infl_{hem_fullname[hem]}']      
+                paths[hem] = nilearn.datasets.fetch_surf_fsaverage(fsa_version)[f'infl_{hem_fullname[hem]}']
+            elif kind=='sphere':
+                paths[hem] = nilearn.datasets.fetch_surf_fsaverage(fsa_version)[f'sphere_{hem_fullname[hem]}']
         elif space == 'fs_LR':
             if kind == 'orig':
                 paths[hem] = os.path.join(SRC_DIR, f'S1200.{hem}.pial_MSMAll.32k_fs_LR.surf.gii')
@@ -220,7 +222,7 @@ def load_cortical_types(parcellation_name=None, space='bigbrain', downsampled=Fa
     else:
         return cortical_types_map      
 
-def load_yeo_map(parcellation_name=None, downsampled=False):
+def load_yeo_map(parcellation_name=None, downsampled=False, space='bigbrain'):
     """
     Loads the map of Yeo networks
 
@@ -236,21 +238,31 @@ def load_yeo_map(parcellation_name=None, downsampled=False):
     """
     yeo_maps = {}
     for hem in ['L', 'R']:
-        yeo_giftii = nibabel.load(
-            os.path.join(
-                SRC_DIR,
-                f'tpl-bigbrain_hemi-{hem}_desc-Yeo2011_7Networks_N1000.label.gii')
-            )
-        yeo_maps[hem] = yeo_giftii.darrays[0].data
-        if downsampled:
-            # select only the vertices corresponding to the downsampled ico5 surface
-            mat = scipy.io.loadmat(
+        if space=='bigbrain':
+            yeo_giftii = nibabel.load(
                 os.path.join(
-                    SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-pial_downsampled.mat'
+                    SRC_DIR,
+                    f'tpl-bigbrain_hemi-{hem}_desc-Yeo2011_7Networks_N1000.label.gii')
+                )
+            yeo_maps[hem] = yeo_giftii.darrays[0].data
+            if downsampled:
+                # select only the vertices corresponding to the downsampled ico5 surface
+                mat = scipy.io.loadmat(
+                    os.path.join(
+                        SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-pial_downsampled.mat'
+                    )
+                )
+                bb_downsample_indices = mat['bb_downsample'][:, 0]-1 #1-indexing to 0-indexing
+                yeo_maps[hem] = yeo_maps[hem][bb_downsample_indices]
+        elif space=='fsaverage':
+            yeo_maps[hem], _, _ = nibabel.freesurfer.io.read_annot(
+                os.path.join(
+                    SRC_DIR,
+                    f'{hem.lower()}h.Yeo2011_7Networks_N1000.annot'
                 )
             )
-            bb_downsample_indices = mat['bb_downsample'][:, 0]-1 #1-indexing to 0-indexing
-            yeo_maps[hem] = yeo_maps[hem][bb_downsample_indices]
+            if not downsampled:
+                yeo_maps[hem] = helpers.upsample(yeo_maps[hem], space='fsaverage')
     # concatenate the hemispheres and convert to pd category
     yeo_names = [
         'None', 'Visual', 'Somatomotor', 'Dorsal attention', 
@@ -260,7 +272,7 @@ def load_yeo_map(parcellation_name=None, downsampled=False):
     yeo_map = pd.Series(yeo_map).astype('category').cat.rename_categories(yeo_names)
     if parcellation_name:
         # load parcellation map
-        parcellation_map = load_parcellation_map(parcellation_name, concatenate=True, downsampled=downsampled)
+        parcellation_map = load_parcellation_map(parcellation_name, concatenate=True, downsampled=downsampled, space=space)
         parcellated_yeo_map = (
             #> create a dataframe of surface map including both cortical type and parcel index
             pd.DataFrame({'Yeo Network': yeo_map, 'Parcel': pd.Series(parcellation_map)})

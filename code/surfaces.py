@@ -53,9 +53,10 @@ class CorticalSurface:
         space: (str)
         """
         self.surf_data = surf_data
+        self.space = space
         # downsample it
         if surf_data.shape[0] == datasets.N_VERTICES_HEM_BB * 2:
-            self.surf_data = helpers.downsample(self.surf_data)
+            self.surf_data = helpers.downsample(self.surf_data, space=self.space)
         # make it 2d
         if self.surf_data.ndim == 1:
             self.surf_data = self.surf_data[:, np.newaxis]
@@ -69,10 +70,9 @@ class CorticalSurface:
         self.parcellation_name = parcellation_name
         if self.parcellation_name:
             self.parcellated_data = helpers.parcellate(
-                self.surf_data, self.parcellation_name
+                self.surf_data, self.parcellation_name, space=self.space
                 ).dropna()
             self.parcellated_data.columns = self.columns
-        self.space = space
 
     def plot(self, columns=None, label_loc=None, cmap=None, save=False,
              plot_downsampled=False, inflate=False, **plotter_kwargs):
@@ -103,7 +103,7 @@ class CorticalSurface:
             if plot_downsampled:
                 if (self.parcellation_name is None):
                     if (self.surf_data.shape[0]==datasets.N_VERTICES_HEM_BB*2):
-                        column_data = helpers.downsample(surf_data.loc[:, column].values)
+                        column_data = helpers.downsample(surf_data.loc[:, column].values, space=self.space)
                     else:
                         column_data = surf_data.loc[:, column].values
                 else:
@@ -112,7 +112,7 @@ class CorticalSurface:
             else:
                 if (self.parcellation_name is None):
                     if (self.surf_data.shape[0]==datasets.N_VERTICES_HEM_BB_ICO5*2):
-                        column_data = helpers.upsample(surf_data.loc[:, column].values)
+                        column_data = helpers.upsample(surf_data.loc[:, column].values, space=self.space)
                     else:
                         column_data = surf_data.loc[:, column].values
                 else:
@@ -1498,7 +1498,7 @@ class CatCorticalSurface(CorticalSurface):
         parcellated_data (pd.DataFrame)
         """
         # parcellate the continous data
-        parcellated_data = helpers.parcellate(surf_data, parcellation_name)
+        parcellated_data = helpers.parcellate(surf_data, parcellation_name, space=self.space)
         parcellated_data.columns = columns
         # add the category of parcels to the parcellated data
         is_downsampled = (surf_data.shape[0] == datasets.N_VERTICES_HEM_BB_ICO5*2)
@@ -1654,6 +1654,8 @@ class CatCorticalSurface(CorticalSurface):
 
         """
         assert self.parcellation_name == other.parcellation_name
+        assert self.parcellation_name is not None
+        assert self.space == other.space
         if other_columns is None:
             other_columns = other.columns
         parcellated_data = pd.concat([
@@ -1684,12 +1686,13 @@ class CatCorticalSurface(CorticalSurface):
                     test_stats = self._anova(parcellated_data, column, output='stats', force_posthocs=True)
                     # create spin surrogates
                     all_parcels = helpers.parcellate(
-                        helpers.deparcellate(other.parcellated_data, other.parcellation_name, downsampled=True), 
-                        other.parcellation_name
+                        helpers.deparcellate(other.parcellated_data, other.parcellation_name, downsampled=True, space=self.space), 
+                        other.parcellation_name,
+                        space=self.space
                     ).drop(index=helpers.MIDLINE_PARCELS.get(self.parcellation_name, [])).index
                     excluded_parcels = all_parcels.difference(other.parcellated_data.index).tolist()
                     surrogate_parcel_orders = helpers.get_rotated_parcels(other.parcellation_name, n_perm, 
-                        excluded_parcels=excluded_parcels, return_indices=False)
+                        excluded_parcels=excluded_parcels, return_indices=False, space=self.space)
                     # create null distribution
                     null_dist = np.zeros((test_stats.shape[0], n_perm))
                     for i in range(n_perm):
@@ -1766,7 +1769,7 @@ class YeoNetworks(CatCorticalSurface):
     """
     Map of Yeo networks
     """
-    def __init__(self, parcellation_name=None, downsampled=True):
+    def __init__(self, parcellation_name=None, downsampled=True, space='bigbrain'):
         """
         Loads the map of Yeo networks
         """
@@ -1777,26 +1780,27 @@ class YeoNetworks(CatCorticalSurface):
             'Ventral attention', 'Limbic', 'Frontoparietal', 'Default'
             ]
         self.parcellation_name = parcellation_name
+        self.space = space
         self.label = 'Resting state network'
         self.short_label = 'rsn'
         self.n_categories = len(self.included_categories)
         if self.parcellation_name is not None:
-            self.parcellated_data = datasets.load_yeo_map(self.parcellation_name, downsampled=downsampled).rename(self.label)
+            self.parcellated_data = datasets.load_yeo_map(self.parcellation_name, downsampled=downsampled, space=self.space).rename(self.label)
             self.parcellated_data = (
                 self.parcellated_data
                 .loc[~self.parcellated_data.isin(self.excluded_categories)]
                 .cat.remove_unused_categories().to_frame()
             )
-            self.surf_data = helpers.deparcellate(self.parcellated_data.iloc[:, 0].cat.codes, self.parcellation_name)
+            self.surf_data = helpers.deparcellate(self.parcellated_data.iloc[:, 0].cat.codes, self.parcellation_name, space=self.space)
         else:
             # load unparcellated surface data
-            yeo_map = datasets.load_yeo_map(downsampled=downsampled)
+            yeo_map = datasets.load_yeo_map(downsampled=downsampled, space=self.space)
             self.surf_data = yeo_map.cat.codes.values.reshape(-1, 1).astype('float')
             self.surf_data[yeo_map.isin(self.excluded_categories), 0] = np.NaN
         self.columns = [self.label]
 
     def _load_parcels_categories(self, parcellation_name, downsampled):
-        return datasets.load_yeo_map(parcellation_name, downsampled=downsampled)
+        return datasets.load_yeo_map(parcellation_name, downsampled=downsampled, space=self.space)
 
     def _load_colormap(self):
         """
