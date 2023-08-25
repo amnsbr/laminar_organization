@@ -10,8 +10,8 @@
       </MD>
       <MD>
          <Name><![CDATA[ParentProvenance]]></Name>
-         <Value><![CDATA[/home/asaberi/laminar_gradients/src/tpl-fs_LR_hemi-R_den-164k_desc-hcp1200_myelinmap.shape.gii:
-wb_command -metric-resample /home/asaberi/laminar_gradients/src/tpl-fs_LR_hemi-R_den-32k_desc-hcp1200_myelinmap.shape.gii /BigBrainWarp/spaces/tpl-fs_LR/tpl-fs_LR_hemi-R_den-32k_desc-sphere.surf.gii /BigBrainWarp/spaces/tpl-fs_LR/tpl-fs_LR_hemi-R_den-164k_desc-sphere.surf.gii BARYCENTRIC /home/asaberi/laminar_gradients/src/tpl-fs_LR_hemi-R_den-164k_desc-hcp1200_myelinmap.shape.gii
+         <Value><![CDATA[/home/asaberi/laminar_organization/src/tpl-fs_LR_hemi-R_den-164k_desc-hcp1200_myelinmap.shape.gii:
+wb_command -metric-resample /home/asaberi/laminar_organization/src/tpl-fs_LR_hemi-R_den-32k_desc-hcp1200_myelinmap.shape.gii /BigBrainWarp/spaces/tpl-fs_LR/tpl-fs_LR_hemi-R_den-32k_desc-sphere.surf.gii /BigBrainWarp/spaces/tpl-fs_LR/tpl-fs_LR_hemi-R_den-164k_desc-sphere.surf.gii BARYCENTRIC /home/asaberi/laminar_organization/src/tpl-fs_LR_hemi-R_den-164k_desc-hcp1200_myelinmap.shape.gii
 
 /BigBrainWarp/xfms/tpl-bigbrain_hemi-R_desc-sphere_rsled_like_fs_LR.reg.surf.gii:
 /home/users/llewis/workbench/bin_linux64/../exe_linux64/wb_command -surface-sphere-project-unproject rh.fs_LR.sphere.surf.gii rh.sphere_fsLR_rsled_like_BigBrain.sphere.reg.surf.gii rh.BigBrain.rot.fsLR.sphere.surf.gii rh.sphere_BigBrain_rsled_like_fsLR.sphere.reg.surf.gii
@@ -38,11 +38,11 @@ Operating System: Linux
       </MD>
       <MD>
          <Name><![CDATA[Provenance]]></Name>
-         <Value><![CDATA[wb_command -metric-resample /home/asaberi/laminar_gradients/src/tpl-fs_LR_hemi-R_den-164k_desc-hcp1200_myelinmap.shape.gii /BigBrainWarp/xfms/tpl-bigbrain_hemi-R_desc-sphere_rsled_like_fs_LR.reg.surf.gii /BigBrainWarp/xfms/tpl-bigbrain_hemi-R_desc-sphere_rot_fs_LR.surf.gii BARYCENTRIC /home/asaberi/laminar_gradients/src/tpl-bigbrain_hemi-R_desc-hcp1200_myelinmap.shape.gii]]></Value>
+         <Value><![CDATA[wb_command -metric-resample /home/asaberi/laminar_organization/src/tpl-fs_LR_hemi-R_den-164k_desc-hcp1200_myelinmap.shape.gii /BigBrainWarp/xfms/tpl-bigbrain_hemi-R_desc-sphere_rsled_like_fs_LR.reg.surf.gii /BigBrainWarp/xfms/tpl-bigbrain_hemi-R_desc-sphere_rot_fs_LR.surf.gii BARYCENTRIC /home/asaberi/laminar_organization/src/tpl-bigbrain_hemi-R_desc-hcp1200_myelinmap.shape.gii]]></Value>
       </MD>
       <MD>
          <Name><![CDATA[WorkingDirectory]]></Name>
-         <Value><![CDATA[/home/asaberi/laminar_gradients/src]]></Value>
+         <Value><![CDATA[/home/asaberi/laminar_organization/src]]></Value>
       </MD>
    </MetaData>
    <LabelTable>

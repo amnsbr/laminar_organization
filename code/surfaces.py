@@ -480,6 +480,13 @@ class LaminarFeatures(ContCorticalSurface):
             )
         features.append(rel_laminar_thickness)
         self.columns += [f'Layer {num} relative thickness' for num in range(1, 7)]
+        #> Three-layer thickness
+        features += [
+            rel_laminar_thickness[:, :3].sum(axis=1)[:, np.newaxis],
+            rel_laminar_thickness[:, 3:4],
+            rel_laminar_thickness[:, 4:].sum(axis=1)[:, np.newaxis]
+        ]
+        self.columns += [f'{layer} relative thickness' for layer in ['Supragranular', 'Granular', 'Infragranular']]
         #> Superficial thickness ratio
         superficial_thickness_ratio = rel_laminar_thickness[:, :3].sum(axis=1)[:, np.newaxis]
         features.append(superficial_thickness_ratio)
@@ -490,6 +497,11 @@ class LaminarFeatures(ContCorticalSurface):
             [laminar_density['L'], laminar_density['R']], axis=0
             )
         laminar_density = helpers.downsample(laminar_density)
+        # in the profiles higher image intensity (brighter) means lower
+        # gray matter density => normalize and invert image intensity
+        # to get density
+        # TODO: consider doing this in datasets.load_laminar_density
+        laminar_density = 1 - (laminar_density / np.nanmax(laminar_density))
         features.append(laminar_density)
         self.columns += [f'Layer {num} density' for num in range(1, 7)]
         #> concatenate all the features into a single array
@@ -932,11 +944,6 @@ class MicrostructuralCovarianceGradients(Gradients):
                 mpc._load_input_data()
             parcellated_density_profiles = helpers.parcellate(mpc._input_data, mpc.parcellation_name)
             parcellated_density_profiles = helpers.concat_hemispheres(parcellated_density_profiles, dropna=True)
-            # normalize and invert values because brighter on the image means
-            # lower density but we want to have higher values for regions with
-            # higher density
-            parcellated_density_profiles = parcellated_density_profiles / parcellated_density_profiles.values.max()
-            parcellated_density_profiles = 1 - parcellated_density_profiles
             if zscore:
                 parcellated_density_profiles = parcellated_density_profiles.apply(scipy.stats.zscore, axis=1)
         if 'thickness' in self.matrix_obj.input_type:
@@ -956,8 +963,6 @@ class MicrostructuralCovarianceGradients(Gradients):
             laminar_density = datasets.load_laminar_density()
             parcellated_laminar_density = helpers.parcellate(laminar_density, mpc.parcellation_name)
             parcellated_laminar_density = helpers.concat_hemispheres(parcellated_laminar_density, dropna=True)
-            parcellated_laminar_density = parcellated_laminar_density / parcellated_laminar_density.values.max()
-            parcellated_laminar_density = 1 - parcellated_laminar_density
             if zscore:
                 parcellated_laminar_density = parcellated_laminar_density.apply(scipy.stats.zscore, axis=1)
         # 2) plot profiles for each bin
@@ -990,7 +995,7 @@ class MicrostructuralCovarianceGradients(Gradients):
             # create the plots
             fig, ax = plt.subplots(figsize=(10, 7), dpi=192)
             if self.matrix_obj.input_type == 'density':
-                sns.heatmap(bins_density.T, ax=ax, cmap='Blues', cbar=False)
+                sns.heatmap(bins_density.T, ax=ax, cmap='bone', cbar=False)
             elif self.matrix_obj.input_type == 'thickness-density':
                 # identify layer boundary markers:
                 # for each bin identify 5 integers (0 to 249)
@@ -1015,10 +1020,10 @@ class MicrostructuralCovarianceGradients(Gradients):
                                 bins_thickness_density.loc[:, bin_num] == layer_num, 
                                 bin_num
                             ] = bins_laminar_density.loc[bin_num, f'Layer {layer_num}']
-                    sns.heatmap(bins_thickness_density, cmap='Greys')
+                    sns.heatmap(bins_thickness_density, cmap='bone', cbar=False)
                 else:
                     # plot total length density
-                    sns.heatmap(bins_density.T, ax=ax, cmap='Blues', cbar=False)                
+                    sns.heatmap(bins_density.T, ax=ax, cmap='bone', cbar=False)                
                     ## set 0s to NaN so they are transparent on the heatmap
                     laminar_boundary_mask[laminar_boundary_mask==0] = np.NaN
                     # add the layer boundary markers to the axis

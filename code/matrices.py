@@ -1172,6 +1172,10 @@ class MicrostructuralCovarianceMatrix(Matrix):
             'density': 'Microstructural profile covariance',
             'thickness-density': 'Laminar thickness and microstructural profile covariance'
         }
+        if self.laminar_density:
+            LABELS['density'] = 'Laminar intensity covariance'
+            LABELS['thickness-density'] = 'Laminar thickness and intensity covariance'
+            SHORT_LABELS['density'] = 'LIC'
         self.label = LABELS[self.input_type]
         if self.regress_out_geodesic_distance:
             self.label += ' (regressed out GD)'
@@ -1475,7 +1479,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
         sub_dir += f'_metric-{self.similarity_metric}'
         return os.path.join(OUTPUT_DIR, main_dir, sub_dir)
 
-    def plot_parcels_profile(self, palette='bigbrain', order=None, axis_off=True, save=False):
+    def plot_parcels_profile(self, palette='bigbrain', order=None, axis_off=True, save=False, figsize=(100, 20)):
         """
         Plots the profile of all parcels in a stacked bar plot
 
@@ -1494,7 +1498,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
             concat_parcellated_input_data = self._parcellated_input_data.dropna().reset_index(drop=True)
         else:
             concat_parcellated_input_data = self._parcellated_input_data.loc[order].dropna().reset_index(drop=True)
-        fig, ax = plt.subplots(figsize=(100, 20))
+        fig, ax = plt.subplots(figsize)
         if self.input_type == 'thickness':
             if self.relative:
                 concat_parcellated_input_data = concat_parcellated_input_data.divide(
@@ -1520,9 +1524,12 @@ class MicrostructuralCovarianceMatrix(Matrix):
         elif self.input_type == 'density':
             profiles = self._parcellated_input_data.dropna().reset_index(drop=True)
             profiles = profiles / profiles.values.max()
-            img_data = ((profiles.values.T) * 255).astype('uint8')
-            img = PIL.Image.fromarray(img_data , 'L').resize((1000, 400))
-            ax.imshow(img, cmap='bone')
+            if self.laminar_density:
+                sns.heatmap(profiles.values.T, cmap='bone')
+            else:
+                img_data = ((profiles.values.T) * 255).astype('uint8')
+                img = PIL.Image.fromarray(img_data , 'L').resize((1000, 400))
+                ax.imshow(img, cmap='bone')
         ax.set_xticklabels(concat_parcellated_input_data.index.tolist(), rotation=90)
         if axis_off:
             ax.axis('off')

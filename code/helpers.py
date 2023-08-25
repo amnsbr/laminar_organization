@@ -39,6 +39,8 @@ MIDLINE_PARCELS = {
     'schaefer200': ['Background+FreeSurfer_Defined_Medial_Wall'],
     'schaefer400': ['Background+FreeSurfer_Defined_Medial_Wall'],
     'schaefer1000': ['Background+FreeSurfer_Defined_Medial_Wall'],
+    'yan400': ['L0', 'R0'],
+    'yan1000': ['L0', 'R0'],
     'sjh': [0],
     'aparc': ['L_unknown', 'None'],
     'mmp1': ['???'],
@@ -372,7 +374,7 @@ def regress_out_surf_covariates(input_surface_data, cov_surface_data, sig_only=F
     cleaned_surface_data: (np.ndarray) n_vertices x n_cols cleaned surface data
     """
     cleaned_surface_data = input_surface_data.copy()
-    mask = (np.isnan(input_surface_data).sum(axis=1) == 0)
+    mask = (np.isnan(input_surface_data).sum(axis=1) == 0) | (np.isnan(cov_surface_data).sum(axis=1) == 0)
     for col_idx in range(input_surface_data.shape[1]):
         print(f"col {col_idx}")
         # read and reshape y
@@ -381,7 +383,9 @@ def regress_out_surf_covariates(input_surface_data, cov_surface_data, sig_only=F
         y_mean = y.mean()
         y_demean = y - y_mean
         # convert covariate shape to n_vert * 1 if there's only one
-        X = cov_surface_data.reshape(-1, 1)
+        X = cov_surface_data.copy()
+        if X.ndim==1:
+            X = X.reshape(-1, 1)
         X = X[mask, :]
         assert X.shape[0] == y.shape[0]
         # model fitting
@@ -756,7 +760,7 @@ def plot_matrix(matrix, outpath=None, cmap="rocket", vrange=(0.025, 0.975), vran
         clbar_fig.savefig(outpath+'_clbar', dpi=192)
 
 
-def plot_surface(surface_data, filename=None, space='bigbrain', inflate=True, 
+def plot_surface(surface_data, filename=None, space='bigbrain', inflate=True, sphere=False,
         plot_downsampled=True, layout_style='row', cmap='viridis',
         toolbox='brainspace', vrange=None, cbar=False, nan_color=(0.75, 0.75, 0.75, 1),
         **plotter_kwargs):
@@ -820,6 +824,8 @@ def plot_surface(surface_data, filename=None, space='bigbrain', inflate=True,
             surface_data = downsample(surface_data, space=space)
     if inflate:
         kind = 'inflated'
+    elif sphere:
+        kind = 'sphere'
     else:
         kind = 'orig'
     mesh_paths = datasets.load_mesh_paths(kind=kind, space=space, downsampled=plot_downsampled)
@@ -1467,14 +1473,14 @@ def fsa_annot_to_fsa5_gii(parcellation_name):
 
 def write_gifti(out_path, points=None, faces=None, data=None):
     """
-    Write gifti mesh and/or data.
+    Write gifti mesh and/or float data.
 
     Parameters
     ---------
     out_path: (str)
     points: (np.ndarrray)
     faces: (np.ndarray)
-    data: (np.ndarray)
+    data: (np.ndarray | None)
     
     Credit: adapeted from https://github.com/nighres/nighres/blob/master/nighres/io/io_mesh.py
     """
@@ -1488,14 +1494,17 @@ def write_gifti(out_path, points=None, faces=None, data=None):
         face_array = nibabel.gifti.GiftiDataArray(data=faces,
                                             intent=nibabel.nifti1.intent_codes[
                                                 'NIFTI_INTENT_TRIANGLE'],
-                                                datatype='NIFTI_TYPE_FLOAT32')
+                                                datatype='NIFTI_TYPE_INT32')
         arrays += [coord_array, face_array]
     if data is not None:
-        data_array = nibabel.gifti.GiftiDataArray(data=data,
-                                         intent=nibabel.nifti1.intent_codes[
-                                             'NIFTI_INTENT_ESTIMATE'],
-                                             datatype='NIFTI_TYPE_FLOAT32')
-        arrays += [data_array]
+        if data.ndim==1:
+            data = data[:, np.newaxis]
+        for col in range(data.shape[1]):
+            data_array = nibabel.gifti.GiftiDataArray(data=data[:, col],
+                                            intent=nibabel.nifti1.intent_codes[
+                                                'NIFTI_INTENT_ESTIMATE'],
+                                                datatype='NIFTI_TYPE_FLOAT32')
+            arrays += [data_array]
     gii = nibabel.gifti.GiftiImage(darrays=arrays)
     nibabel.save(gii, out_path)
 

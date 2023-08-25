@@ -105,6 +105,10 @@ def load_mesh_paths(kind='orig', space='bigbrain', downsampled=True):
                     paths[hem] = os.path.join(
                         SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-mid.surf.inflate.gii'
                     )
+                elif kind=='sphere':
+                    paths[hem] = os.path.join(
+                        SRC_DIR, f'tpl-bigbrain_hemi-{hem}_desc-sphere_rot_fsaverage.surf.gii'
+                    )
         elif space == 'fsaverage':
             hem_fullname = {'L':'left', 'R':'right'}
             if downsampled:
@@ -570,11 +574,19 @@ def load_parcellation_map(parcellation_name, concatenate, downsampled=False,
                             f'tpl-bigbrain_hemi-{hem}_desc-{parcellation_name}_parcellation.label.gii')
                         )
             elif space == 'fsaverage':
-                parcellation_map[hem], _, _ = nibabel.freesurfer.io.read_annot(
+                if parcellation_name == 'aal':
+                    parcellation_map[hem] = nilearn.surface.load_surf_data(
                         os.path.join(
-                            SRC_DIR, 
-                            f'{hem.lower()}h_{parcellation_name}.annot')
+                            SRC_DIR,
+                            f'{hem.lower()}h_aal.label.gii'
+                        )
                     )
+                else:
+                    parcellation_map[hem], _, _ = nibabel.freesurfer.io.read_annot(
+                            os.path.join(
+                                SRC_DIR, 
+                                f'{hem.lower()}h_{parcellation_name}.annot')
+                        )
             # label parcellation map if indicated
             if not load_indices:
                 if parcellation_name == 'brodmann':
@@ -586,6 +598,7 @@ def load_parcellation_map(parcellation_name, concatenate, downsampled=False,
                         )
                     )
                     transdict = orig_gifti.labeltable.get_labels_as_dict()
+                    transdict = dict(zip(transdict.keys(), [l.replace('BA', f'{hem}_BA') for l in transdict.values()]))
                 elif parcellation_name == 'aal':
                     with open(os.path.join(SRC_DIR,'aal_labels.txt'), 'r') as f:
                         aal_labels_str = f.read().replace('\t', '  ')
@@ -593,6 +606,9 @@ def load_parcellation_map(parcellation_name, concatenate, downsampled=False,
                     for line in aal_labels_str.split('\n')[1:]:
                         parc, label, _ = re.match("^([0-9]+)\W+(\w+.\w)\W+([^']*)", line).groups()
                         transdict[int(parc)] = label
+                elif 'yan' in parcellation_name:
+                    # L0-500 and R0-500
+                    transdict = dict(zip(np.unique(parcellation_map[hem]), [f'{hem}{i}' for i in np.unique(parcellation_map[hem])]))
                 else:
                     # for others its an annot file
                     _, _, sorted_labels = nibabel.freesurfer.io.read_annot(

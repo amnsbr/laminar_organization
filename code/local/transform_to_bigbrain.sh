@@ -15,7 +15,7 @@ if ! [ -f "${TOOLS_PATH}/bigbrainwarp.simg" ]; then
 fi
 
 
-fsaverage_parcellations=('sjh.annot' 'economo.annot' 'schaefer200.annot' 'schaefer400.annot' 'schaefer1000.annot' 'aparc.annot' 'mmp1.annot' 'brodmann.label.gii')
+fsaverage_parcellations=('sjh.annot' 'economo.annot' 'schaefer200.annot' 'schaefer400.annot' 'schaefer1000.annot' 'aparc.annot' 'mmp1.annot' 'brodmann.label.gii' 'yan400.annot' 'yan1000.annot')
 for suffix in "${fsaverage_parcellations[@]}"
 do
     desc=${suffix/.annot/_parcellation}
