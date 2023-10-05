@@ -1,6 +1,6 @@
-# The spatial arrangement of laminar thickness profiles in the human cortex scaffolds processing hierarchy
+# Laminar thickness covariance in BigBrain
 
-This repository includes the data and code associated with the paper ["The spatial arrangement of laminar thickness profiles in the human cortex scaffolds processing hierarchy", Saberi et al](https://www.biorxiv.org/content/10.1101/2023.03.25.532115v1).
+This repository includes the data and code associated with the paper "The regional variation of laminar thickness in the human isocortex is related to cortical hierarchy and inter-regional connectivity", Saberi et al.
 
 ## Repository structure
 - Source data is located in `src/`. The README in this folder lists a short description and the origin of each source file.
