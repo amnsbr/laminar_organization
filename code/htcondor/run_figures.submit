@@ -2,7 +2,7 @@
 universe              = vanilla
 getenv                = True
 request_cpus          = 1
-request_memory        = 6G
+request_memory        = 15G
 
 # Execution
 initialdir            = $ENV(HOME)/laminar_organization

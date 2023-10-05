@@ -202,10 +202,14 @@ class Matrix:
                 # add rho on the figure
                 text_x = ax.get_xlim()[0]+(ax.get_xlim()[1]-ax.get_xlim()[0])*0.05
                 text_y = ax.get_ylim()[0]+(ax.get_ylim()[1]-ax.get_ylim()[0])*0.90
-                if test == 'pearson':
-                    text = f'r = {coef:.2f}; p = {p_val:.2f}'
+                if p_val < 0.001:
+                    pval_str = 'p < 0.001'
                 else:
-                    text = f'rho = {coef:.2f}; p = {p_val:.2f}'
+                    pval_str = f'p = {p_val:.3f}'
+                if test == 'pearson':
+                    text = f'r = {coef:.2f}; {pval_str}'
+                else:
+                    text = f'rho = {coef:.2f}; {pval_str}'
                 ax.text(text_x, text_y, text,
                         color='black', size=12,
                         multialignment='left')
@@ -784,7 +788,10 @@ class DistanceMatrix(Matrix):
                 ax.set_ylabel(other.label)
             if stats_on_plot:
                 if spin_test:
-                    text = f'R2 = {r2:.2f}; p = {p_val:.2f}'
+                    if p_val < 0.001:
+                        text = f'R2 = {r2:.2f}; p < 0.001'
+                    else:
+                        text = f'R2 = {r2:.2f}; p = {p_val:.3f}'
                 else:
                     text = f'R2 = {r2:.2f}'
                 ax.text(
@@ -1498,7 +1505,7 @@ class MicrostructuralCovarianceMatrix(Matrix):
             concat_parcellated_input_data = self._parcellated_input_data.dropna().reset_index(drop=True)
         else:
             concat_parcellated_input_data = self._parcellated_input_data.loc[order].dropna().reset_index(drop=True)
-        fig, ax = plt.subplots(figsize)
+        fig, ax = plt.subplots(1, figsize=figsize)
         if self.input_type == 'thickness':
             if self.relative:
                 concat_parcellated_input_data = concat_parcellated_input_data.divide(

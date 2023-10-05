@@ -323,10 +323,14 @@ class ContCorticalSurface(CorticalSurface):
                     ax.set_xlabel(x_column)
                     ax.set_ylabel(y_column)
                     if stats_on_regplot:
-                        if parcellated & (parcellated_method=='variogram'):
-                            text = f'r = {coefs.loc[y_column, x_column]:.2f}; $\mathregular{{p_{{variogram}}}}$ = {pvals.loc[y_column, x_column]:.2f}'
+                        if pvals.loc[y_column, x_column] < 0.001:
+                            pval_str = '< 0.001'
                         else:
-                            text = f'r = {coefs.loc[y_column, x_column]:.2f}; $\mathregular{{p_{{spin}}}}$ = {pvals.loc[y_column, x_column]:.2f}'
+                            pval_str = f'= {pvals.loc[y_column, x_column]:.3f}'
+                        if parcellated & (parcellated_method=='variogram'):
+                            text = f'r = {coefs.loc[y_column, x_column]:.2f}; $\mathregular{{p_{{variogram}}}}$ {pval_str}'
+                        else:
+                            text = f'r = {coefs.loc[y_column, x_column]:.2f}; $\mathregular{{p_{{spin}}}}$ {pval_str}'
                         # add correlation coefficients and p vals on the figure
                         text_x = ax.get_xlim()[0]+(ax.get_xlim()[1]-ax.get_xlim()[0])*0.05
                         text_y = ax.get_ylim()[0]+(ax.get_ylim()[1]-ax.get_ylim()[0])*0.05
