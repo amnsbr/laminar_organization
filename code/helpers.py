@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import brainspace.mesh, brainspace.plotting, brainspace.null_models
+import pyvirtualdisplay
 import brainsmash.mapgen
 import enigmatoolbox.permutation_testing
 import nilearn.surface
@@ -844,15 +845,7 @@ def plot_surface(surface_data, filename=None, space='bigbrain', inflate=True, sp
 
 def _plot_brainspace(surface_data, mesh_paths, filename, layout_style, cmap, vrange, **plotter_kwargs):
     """
-    Plots `surface_data` on `mesh_paths` using nilearn
-
-    Note: To run this on remote server vtk should be installed with
-    mesabuild as follows:
-    > conda config --add channels conda-forge
-    > conda install mesalib --channel conda-forge --override-channels -freeze-installed
-    > conda install vtk --channel conda-forge --override-channels -freeze-installed
-    # if conda tries to install a build of vtk that does not start with osmesa_* force this build using:
-    > conda install vtk==9.1.0=osmesa_py39h8ab48e2_107 --channel conda-forge --override-channels -freeze-installed
+    Plots `surface_data` on `mesh_paths` using brainspace
     """
     # rejoin the hemispheres
     surface_data = np.concatenate([surface_data['L'], surface_data['R']]).flatten()
@@ -873,6 +866,9 @@ def _plot_brainspace(surface_data, mesh_paths, filename, layout_style, cmap, vra
     else:
         size = (900, 500)
         zoom = 1.8
+    # create virtual display for plotting in remote servers
+    disp=pyvirtualdisplay.Display(visible=False)
+    disp.start()
     return brainspace.plotting.surface_plotting.plot_hemispheres(
         lh_surf, rh_surf, 
         surface_data,
