@@ -1,6 +1,19 @@
 # Laminar thickness covariance in BigBrain
 
-This repository includes the data and code associated with the paper "The regional variation of laminar thickness in the human isocortex is related to cortical hierarchy and inter-regional connectivity", Saberi et al.
+This repository includes the data and code associated with the paper ["The regional variation of laminar thickness in the human isocortex is related to cortical hierarchy and inter-regional connectivity"](https://journals.plos.org/plosbiology/article?id=10.1371/journal.pbio.3002365), Saberi et al 2023 PLOS Biology.
+
+## Docker
+[<img src="https://img.shields.io/badge/docker-amnsbr/laminar_organization-blue.svg?logo=docker">](https://hub.docker.com/r/amnsbr/laminar_organization)
+
+All the code, data and dependencies of this project (except dependencies of `code/local`) are available as a Docker image.
+
+To run the Docker image, follow these steps:
+
+1. Install Docker on your computer (if not already installed).
+2. Pull the `amnsbr/laminar_organization` Docker image from Docker Hub by running the following command: ```docker pull amnsbr/laminar_organization```
+3. Run the Docker container by running the following command: ```docker run -it -p 8888:8888 --privileged amnsbr/laminar_organization```. This will start the Docker container, which opens a Jupyter Notebook instance that allows you to run the analyses. Note that the Jupyter will use port 8888, therefore this port must be free.
+
+Note: The `--privileged` flag is needed for functions that require BigBrainWarp (e.g. human-macaque surface transformation). Please be aware that these functions may not work properly on Macs with M processors.
 
 ## Repository structure
 - Source data is located in `src/`. The README in this folder lists a short description and the origin of each source file.
@@ -22,19 +35,6 @@ The Python dependencies are installed by `setup.sh`, but in addition to those th
 - [BigBrainWarp](https://bigbrainwarp.readthedocs.io/en/latest/pages/installation.html) as a singularity image (needed for the function `surface_to_surface_transformation` in `helpers.py` which is used for transformation of LTC G1 from bigbrain space to macaque space). This can be created by running `singularity build bigbrainwarp.simg docker://caseypaquola/bigbrainwarp:latest`.
 
 In addition, each of the scripts in `code/local` have their own specific dependencies, including CIVET 2.1.1 as singularity image (for creating density profiles), Freesurfer 7.1 (for inflating bigbrain surface) and MATLAB R2021b (for downsampling BigBrain and projecting fsaverage annot files to MNI space).
-
-## Docker
-[<img src="https://img.shields.io/badge/docker-amnsbr/laminar_organization-blue.svg?logo=docker">](https://hub.docker.com/r/amnsbr/laminar_organization)
-
-All the code, data and dependencies of this project (except dependencies of `code/local`) are available as a Docker image.
-
-To run the Docker image, follow these steps:
-
-1. Install Docker on your computer (if not already installed).
-2. Pull the `amnsbr/laminar_organization` Docker image from Docker Hub by running the following command: ```docker pull amnsbr/laminar_organization```
-3. Run the Docker container by running the following command: ```docker run -it -p 8888:8888 --privileged amnsbr/laminar_organization```. This will start the Docker container, which opens a Jupyter Notebook instance that allows you to run the analyses. Note that the Jupyter will use port 8888, therefore this port must be free.
-
-Note: The `--privileged` flag is needed for functions that require BigBrainWarp (e.g. human-macaque surface transformation). Please be aware that these functions do not work properly on Macs with M processors.
 
 ## Support
 Feel free to contact me (amnsbr\[at\]gmail.com, a.saberi\[at\]fz-juelich.de) or open an issue if you have any questions or there are any problems with the code.
